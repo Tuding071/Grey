@@ -4,7 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,25 +45,19 @@ fun GreyBrowser() {
     val context = LocalContext.current
     val runtime = remember { GeckoRuntime.create(context) }
 
-    // Tab state
-    val tabs = remember { mutableStateListOf<GeckoSession>() }
-    var currentTabIndex by remember { mutableIntStateOf(0) }
-    var showTabManager by remember { mutableStateOf(false) }
-
-    // Helper: ensure at least one tab exists
-    fun ensureAtLeastOneTab() {
-        if (tabs.isEmpty()) {
-            val s = GeckoSession().also { it.open(runtime) }
-            tabs.add(s)
-            currentTabIndex = 0
-            s.loadUri("about:blank")
+    // Initialize state WITH one tab already inside to prevent IndexOutOfBounds crashes
+    val tabs = remember {
+        mutableStateListOf<GeckoSession>().apply {
+            val initialSession = GeckoSession().apply {
+                open(runtime)
+                loadUri("about:blank")
+            }
+            add(initialSession)
         }
     }
-
-    // Initialise with one tab
-    LaunchedEffect(Unit) {
-        ensureAtLeastOneTab()
-    }
+    
+    var currentTabIndex by remember { mutableIntStateOf(0) }
+    var showTabManager by remember { mutableStateOf(false) }
 
     // GeckoView that automatically updates its session when current tab changes
     @Composable
@@ -91,7 +84,7 @@ fun GreyBrowser() {
             sheetState = sheetState,
             containerColor = Color(0xFF1E1E1E),
             contentColor = Color.White,
-            shape = RectangleShape    // square edges – matches your style
+            shape = RectangleShape
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // Header with exit button (top left)
@@ -130,7 +123,7 @@ fun GreyBrowser() {
                                     .padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Tab title (just a placeholder for now)
+                                // Tab title
                                 Text(
                                     text = "Tab ${index + 1}",
                                     color = if (isCurrent) Color.White else Color.Gray,
@@ -138,9 +131,8 @@ fun GreyBrowser() {
                                 )
                                 // Close button
                                 IconButton(onClick = {
-                                    // Close the tab
                                     if (tabs.size > 1) {
-                                        tabs.removeAt(index).close()   // close GeckoSession
+                                        tabs.removeAt(index).close()
                                         if (currentTabIndex >= tabs.size) {
                                             currentTabIndex = tabs.lastIndex
                                         }
@@ -182,9 +174,8 @@ fun GreyBrowser() {
 
     // URL bar state
     var urlInput by remember { mutableStateOf("about:blank") }
-    // Sync urlInput when current tab changes (optional but nice)
     LaunchedEffect(currentTabIndex) {
-        urlInput = "about:blank"   // reset to blank, or you can store URLs per tab
+        urlInput = "about:blank"
     }
 
     Surface(
@@ -199,12 +190,10 @@ fun GreyBrowser() {
                     .padding(top = 8.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Tab button on the left
                 IconButton(onClick = { showTabManager = true }) {
                     Icon(Icons.Default.Tab, contentDescription = "Open tabs", tint = Color.White)
                 }
 
-                // URL bar (takes remaining space)
                 OutlinedTextField(
                     value = urlInput,
                     onValueChange = { urlInput = it },
