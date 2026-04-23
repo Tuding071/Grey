@@ -1,5 +1,6 @@
 package com.grey.browser
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -84,7 +85,6 @@ fun GreyBrowser() {
     // ── Settings Dialog ───────────────────────────────────────
     if (showSettings) {
         SettingsDialog(
-            runtime = runtime,
             onDismiss = { showSettings = false }
         )
     }
@@ -101,7 +101,9 @@ fun GreyBrowser() {
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = { showTabManager = false }) {
@@ -110,7 +112,9 @@ fun GreyBrowser() {
                     Text("Tabs", style = TextStyle(color = Color.White, fontSize = 18.sp))
                 }
 
-                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()) {
                     itemsIndexed(tabs) { index, _ ->
                         val isCurrent = index == currentTabIndex
                         Surface(
@@ -156,7 +160,9 @@ fun GreyBrowser() {
                         currentTabIndex = tabs.lastIndex
                         showTabManager = false
                     },
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
                     shape = RectangleShape,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                     border = BorderStroke(2.dp, Color.White)
@@ -196,7 +202,9 @@ fun GreyBrowser() {
                     placeholder = {
                         Text("Enter URL", color = Color.White.copy(alpha = 0.5f))
                     },
-                    modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = 8.dp),
                     textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
                     shape = RectangleShape,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -234,13 +242,14 @@ fun GreyBrowser() {
                                 showSettings = true
                             }
                         )
-                        // Future items can be added here
                     }
                 }
             }
 
             // Web view area
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            Box(modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()) {
                 GeckoViewBox()
             }
         }
@@ -249,21 +258,26 @@ fun GreyBrowser() {
 
 // ── Settings Dialog ───────────────────────────────────────────────
 @Composable
-fun SettingsDialog(runtime: GeckoRuntime, onDismiss: () -> Unit) {
-    // This memory holds all current preference values so toggles can be read/written instantly.
-    // Using mutableStateMapOf with keys as pref names.
-    val prefs = remember { runtime.getPrefs() }
+fun SettingsDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    // Use Android SharedPreferences to persist UI state properly
+    val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
+    
     var jsEnabled by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
     var trackingProtection by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
-    var cookieBehavior by remember { mutableStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
+    var cookieBehavior by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
     var autoplayMedia by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
 
-    // On dismiss, apply any changed values
+    // On dismiss, save the changed values using SharedPreferences.Editor
     val applyChanges = {
-        prefs.setBoolean("javascript.enabled", jsEnabled)
-        prefs.setBoolean("privacy.trackingprotection.enabled", trackingProtection)
-        prefs.setInt("network.cookie.cookieBehavior", cookieBehavior)
-        prefs.setBoolean("media.autoplay.enabled", autoplayMedia)
+        prefs.edit()
+            .putBoolean("javascript.enabled", jsEnabled)
+            .putBoolean("privacy.trackingprotection.enabled", trackingProtection)
+            .putInt("network.cookie.cookieBehavior", cookieBehavior)
+            .putBoolean("media.autoplay.enabled", autoplayMedia)
+            .apply()
+            
+        // NOTE: In the future, you will also need to apply these to GeckoSession.settings here!
         onDismiss()
     }
 
@@ -308,7 +322,8 @@ fun SettingsDialog(runtime: GeckoRuntime, onDismiss: () -> Unit) {
             }
         },
         containerColor = Color(0xFF1E1E1E),
-        contentColor = Color.White,
+        titleContentColor = Color.White,
+        textContentColor = Color.White,
         shape = RectangleShape,
         tonalElevation = 0.dp
     )
@@ -356,10 +371,11 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
             onValueChange = {},
             readOnly = true,
             trailingIcon = {
-                Icon(Icons.Default.Close, contentDescription = null, tint = Color.White) // placeholder icon; basically just to have a dropdown indicator
-                // You could replace with a drop‑down arrow icon
+                Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
             },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
             textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
             shape = RectangleShape,
             colors = OutlinedTextFieldDefaults.colors(
