@@ -43,7 +43,7 @@ jobs:
           mkdir -p app/src/main/res/values
           mkdir -p gradle/wrapper
 
-          # Only one source file
+          # Copy the single source file (Browser.kt must be in the repo root)
           cp Browser.kt $PKG/
 
           # settings.gradle.kts
@@ -230,7 +230,6 @@ jobs:
           mkdir -p Grey-release
           cp app/build/outputs/apk/debug/app-arm64-v8a-debug.apk Grey-release/Grey.apk
           cp Browser.kt Grey-release/
-          cp .github/workflows/build-grey.yml Grey-release/
           echo "Build:      #${{ github.run_number }}"          > Grey-release/BUILD_INFO.txt
           echo "GeckoView:  ${{ steps.gecko.outputs.version }}" >> Grey-release/BUILD_INFO.txt
           echo "Commit:     ${{ github.sha }}"                  >> Grey-release/BUILD_INFO.txt
