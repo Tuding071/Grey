@@ -3,6 +3,7 @@ package com.grey.browser
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -39,6 +40,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
@@ -82,12 +84,14 @@ fun GreyBrowser() {
 
     // Tab manager sheet
     if (showTabManager) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        
         ModalBottomSheet(
             onDismissRequest = { showTabManager = false },
+            sheetState = sheetState,
             containerColor = Color(0xFF1E1E1E),
             contentColor = Color.White,
-            shape = RectangleShape,    // square edges – matches your style
-            skipPartiallyExpanded = true
+            shape = RectangleShape    // square edges – matches your style
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // Header with exit button (top left)
