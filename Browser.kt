@@ -108,7 +108,9 @@ fun BrowserScreen() {
                         focusedIndicatorColor = Color.White,
                         unfocusedIndicatorColor = Color.White,
                         disabledIndicatorColor = Color.White,
-                        containerColor = Color.Transparent
+                        containerColor = Color.Transparent,
+                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                     ),
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(0.dp) // No rounded corners
                 )
