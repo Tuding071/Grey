@@ -6,7 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RectangleShape
+import androidx.compose.foundation.shape.RectangleShape          // <-- added
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -40,7 +40,6 @@ fun GreyBrowser() {
     var currentUrl by remember { mutableStateOf("about:blank") }
     var urlInput by remember { mutableStateOf("about:blank") }
 
-    // Open session with runtime
     LaunchedEffect(session) {
         session.open(runtime)
         session.loadUri("about:blank")
@@ -51,7 +50,6 @@ fun GreyBrowser() {
         color = Color(0xFF121212)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // --- Thick white address bar, no round corners ---
             OutlinedTextField(
                 value = urlInput,
                 onValueChange = { urlInput = it },
@@ -62,8 +60,8 @@ fun GreyBrowser() {
                     .fillMaxWidth()
                     .padding(8.dp),
                 textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
-                shape = RectangleShape,                       // no round corners
-                border = BorderStroke(2.dp, Color.White),     // thick white accent
+                shape = RectangleShape,                       // now resolves correctly
+                border = BorderStroke(2.dp, Color.White),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(
                     onGo = {
@@ -82,7 +80,6 @@ fun GreyBrowser() {
                 )
             )
 
-            // --- GeckoView web area ---
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -90,9 +87,7 @@ fun GreyBrowser() {
             ) {
                 AndroidView(
                     factory = { ctx ->
-                        GeckoView(ctx).apply {
-                            setSession(session)
-                        }
+                        GeckoView(ctx).apply { setSession(session) }
                     },
                     modifier = Modifier.fillMaxSize()
                 )
