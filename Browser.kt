@@ -3,7 +3,6 @@ package com.grey.browser
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -60,7 +59,6 @@ fun GreyBrowser() {
                     .padding(8.dp),
                 textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
                 shape = RectangleShape,
-                border = BorderStroke(2.dp, Color.White),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(
                     onGo = {
