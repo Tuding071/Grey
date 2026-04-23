@@ -6,7 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RectangleShape          // <-- added
+import androidx.compose.foundation.shape.RectangleShape          // ← THIS LINE IS CRUCIAL
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -60,7 +60,7 @@ fun GreyBrowser() {
                     .fillMaxWidth()
                     .padding(8.dp),
                 textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
-                shape = RectangleShape,                       // now resolves correctly
+                shape = RectangleShape,
                 border = BorderStroke(2.dp, Color.White),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(
