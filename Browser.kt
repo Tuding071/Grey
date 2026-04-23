@@ -1,10 +1,13 @@
 package com.grey.browser
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,17 +49,28 @@ class MainActivity : ComponentActivity() {
 fun GreyBrowser() {
     val context = LocalContext.current
     val runtime = remember { GeckoRuntime.create(context) }
+    val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
+
+    // Helper function to apply saved preferences to a specific GeckoSession
+    val applySettingsToSession = { session: GeckoSession ->
+        session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
+        session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
+        // Suspend media when inactive acts as our autoplay proxy for background tabs
+        session.settings.suspendMediaWhenInactive = !prefs.getBoolean("media.autoplay.enabled", true)
+    }
 
     // Tabs
     val tabs = remember {
         mutableStateListOf<GeckoSession>().apply {
             val initialSession = GeckoSession().apply {
+                applySettingsToSession(this) // Apply settings immediately on boot
                 open(runtime)
                 loadUri("about:blank")
             }
             add(initialSession)
         }
     }
+    
     var currentTabIndex by remember { mutableIntStateOf(0) }
     var showTabManager by remember { mutableStateOf(false) }
 
@@ -85,7 +99,14 @@ fun GreyBrowser() {
     // ── Settings Dialog ───────────────────────────────────────
     if (showSettings) {
         SettingsDialog(
-            onDismiss = { showSettings = false }
+            prefs = prefs,
+            onDismiss = { showSettings = false },
+            onSettingsApplied = {
+                // When "OK" is pressed, update ALL currently open tabs instantly
+                tabs.forEach { session ->
+                    applySettingsToSession(session)
+                }
+            }
         )
     }
 
@@ -112,9 +133,7 @@ fun GreyBrowser() {
                     Text("Tabs", style = TextStyle(color = Color.White, fontSize = 18.sp))
                 }
 
-                LazyColumn(modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()) {
+                LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     itemsIndexed(tabs) { index, _ ->
                         val isCurrent = index == currentTabIndex
                         Surface(
@@ -153,9 +172,11 @@ fun GreyBrowser() {
 
                 OutlinedButton(
                     onClick = {
-                        val s = GeckoSession()
-                        s.open(runtime)
-                        s.loadUri("about:blank")
+                        val s = GeckoSession().apply {
+                            applySettingsToSession(this) // Apply settings to the new tab!
+                            open(runtime)
+                            loadUri("about:blank")
+                        }
                         tabs.add(s)
                         currentTabIndex = tabs.lastIndex
                         showTabManager = false
@@ -178,7 +199,7 @@ fun GreyBrowser() {
     // URL bar state
     var urlInput by remember { mutableStateOf("about:blank") }
     LaunchedEffect(currentTabIndex) {
-        urlInput = "about:blank"   // reset for now
+        urlInput = "about:blank"
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF121212)) {
@@ -190,7 +211,7 @@ fun GreyBrowser() {
                     .padding(top = 8.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Tab button (left)
+                // Tab button
                 IconButton(onClick = { showTabManager = true }) {
                     Icon(Icons.Default.Tab, contentDescription = "Open tabs", tint = Color.White)
                 }
@@ -210,8 +231,7 @@ fun GreyBrowser() {
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(
                         onGo = {
-                            val uri = if (urlInput.contains("://")) urlInput
-                                      else "https://$urlInput"
+                            val uri = if (urlInput.contains("://")) urlInput else "https://$urlInput"
                             tabs[currentTabIndex].loadUri(uri)
                         }
                     ),
@@ -224,7 +244,7 @@ fun GreyBrowser() {
                     )
                 )
 
-                // Menu button (right) with dropdown
+                // Menu button with dropdown (Added border for visibility)
                 Box {
                     IconButton(onClick = { showMenu = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "Menu", tint = Color.White)
@@ -232,6 +252,8 @@ fun GreyBrowser() {
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
+                        // Border added here for better visual separation against the background
+                        modifier = Modifier.border(1.dp, Color(0xFF555555), RectangleShape),
                         containerColor = Color(0xFF1E1E1E),
                         shape = RectangleShape
                     ) {
@@ -247,9 +269,7 @@ fun GreyBrowser() {
             }
 
             // Web view area
-            Box(modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 GeckoViewBox()
             }
         }
@@ -258,17 +278,16 @@ fun GreyBrowser() {
 
 // ── Settings Dialog ───────────────────────────────────────────────
 @Composable
-fun SettingsDialog(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    // Use Android SharedPreferences to persist UI state properly
-    val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
-    
+fun SettingsDialog(
+    prefs: SharedPreferences, 
+    onDismiss: () -> Unit,
+    onSettingsApplied: () -> Unit // Callback to trigger Gecko updates
+) {
     var jsEnabled by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
     var trackingProtection by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
     var cookieBehavior by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
     var autoplayMedia by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
 
-    // On dismiss, save the changed values using SharedPreferences.Editor
     val applyChanges = {
         prefs.edit()
             .putBoolean("javascript.enabled", jsEnabled)
@@ -277,15 +296,13 @@ fun SettingsDialog(onDismiss: () -> Unit) {
             .putBoolean("media.autoplay.enabled", autoplayMedia)
             .apply()
             
-        // NOTE: In the future, you will also need to apply these to GeckoSession.settings here!
+        onSettingsApplied() // Tells the browser engine to fetch the new values
         onDismiss()
     }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text("Settings", color = Color.White, fontSize = 20.sp)
-        },
+        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
                 SettingSwitch(
@@ -298,7 +315,6 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                     checked = trackingProtection,
                     onCheckedChange = { trackingProtection = it }
                 )
-                // Cookies as a list of options
                 Text("Cookie Behavior", color = Color.White, fontSize = 14.sp)
                 CookieBehaviorSelector(
                     current = cookieBehavior,
@@ -312,14 +328,10 @@ fun SettingsDialog(onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = applyChanges) {
-                Text("OK", color = Color.White)
-            }
+            TextButton(onClick = applyChanges) { Text("OK", color = Color.White) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = Color.White)
-            }
+            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) }
         },
         containerColor = Color(0xFF1E1E1E),
         titleContentColor = Color.White,
@@ -329,7 +341,6 @@ fun SettingsDialog(onDismiss: () -> Unit) {
     )
 }
 
-// Helper composable for a switch row
 @Composable
 fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(
@@ -353,16 +364,11 @@ fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) ->
     }
 }
 
-// Cookie behavior selector (dropdown list of three options)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    val options = listOf(
-        "Accept all" to 0,
-        "Reject all" to 1,
-        "Only from visited" to 2
-    )
+    val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
     val selectedText = options.firstOrNull { it.second == current }?.first ?: "Accept all"
 
     Box {
@@ -370,12 +376,8 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
             value = selectedText,
             onValueChange = {},
             readOnly = true,
-            trailingIcon = {
-                Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
+            trailingIcon = { Icon(Icons.Default.Close, contentDescription = null, tint = Color.White) },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
             textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
             shape = RectangleShape,
             colors = OutlinedTextFieldDefaults.colors(
@@ -387,7 +389,6 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
             ),
             enabled = true
         )
-        // Invisible click overlay to open the dropdown
         Box(
             modifier = Modifier
                 .matchParentSize()
@@ -396,6 +397,7 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
+            modifier = Modifier.border(1.dp, Color(0xFF555555), RectangleShape),
             containerColor = Color(0xFF1E1E1E),
             shape = RectangleShape
         ) {
