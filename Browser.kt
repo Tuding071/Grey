@@ -85,12 +85,6 @@ class MainActivity : ComponentActivity() {
             GreyBrowser()
         }
     }
-
-    // Pause all sessions when app goes to background
-    override fun onPause() {
-        super.onPause()
-        // This will be handled by the composable
-    }
 }
 
 // ── State Wrapper for Tabs ──────────────────────────────────────────
@@ -100,7 +94,6 @@ class TabState(val session: GeckoSession) {
     var progress by mutableIntStateOf(100)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
     var isBlankTab by mutableStateOf(true)
-    var hasLoaded by mutableStateOf(false)
 }
 
 // Helper to extract the main domain for grouping (ignores subdomains)
@@ -144,7 +137,6 @@ fun GreyBrowser() {
                 tabState.url = url
                 tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
-                tabState.hasLoaded = true
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
                 }
@@ -222,39 +214,24 @@ fun GreyBrowser() {
 
     // ═══════════════════════════════════════════════════════════════
     // SESSION MANAGEMENT: Only ONE session active at a time
-    // Tab manager open = ALL sessions paused
+    // Tab manager open = ALL paused
+    // This runs EVERY time showTabManager or currentTabIndex changes
     // ═══════════════════════════════════════════════════════════════
-    
-    // Determine which session should be active
-    val activeSessionIndex = if (showTabManager) {
-        -2  // Tab manager open: NO session active
-    } else {
-        currentTabIndex  // -1 for home, 0+ for tabs
-    }
-
-    // Apply active/paused state to all sessions
-    LaunchedEffect(activeSessionIndex) {
-        // Home session: only active when index is -1
-        homeSession.setActive(activeSessionIndex == -1)
-        
-        // Website tabs: only the one at activeSessionIndex is active
-        tabs.forEachIndexed { index, tabState ->
-            val shouldBeActive = index == activeSessionIndex
-            tabState.session.setActive(shouldBeActive)
+    LaunchedEffect(showTabManager, currentTabIndex) {
+        if (showTabManager) {
+            // Tab manager open: EVERYTHING paused
+            homeSession.setActive(false)
+            tabs.forEach { it.session.setActive(false) }
+        } else {
+            // Tab manager closed: only active tab runs
+            // Pause home if not active
+            homeSession.setActive(currentTabIndex == -1)
             
-            // If activating a tab that never loaded, load it now
-            if (shouldBeActive && !tabState.hasLoaded && tabState.url != "about:blank") {
-                tabState.session.loadUri(tabState.url)
+            // Pause all tabs except the active one
+            tabs.forEachIndexed { index, tabState ->
+                tabState.session.setActive(index == currentTabIndex)
             }
         }
-    }
-
-    // Also pause everything when app goes to background
-    DisposableEffect(Unit) {
-        val callback = object : androidx.activity.ComponentActivity() {
-            // We use the activity lifecycle
-        }
-        onDispose { }
     }
 
     fun removeTab(index: Int) {
@@ -272,28 +249,20 @@ fun GreyBrowser() {
         }
     }
 
-    // Create a background tab that is FROZEN (not loaded, no network)
+    // Create background tab: load normally, don't switch, system will pause it
     fun createBackgroundTab(url: String) {
         val session = GeckoSession().apply {
             applySettingsToSession(this)
             open(runtime)
-            // IMPORTANT: Do NOT call loadUri - completely frozen
-            // Set active to false immediately
-            setActive(false)
-        }
-        val hostName = try {
-            Uri.parse(url).host?.removePrefix("www.") ?: url
-        } catch (e: Exception) {
-            url
+            loadUri(url)  // Load normally
+            setActive(false)  // Immediately pause since it's background
         }
         val tabState = TabState(session).apply {
             setupDelegates(this)
-            this.url = url
-            this.title = hostName
-            this.isBlankTab = false
-            this.hasLoaded = false  // Never loaded
+            isBlankTab = false
         }
         tabs.add(tabState)
+        // Don't switch currentTabIndex - stays on current tab
     }
 
     BackHandler {
@@ -357,7 +326,6 @@ fun GreyBrowser() {
                     tabs.add(TabState(s).also { 
                         setupDelegates(it)
                         it.isBlankTab = false
-                        it.hasLoaded = true
                     })
                     currentTabIndex = tabs.lastIndex
                     showContextMenu = false
@@ -714,7 +682,6 @@ fun GreyBrowser() {
                                     val newTab = TabState(session).apply {
                                         setupDelegates(this)
                                         isBlankTab = false
-                                        hasLoaded = true
                                     }
                                     tabs.add(newTab)
                                     currentTabIndex = tabs.lastIndex
