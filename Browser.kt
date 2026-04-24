@@ -89,13 +89,14 @@ class MainActivity : ComponentActivity() {
 }
 
 // ── State Wrapper for Tabs ──────────────────────────────────────────
-class TabState(val session: GeckoSession) {
+class TabState {
+    var session by mutableStateOf<GeckoSession?>(null)
     var title by mutableStateOf("New Tab")
     var url by mutableStateOf("about:blank")
     var progress by mutableIntStateOf(100)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
     var isBlankTab by mutableStateOf(true)
-    var isGrouped by mutableStateOf(false)  // Track if tab has been grouped
+    var isDiscarded by mutableStateOf(false)  // Session closed, needs reload
 }
 
 // Helper to extract the main domain for grouping (ignores subdomains)
@@ -113,6 +114,8 @@ fun getDomainName(url: String): String {
         "Unknown"
     }
 }
+
+const val MAX_LOADED_TABS = 10
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -134,12 +137,12 @@ fun GreyBrowser() {
     var contextMenuUri by remember { mutableStateOf<String?>(null) }
 
     val setupDelegates = { tabState: TabState ->
-        tabState.session.progressDelegate = object : GeckoSession.ProgressDelegate {
+        val session = tabState.session ?: return@remember
+        session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 tabState.url = url
                 tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
-                tabState.isGrouped = true  // URL is set, grouping can happen
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
                 }
@@ -147,17 +150,12 @@ fun GreyBrowser() {
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 tabState.progress = 100
                 tabState.lastUpdated = System.currentTimeMillis()
-                // After page stops, if this is not the active tab, pause it
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
                 tabState.progress = progress
-                // Once we have progress, URL is available for grouping
-                if (progress > 0) {
-                    tabState.isGrouped = true
-                }
             }
         }
-        tabState.session.contentDelegate = object : GeckoSession.ContentDelegate {
+        session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
                 if (!tabState.isBlankTab) {
                     tabState.title = title ?: "New Tab"
@@ -175,7 +173,7 @@ fun GreyBrowser() {
                 }
             }
         }
-        tabState.session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+        session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
                 session: GeckoSession,
                 url: String?,
@@ -184,7 +182,6 @@ fun GreyBrowser() {
             ) {
                 url?.let { newUrl ->
                     tabState.url = newUrl
-                    tabState.isGrouped = true
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
                     }
@@ -201,7 +198,8 @@ fun GreyBrowser() {
         }
     }
     val homeTab = remember {
-        TabState(homeSession).apply {
+        TabState().apply {
+            session = homeSession
             isBlankTab = true
             title = "Home"
             setupDelegates(this)
@@ -219,45 +217,98 @@ fun GreyBrowser() {
     val pinnedDomains = remember { mutableStateListOf<String>() }
     var selectedDomain by remember { mutableStateOf("") }
 
-    val currentTab = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
+    val currentTab: TabState = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
+
+    // ═══════════════════════════════════════════════════════════════
+    // TAB LIMIT ENFORCEMENT: Max 10 pre-loaded tabs
+    // Discard oldest when limit exceeded
+    // ═══════════════════════════════════════════════════════════════
+    fun enforceTabLimit() {
+        val loadedTabs = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
+        if (loadedTabs.size > MAX_LOADED_TABS) {
+            // Find the oldest loaded tab that is NOT the current tab
+            val toDiscard = loadedTabs
+                .filter { tabs.indexOf(it) != currentTabIndex }
+                .minByOrNull { it.lastUpdated }
+            
+            toDiscard?.let { tab ->
+                tab.session?.setActive(false)
+                tab.session?.close()
+                tab.session = null
+                tab.isDiscarded = true
+                tab.progress = 100
+                // URL and title are preserved for grouping and display
+            }
+        }
+    }
+
+    // Restore a discarded tab when visited
+    fun restoreTab(tab: TabState) {
+        if (tab.isDiscarded && tab.session == null) {
+            val newSession = GeckoSession().apply {
+                applySettingsToSession(this)
+                open(runtime)
+                setActive(false)  // Start paused, will be activated if it's the current tab
+                loadUri(tab.url)
+            }
+            tab.session = newSession
+            tab.isDiscarded = false
+            setupDelegates(tab)
+            tab.lastUpdated = System.currentTimeMillis()  // Mark as newest
+            enforceTabLimit()  // This might discard another tab
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // SESSION MANAGEMENT: Only ONE session active at a time
-    // Tab manager open = ALL paused
-    // After page loads, pause background tabs
     // ═══════════════════════════════════════════════════════════════
     LaunchedEffect(showTabManager, currentTabIndex) {
         if (showTabManager) {
             // Tab manager open: EVERYTHING paused
             homeSession.setActive(false)
-            tabs.forEach { it.session.setActive(false) }
+            tabs.forEach { it.session?.setActive(false) }
         } else {
             // Tab manager closed: only active tab runs
             homeSession.setActive(currentTabIndex == -1)
             
-            // Pause all tabs except the active one
             tabs.forEachIndexed { index, tabState ->
-                tabState.session.setActive(index == currentTabIndex)
+                val isActive = index == currentTabIndex
+                
+                // If this tab is active and discarded, restore it first
+                if (isActive && tabState.isDiscarded) {
+                    restoreTab(tabState)
+                }
+                
+                tabState.session?.setActive(isActive)
             }
         }
     }
 
-    // Also pause background tabs when they finish loading
-    // Watch for progress changes to pause after grouping
-    LaunchedEffect(tabs.map { it.progress to it.isGrouped }) {
-        tabs.forEachIndexed { index, tabState ->
-            // If tab finished loading (progress = 100) and it's grouped and NOT the active tab
-            if (tabState.progress == 100 && tabState.isGrouped && index != currentTabIndex && !showTabManager) {
-                tabState.session.setActive(false)
-            }
+    // Create background tab: load, then enforce limit
+    fun createBackgroundTab(url: String) {
+        val session = GeckoSession().apply {
+            applySettingsToSession(this)
+            open(runtime)
+            loadUri(url)
+            setActive(false)  // Start paused
         }
+        val tabState = TabState().apply {
+            this.session = session
+            this.url = url
+            this.isBlankTab = false
+            this.isDiscarded = false
+            this.lastUpdated = System.currentTimeMillis()
+            setupDelegates(this)
+        }
+        tabs.add(tabState)
+        enforceTabLimit()  // This will discard oldest if exceeds 10
     }
 
     fun removeTab(index: Int) {
         if (index < 0 || index >= tabs.size) return
         val tab = tabs[index]
-        tab.session.setActive(false)
-        tab.session.close()
+        tab.session?.setActive(false)
+        tab.session?.close()
         tabs.removeAt(index)
         if (tabs.isEmpty()) {
             currentTabIndex = -1
@@ -268,24 +319,6 @@ fun GreyBrowser() {
         }
     }
 
-    // Create background tab: load URL, let it group, then pause
-    fun createBackgroundTab(url: String) {
-        val session = GeckoSession().apply {
-            applySettingsToSession(this)
-            open(runtime)
-            loadUri(url)  // Load URL so it groups properly
-            setActive(false)  // Start paused, will be unpaused if user visits
-        }
-        val tabState = TabState(session).apply {
-            setupDelegates(this)
-            this.url = url  // Set immediately for grouping
-            this.isBlankTab = false
-            this.isGrouped = true  // Already grouped since we have URL
-        }
-        tabs.add(tabState)
-        // Don't switch - stays in background
-    }
-
     BackHandler {
         if (currentTab.isBlankTab) {
             if (tabs.isNotEmpty()) {
@@ -294,23 +327,34 @@ fun GreyBrowser() {
                 activity?.finish()
             }
         } else {
-            currentTab.session.goBack()
+            currentTab.session?.goBack()
         }
     }
 
     @Composable
     fun GeckoViewBox() {
-        AndroidView(
-            factory = { ctx -> GeckoView(ctx).apply { setSession(currentTab.session) } },
-            update = { geckoView -> geckoView.setSession(currentTab.session) },
-            modifier = Modifier.fillMaxSize()
-        )
+        val session = currentTab.session
+        if (session != null) {
+            AndroidView(
+                factory = { ctx -> GeckoView(ctx).apply { setSession(session) } },
+                update = { geckoView -> geckoView.setSession(session) },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            // Discarded tab being restored - show loading
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color(0xFF121212)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = Color.White)
+            }
+        }
     }
 
     if (showSettings) {
         SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }, onSettingsApplied = { 
             applySettingsToSession(homeSession)
-            tabs.forEach { applySettingsToSession(it.session) }
+            tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } }
         })
     }
 
@@ -320,7 +364,7 @@ fun GreyBrowser() {
             onDismiss = { showScripting = false },
             onSaveAndRun = { script ->
                 prefs.edit().putString("user_script", script).apply()
-                currentTab.session.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();"))
+                currentTab.session?.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();"))
                 showScripting = false
             }
         )
@@ -339,17 +383,21 @@ fun GreyBrowser() {
                     .width(IntrinsicSize.Max)
             ) {
                 ContextMenuItem("New Tab") {
-                    val s = GeckoSession().apply { 
+                    val session = GeckoSession().apply { 
                         applySettingsToSession(this)
                         open(runtime)
                         loadUri(contextMenuUri!!)
                     }
-                    tabs.add(TabState(s).also { 
-                        setupDelegates(it)
-                        it.isBlankTab = false
-                        it.isGrouped = true
-                    })
+                    val tabState = TabState().apply { 
+                        this.session = session
+                        this.isBlankTab = false
+                        this.isDiscarded = false
+                        this.lastUpdated = System.currentTimeMillis()
+                        setupDelegates(this)
+                    }
+                    tabs.add(tabState)
                     currentTabIndex = tabs.lastIndex
+                    enforceTabLimit()
                     showContextMenu = false
                 }
                 ContextMenuItem("Open in Background") {
@@ -602,8 +650,8 @@ fun GreyBrowser() {
                                     onClick = {
                                         val tabsToRemove = domainGroups[selectedDomain] ?: emptyList()
                                         tabsToRemove.forEach { 
-                                            it.session.setActive(false)
-                                            it.session.close()
+                                            it.session?.setActive(false)
+                                            it.session?.close()
                                         }
                                         tabs.removeAll(tabsToRemove)
                                         if (tabs.isEmpty()) currentTabIndex = -1
@@ -701,15 +749,18 @@ fun GreyBrowser() {
                                         open(runtime)
                                         loadUri(uri)
                                     }
-                                    val newTab = TabState(session).apply {
-                                        setupDelegates(this)
+                                    val newTab = TabState().apply {
+                                        this.session = session
                                         isBlankTab = false
-                                        isGrouped = true
+                                        isDiscarded = false
+                                        lastUpdated = System.currentTimeMillis()
+                                        setupDelegates(this)
                                     }
                                     tabs.add(newTab)
                                     currentTabIndex = tabs.lastIndex
+                                    enforceTabLimit()
                                 } else {
-                                    currentTab.session.loadUri(uri)
+                                    currentTab.session?.loadUri(uri)
                                 }
                             }
                         }
@@ -723,7 +774,7 @@ fun GreyBrowser() {
                     ),
                     trailingIcon = {
                         if (isLoading) {
-                            IconButton(onClick = { currentTab.session.stop() }) {
+                            IconButton(onClick = { currentTab.session?.stop() }) {
                                 Icon(Icons.Default.Close, contentDescription = "Stop loading", tint = Color.White)
                             }
                         } else {
