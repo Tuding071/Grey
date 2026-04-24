@@ -20,6 +20,7 @@ package com.grey.browser
 // - No "currentUrl" property, use NavigationDelegate.onLocationChange
 // - GeckoSession must be opened with runtime before use
 // - GeckoSession.open() requires GeckoRuntime
+// - For media: use session.settings.suspendMediaWhenInactive = true
 //
 // API Reference: https://mozilla.github.io/geckoview/javadoc/mozilla-central/
 // ═══════════════════════════════════════════════════════════════════
@@ -60,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -118,6 +120,7 @@ fun GreyBrowser() {
     val context = LocalContext.current
     val activity = context as? ComponentActivity
     val clipboardManager = LocalClipboardManager.current
+    val focusManager = LocalFocusManager.current
     // GeckoView: Create shared runtime once
     val runtime = remember { GeckoRuntime.create(context) }
     val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
@@ -126,7 +129,8 @@ fun GreyBrowser() {
     val applySettingsToSession = { session: GeckoSession ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
         session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
-        session.settings.suspendMediaWhenInactive = !prefs.getBoolean("media.autoplay.enabled", true)
+        // GeckoView: This setting suspends media when session is inactive
+        session.settings.suspendMediaWhenInactive = true  // Always suspend media when inactive
     }
 
     var showContextMenu by remember { mutableStateOf(false) }
@@ -246,7 +250,7 @@ fun GreyBrowser() {
                 activeTab.session.loadUri(activeTab.url)
             }
         }
-        // Home tab always stays active
+        // Home tab always stays active when visible
         homeSession.setActive(currentTabIndex == -1)
     }
 
@@ -278,6 +282,7 @@ fun GreyBrowser() {
         val tabState = TabState(session).apply {
             setupDelegates(this)
             this.url = url  // Set URL for grouping, but don't load
+            this.title = Uri.parse(url).host ?: url  // Set title from URL host
             this.isBlankTab = false
             this.hasLoaded = false  // Mark as not loaded
         }
@@ -552,7 +557,6 @@ fun GreyBrowser() {
                             } else {
                                 items(tabsToShow) { tab ->
                                     val isCurrent = tab == currentTab
-                                    val isLoaded = tab.hasLoaded
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -569,31 +573,19 @@ fun GreyBrowser() {
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    // Show indicator for unloaded tabs
-                                                    if (!isLoaded) {
-                                                        Text(
-                                                            "⬜ ",
-                                                            color = Color.Gray,
-                                                            fontSize = 12.sp
-                                                        )
-                                                    }
-                                                    Text(
-                                                        text = if (isLoaded) tab.title else tab.url,
-                                                        color = if (isCurrent) Color.White else Color.Gray,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-                                                if (isLoaded) {
-                                                    Text(
-                                                        text = tab.url,
-                                                        color = Color.Gray.copy(alpha = 0.7f),
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        fontSize = 12.sp
-                                                    )
-                                                }
+                                                Text(
+                                                    text = tab.title,
+                                                    color = if (isCurrent) Color.White else Color.Gray,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = tab.url,
+                                                    color = Color.Gray.copy(alpha = 0.7f),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    fontSize = 12.sp
+                                                )
                                             }
                                             // Close button for each tab
                                             IconButton(onClick = {
@@ -728,7 +720,10 @@ fun GreyBrowser() {
                 // URL Bar
                 OutlinedTextField(
                     value = urlInput,
-                    onValueChange = { urlInput = it },
+                    onValueChange = { newValue ->
+                        // Prevent the text from jumping/pasting old text
+                        urlInput = newValue
+                    },
                     singleLine = true,
                     placeholder = { 
                         Text(
@@ -765,6 +760,9 @@ fun GreyBrowser() {
                             val input = urlInput.text
                             if (input.isNotBlank()) {
                                 val uri = if (input.contains("://")) input else "https://$input"
+                                
+                                // Clear focus and hide keyboard
+                                focusManager.clearFocus()
                                 
                                 if (currentTab.isBlankTab) {
                                     // On home/blank page - create a new tab for this URL
