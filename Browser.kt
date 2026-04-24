@@ -5,8 +5,10 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,14 +25,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -44,39 +53,103 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// ── State Wrapper for Tabs ──────────────────────────────────────────
+class TabState(val session: GeckoSession) {
+    var title by mutableStateOf("New Tab")
+    var url by mutableStateOf("about:blank")
+    var progress by mutableIntStateOf(100)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
+    val activity = context as? ComponentActivity
+    val clipboardManager = LocalClipboardManager.current
     val runtime = remember { GeckoRuntime.create(context) }
     val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
 
-    // Helper function to apply saved preferences to a specific GeckoSession
     val applySettingsToSession = { session: GeckoSession ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
         session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
         session.settings.suspendMediaWhenInactive = !prefs.getBoolean("media.autoplay.enabled", true)
     }
 
-    // Tabs
+    // Context Menu State
+    var showContextMenu by remember { mutableStateOf(false) }
+    var contextMenuUri by remember { mutableStateOf<String?>(null) }
+    var contextMenuScreenX by remember { mutableIntStateOf(0) }
+    var contextMenuScreenY by remember { mutableIntStateOf(0) }
+
+    // Helper to wire up all GeckoView delegates to our Compose TabState
+    val setupDelegates = { tabState: TabState ->
+        tabState.session.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(session: GeckoSession, url: String) {
+                tabState.url = url
+                tabState.progress = 5 // Initial progress jump
+            }
+            override fun onPageStop(session: GeckoSession, success: Boolean) {
+                tabState.progress = 100
+            }
+            override fun onProgressChange(session: GeckoSession, progress: Int) {
+                tabState.progress = progress
+            }
+        }
+        tabState.session.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onTitleChange(session: GeckoSession, title: String?) {
+                tabState.title = title ?: "New Tab"
+            }
+            override fun onContextMenu(
+                session: GeckoSession,
+                screenX: Int,
+                screenY: Int,
+                element: GeckoSession.ContentDelegate.ContextElement
+            ) {
+                if (element.linkUri != null) {
+                    contextMenuUri = element.linkUri
+                    contextMenuScreenX = screenX
+                    contextMenuScreenY = screenY
+                    showContextMenu = true
+                }
+            }
+        }
+    }
+
+    // Tabs Manager
     val tabs = remember {
-        mutableStateListOf<GeckoSession>().apply {
+        mutableStateListOf<TabState>().apply {
             val initialSession = GeckoSession().apply {
                 applySettingsToSession(this)
                 open(runtime)
                 loadUri("about:blank")
             }
-            add(initialSession)
+            val initialTab = TabState(initialSession)
+            setupDelegates(initialTab)
+            add(initialTab)
         }
     }
-    
+
     var currentTabIndex by remember { mutableIntStateOf(0) }
     var showTabManager by remember { mutableStateOf(false) }
-
-    // Menus & Dialogs state
     var showMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showScripting by remember { mutableStateOf(false) }
+
+    val currentTab = tabs[currentTabIndex]
+
+    // ── Navigation / Back Button Handling ─────────────────────────
+    BackHandler {
+        if (currentTab.url == "about:blank") {
+            if (tabs.size > 1) {
+                tabs.removeAt(currentTabIndex)
+                currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+            } else {
+                activity?.finish() // Exit app if it's the last blank tab
+            }
+        } else {
+            currentTab.session.goBack()
+        }
+    }
 
     // GeckoView for the current tab
     @Composable
@@ -84,45 +157,74 @@ fun GreyBrowser() {
         AndroidView(
             factory = { ctx ->
                 GeckoView(ctx).apply {
-                    setSession(tabs[currentTabIndex])
+                    setSession(currentTab.session)
                 }
             },
             update = { geckoView ->
-                geckoView.setSession(tabs[currentTabIndex])
+                geckoView.setSession(currentTab.session)
             },
             modifier = Modifier.fillMaxSize()
         )
     }
 
-    // ── Settings Dialog ───────────────────────────────────────
+    // ── Dialogs ───────────────────────────────────────────────────
     if (showSettings) {
         SettingsDialog(
             prefs = prefs,
             onDismiss = { showSettings = false },
-            onSettingsApplied = {
-                tabs.forEach { session ->
-                    applySettingsToSession(session)
-                }
-            }
+            onSettingsApplied = { tabs.forEach { applySettingsToSession(it.session) } }
         )
     }
 
-    // ── Scripting Dialog ──────────────────────────────────────
     if (showScripting) {
         ScriptingDialog(
             initialScript = prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "",
             onDismiss = { showScripting = false },
             onSaveAndRun = { script ->
                 prefs.edit().putString("user_script", script).apply()
-                // Inject via the javascript: URI scheme. We encode it to handle newlines and special characters.
                 val jsUri = "javascript:" + Uri.encode("(function(){\n$script\n})();")
-                tabs[currentTabIndex].loadUri(jsUri)
+                currentTab.session.loadUri(jsUri)
                 showScripting = false
             }
         )
     }
 
-    // ── Tab Manager Sheet ─────────────────────────────────────
+    // ── Long-Press Context Menu Popup ─────────────────────────────
+    if (showContextMenu && contextMenuUri != null) {
+        Popup(
+            alignment = Alignment.TopStart,
+            offset = IntOffset(contextMenuScreenX, contextMenuScreenY),
+            onDismissRequest = { showContextMenu = false },
+            properties = PopupProperties(focusable = true)
+        ) {
+            Column(
+                modifier = Modifier
+                    .border(1.dp, Color.White, RectangleShape)
+                    .background(Color(0xFF1E1E1E))
+                    .width(IntrinsicSize.Max)
+            ) {
+                ContextMenuItem("New Tab") {
+                    val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(contextMenuUri!!) }
+                    val newTab = TabState(s).also { setupDelegates(it) }
+                    tabs.add(newTab)
+                    currentTabIndex = tabs.lastIndex
+                    showContextMenu = false
+                }
+                ContextMenuItem("Open in Background") {
+                    val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(contextMenuUri!!) }
+                    val newTab = TabState(s).also { setupDelegates(it) }
+                    tabs.add(newTab)
+                    showContextMenu = false
+                }
+                ContextMenuItem("Copy link") {
+                    clipboardManager.setText(AnnotatedString(contextMenuUri!!))
+                    showContextMenu = false
+                }
+            }
+        }
+    }
+
+    // ── Tab Manager Sheet ─────────────────────────────────────────
     if (showTabManager) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
@@ -134,9 +236,7 @@ fun GreyBrowser() {
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = { showTabManager = false }) {
@@ -146,7 +246,7 @@ fun GreyBrowser() {
                 }
 
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    itemsIndexed(tabs) { index, _ ->
+                    itemsIndexed(tabs) { index, tab ->
                         val isCurrent = index == currentTabIndex
                         Surface(
                             modifier = Modifier
@@ -164,13 +264,15 @@ fun GreyBrowser() {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Tab ${index + 1}",
+                                    text = tab.title, // Actually uses the website title now!
                                     color = if (isCurrent) Color.White else Color.Gray,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
                                 )
                                 IconButton(onClick = {
                                     if (tabs.size > 1) {
-                                        tabs.removeAt(index).close()
+                                        tabs.removeAt(index).session.close()
                                         if (currentTabIndex >= tabs.size)
                                             currentTabIndex = tabs.lastIndex
                                     }
@@ -184,21 +286,16 @@ fun GreyBrowser() {
 
                 OutlinedButton(
                     onClick = {
-                        val s = GeckoSession().apply {
-                            applySettingsToSession(this)
-                            open(runtime)
-                            loadUri("about:blank")
-                        }
-                        tabs.add(s)
+                        val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri("about:blank") }
+                        val newTab = TabState(s).also { setupDelegates(it) }
+                        tabs.add(newTab)
                         currentTabIndex = tabs.lastIndex
                         showTabManager = false
                     },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
                     shape = RectangleShape,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = BorderStroke(1.dp, Color.White) // Standardized 1.dp border
+                    border = BorderStroke(1.dp, Color.White)
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
                     Spacer(modifier = Modifier.width(8.dp))
@@ -208,13 +305,15 @@ fun GreyBrowser() {
         }
     }
 
-    var urlInput by remember { mutableStateOf("about:blank") }
-    LaunchedEffect(currentTabIndex) {
-        urlInput = "about:blank"
+    // URL bar state syncing
+    var urlInput by remember { mutableStateOf(currentTab.url) }
+    LaunchedEffect(currentTab, currentTab.url) {
+        urlInput = currentTab.url
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF121212)) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // ── Top row: Tab button | URL bar | Menu button ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -225,30 +324,40 @@ fun GreyBrowser() {
                     Icon(Icons.Default.Tab, contentDescription = "Open tabs", tint = Color.White)
                 }
 
+                // URL / Progress Bar
+                val isLoading = currentTab.progress in 1..99
                 OutlinedTextField(
                     value = urlInput,
                     onValueChange = { urlInput = it },
-                    placeholder = {
-                        Text("Enter URL", color = Color.White.copy(alpha = 0.5f))
-                    },
+                    placeholder = { Text("Enter URL", color = Color.White.copy(alpha = 0.5f)) },
                     modifier = Modifier
                         .weight(1f)
-                        .padding(vertical = 8.dp),
-                    textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
+                        .padding(vertical = 8.dp)
+                        .background(Color(0xFF1E1E1E))
+                        .drawBehind {
+                            if (isLoading) {
+                                val fraction = currentTab.progress / 100f
+                                drawRect(color = Color.White, size = size.copy(width = size.width * fraction))
+                            }
+                        },
+                    textStyle = TextStyle(
+                        color = if (isLoading) Color.Gray else Color.White,
+                        fontSize = 16.sp
+                    ),
                     shape = RectangleShape,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(
                         onGo = {
                             val uri = if (urlInput.contains("://")) urlInput else "https://$urlInput"
-                            tabs[currentTabIndex].loadUri(uri)
+                            currentTab.session.loadUri(uri)
                         }
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
                         focusedBorderColor = Color.White,
                         unfocusedBorderColor = Color.White,
-                        cursorColor = Color.White,
-                        focusedContainerColor = Color(0xFF1E1E1E),
-                        unfocusedContainerColor = Color(0xFF1E1E1E)
+                        cursorColor = if (isLoading) Color.Gray else Color.White
                     )
                 )
 
@@ -259,25 +368,12 @@ fun GreyBrowser() {
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
-                        // Standardized 1.dp border
                         modifier = Modifier.border(1.dp, Color.White, RectangleShape),
                         containerColor = Color(0xFF1E1E1E),
                         shape = RectangleShape
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("Scripting", color = Color.White) },
-                            onClick = {
-                                showMenu = false
-                                showScripting = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Settings", color = Color.White) },
-                            onClick = {
-                                showMenu = false
-                                showSettings = true
-                            }
-                        )
+                        DropdownMenuItem(text = { Text("Scripting", color = Color.White) }, onClick = { showMenu = false; showScripting = true })
+                        DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                     }
                 }
             }
@@ -286,6 +382,19 @@ fun GreyBrowser() {
                 GeckoViewBox()
             }
         }
+    }
+}
+
+// ── Custom Menu Item Helper ───────────────────────────────────────
+@Composable
+fun ContextMenuItem(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Text(text, color = Color.White, fontSize = 16.sp)
     }
 }
 
@@ -308,42 +417,27 @@ fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: 
                 OutlinedTextField(
                     value = script,
                     onValueChange = { script = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp),
+                    modifier = Modifier.fillMaxWidth().height(200.dp),
                     textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.White,
-                        unfocusedBorderColor = Color.White,
-                        cursorColor = Color.White,
-                        focusedContainerColor = Color(0xFF1E1E1E),
+                        focusedBorderColor = Color.White, unfocusedBorderColor = Color.White,
+                        cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E),
                         unfocusedContainerColor = Color(0xFF1E1E1E)
                     ),
                     shape = RectangleShape
                 )
             }
         },
-        confirmButton = {
-            TextButton(onClick = { onSaveAndRun(script) }) { Text("Run", color = Color.White) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close", color = Color.White) }
-        },
-        containerColor = Color(0xFF1E1E1E),
-        titleContentColor = Color.White,
-        textContentColor = Color.White,
-        shape = RectangleShape,
-        tonalElevation = 0.dp
+        confirmButton = { TextButton(onClick = { onSaveAndRun(script) }) { Text("Run", color = Color.White) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = Color.White) } },
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White,
+        shape = RectangleShape, tonalElevation = 0.dp
     )
 }
 
 // ── Settings Dialog ───────────────────────────────────────────────
 @Composable
-fun SettingsDialog(
-    prefs: SharedPreferences, 
-    onDismiss: () -> Unit,
-    onSettingsApplied: () -> Unit
-) {
+fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
     var jsEnabled by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
     var trackingProtection by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
     var cookieBehavior by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
@@ -354,9 +448,7 @@ fun SettingsDialog(
             .putBoolean("javascript.enabled", jsEnabled)
             .putBoolean("privacy.trackingprotection.enabled", trackingProtection)
             .putInt("network.cookie.cookieBehavior", cookieBehavior)
-            .putBoolean("media.autoplay.enabled", autoplayMedia)
-            .apply()
-            
+            .putBoolean("media.autoplay.enabled", autoplayMedia).apply()
         onSettingsApplied()
         onDismiss()
     }
@@ -375,32 +467,23 @@ fun SettingsDialog(
         },
         confirmButton = { TextButton(onClick = applyChanges) { Text("OK", color = Color.White) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) } },
-        containerColor = Color(0xFF1E1E1E),
-        titleContentColor = Color.White,
-        textContentColor = Color.White,
-        shape = RectangleShape,
-        tonalElevation = 0.dp
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White,
+        shape = RectangleShape, tonalElevation = 0.dp
     )
 }
 
 @Composable
 fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
     ) {
         Text(label, color = Color.White, fontSize = 14.sp)
         Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
+            checked = checked, onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = Color(0xFF444444),
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color(0xFF444444)
+                checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444),
+                uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)
             )
         )
     }
@@ -415,42 +498,24 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
 
     Box {
         OutlinedTextField(
-            value = selectedText,
-            onValueChange = {},
-            readOnly = true,
+            value = selectedText, onValueChange = {}, readOnly = true,
             trailingIcon = { Icon(Icons.Default.Close, contentDescription = null, tint = Color.White) },
             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-            shape = RectangleShape,
+            textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape,
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color.White,
-                unfocusedBorderColor = Color.White,
-                focusedContainerColor = Color(0xFF1E1E1E),
-                unfocusedContainerColor = Color(0xFF1E1E1E),
-                cursorColor = Color.White
+                focusedBorderColor = Color.White, unfocusedBorderColor = Color.White,
+                focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)
             ),
             enabled = true
         )
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .clickable { expanded = true }
-        )
+        Box(modifier = Modifier.matchParentSize().clickable { expanded = true })
         DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.border(1.dp, Color.White, RectangleShape), // Standardized 1.dp border
-            containerColor = Color(0xFF1E1E1E),
-            shape = RectangleShape
+            expanded = expanded, onDismissRequest = { expanded = false },
+            modifier = Modifier.border(1.dp, Color.White, RectangleShape),
+            containerColor = Color(0xFF1E1E1E), shape = RectangleShape
         ) {
             options.forEach { (label, value) ->
-                DropdownMenuItem(
-                    text = { Text(label, color = Color.White) },
-                    onClick = {
-                        onChange(value)
-                        expanded = false
-                    }
-                )
+                DropdownMenuItem(text = { Text(label, color = Color.White) }, onClick = { onChange(value); expanded = false })
             }
         }
     }
