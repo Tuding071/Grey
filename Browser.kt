@@ -59,16 +59,15 @@ class MainActivity : ComponentActivity() {
 
 // ── State Wrapper for Tabs ──────────────────────────────────────────
 class TabState(val session: GeckoSession) {
-    var title by mutableStateOf("Home")
+    var title by mutableStateOf("New Tab")
     var url by mutableStateOf("about:blank")
     var progress by mutableIntStateOf(100)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
-    var isHomeTab by mutableStateOf(false)
 }
 
 // Helper to extract the domain for grouping
 fun getDomainName(url: String): String {
-    if (url == "about:blank" || url.isBlank()) return "Home"
+    if (url == "about:blank" || url.isBlank()) return ""
     return try {
         Uri.parse(url).host?.removePrefix("www.") ?: "Unknown"
     } catch (e: Exception) {
@@ -100,9 +99,6 @@ fun GreyBrowser() {
                 tabState.url = url
                 tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
-                if (url != "about:blank") {
-                    tabState.isHomeTab = false
-                }
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 tabState.progress = 100
@@ -114,11 +110,7 @@ fun GreyBrowser() {
         }
         tabState.session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
-                if (tabState.isHomeTab && title != "about:blank") {
-                    tabState.title = "Home"
-                } else {
-                    tabState.title = title ?: "Home"
-                }
+                tabState.title = title ?: "New Tab"
             }
             override fun onContextMenu(
                 session: GeckoSession,
@@ -135,24 +127,17 @@ fun GreyBrowser() {
     }
 
     // Tabs Manager State
-    val homeSession = remember {
-        GeckoSession().apply {
-            applySettingsToSession(this)
-            open(runtime)
-            loadUri("about:blank")
-        }
-    }
-    
-    val homeTab = remember {
-        TabState(homeSession).apply {
-            isHomeTab = true
-            title = "Home"
-            setupDelegates(this)
-        }
-    }
-
     val tabs = remember {
-        mutableStateListOf(homeTab)
+        mutableStateListOf<TabState>().apply {
+            val initialSession = GeckoSession().apply {
+                applySettingsToSession(this)
+                open(runtime)
+                loadUri("about:blank")
+            }
+            val initialTab = TabState(initialSession)
+            setupDelegates(initialTab)
+            add(initialTab)
+        }
     }
 
     var currentTabIndex by remember { mutableIntStateOf(0) }
@@ -163,28 +148,19 @@ fun GreyBrowser() {
 
     // Grouping State
     val pinnedDomains = remember { mutableStateListOf<String>() }
-    var selectedDomain by remember { mutableStateOf("All") }
+    var selectedDomain by remember { mutableStateOf("") }
 
     val currentTab = tabs.getOrNull(currentTabIndex) ?: tabs.first()
 
     // ── Navigation / Back Button Handling ─────────────────────────
     BackHandler {
-        if (currentTab.isHomeTab) {
+        if (currentTab.url == "about:blank") {
             if (tabs.size > 1) {
                 tabs.remove(currentTab)
                 currentTab.session.close()
                 currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
             } else {
                 activity?.finish()
-            }
-        } else if (currentTab.url == "about:blank") {
-            tabs.remove(currentTab)
-            currentTab.session.close()
-            if (tabs.isEmpty()) {
-                tabs.add(homeTab)
-                currentTabIndex = 0
-            } else {
-                currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
             }
         } else {
             currentTab.session.goBack()
@@ -251,22 +227,19 @@ fun GreyBrowser() {
 
     // ── Tab Manager Full Screen ───────────────────────────────────
     if (showTabManager) {
-        // Prepare groups dynamically
-        val nonHomeTabs = tabs.filter { !it.isHomeTab }
-        val domainGroups = nonHomeTabs.groupBy { getDomainName(it.url) }
+        // Prepare groups dynamically - only non-blank tabs get grouped
+        val domainGroups = tabs
+            .filter { getDomainName(it.url).isNotBlank() }
+            .groupBy { getDomainName(it.url) }
         
         val sortedDomains = domainGroups.keys.sortedWith(
             compareByDescending<String> { pinnedDomains.contains(it) }
             .thenByDescending { domain -> domainGroups[domain]?.maxOfOrNull { it.lastUpdated } ?: 0L }
         )
 
-        // Auto-select appropriate group when opening
+        // Auto-select current tab's domain when opening
         LaunchedEffect(Unit) {
-            selectedDomain = if (currentTab.isHomeTab) {
-                "Home"
-            } else {
-                getDomainName(currentTab.url)
-            }
+            selectedDomain = getDomainName(currentTab.url)
         }
 
         Popup(
@@ -286,7 +259,7 @@ fun GreyBrowser() {
                 color = Color(0xFF1E1E1E)
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    // Header with close button
+                    // Header
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -294,81 +267,69 @@ fun GreyBrowser() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = { showTabManager = false }) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Close",
-                                tint = Color.White,
-                                modifier = Modifier.size(24.dp)
-                            )
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
                         }
-                        Text(
-                            "Tabs",
-                            style = TextStyle(color = Color.White, fontSize = 18.sp),
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
-                        Spacer(modifier = Modifier.weight(1f))
-                        Text(
-                            "${tabs.size} tabs",
-                            color = Color.Gray,
-                            fontSize = 14.sp
-                        )
+                        Text("Tabs", style = TextStyle(color = Color.White, fontSize = 18.sp))
                     }
 
                     // Horizontal Group Bar
-                    LazyRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        // All tabs option
-                        item {
-                            GroupChip(
-                                domain = "All",
-                                isSelected = selectedDomain == "All",
-                                isPinned = false,
-                                tabCount = tabs.size,
-                                onClick = { selectedDomain = "All" }
-                            )
-                        }
-                        
-                        // Home tab option
-                        item {
-                            GroupChip(
-                                domain = "Home",
-                                isSelected = selectedDomain == "Home",
-                                isPinned = true,
-                                tabCount = 1,
-                                onClick = { selectedDomain = "Home" }
-                            )
-                        }
-                        
-                        // Other domain groups
-                        items(sortedDomains) { domain ->
-                            val isSelected = domain == selectedDomain
-                            val isPinned = pinnedDomains.contains(domain)
-                            val tabCount = domainGroups[domain]?.size ?: 0
+                    if (sortedDomains.isNotEmpty()) {
+                        LazyRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            items(sortedDomains) { domain ->
+                                val isSelected = domain == selectedDomain
+                                val isPinned = pinnedDomains.contains(domain)
+                                val tabCount = domainGroups[domain]?.size ?: 0
 
-                            GroupChip(
-                                domain = domain,
-                                isSelected = isSelected,
-                                isPinned = isPinned,
-                                tabCount = tabCount,
-                                onClick = { selectedDomain = domain }
-                            )
+                                Surface(
+                                    modifier = Modifier
+                                        .padding(end = 8.dp)
+                                        .clickable { selectedDomain = domain }
+                                        .border(
+                                            if (isSelected) 1.dp else 0.dp,
+                                            Color.White,
+                                            RectangleShape
+                                        ),
+                                    color = if (isSelected) Color(0xFF2A2A2A) else Color.Transparent
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (isPinned) Text("📌 ", fontSize = 12.sp)
+                                        Text(domain, color = Color.White, fontSize = 14.sp)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .background(Color.DarkGray)
+                                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                tabCount.toString(),
+                                                color = Color.White,
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
+
+                        Divider(
+                            color = Color.DarkGray,
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
                     }
 
-                    Divider(
-                        color = Color.DarkGray,
-                        thickness = 1.dp,
-                        modifier = Modifier.padding(vertical = 4.dp)
-                    )
-
-                    // Tab List for Selected Group
-                    val tabsToShow = when (selectedDomain) {
-                        "All" -> tabs.toList()
-                        "Home" -> listOf(homeTab)
-                        else -> domainGroups[selectedDomain] ?: emptyList()
+                    // Tab List - show all tabs if no domain selected, otherwise filter by domain
+                    val tabsToShow = if (selectedDomain.isBlank()) {
+                        tabs.toList()
+                    } else {
+                        domainGroups[selectedDomain] ?: emptyList()
                     }
                     
                     val listState = rememberLazyListState()
@@ -387,58 +348,63 @@ fun GreyBrowser() {
                             .weight(1f)
                             .fillMaxWidth()
                     ) {
-                        items(tabsToShow) { tab ->
-                            val isCurrent = tab == currentTab
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        currentTabIndex = tabs.indexOf(tab)
-                                        showTabManager = false
-                                    },
-                                color = if (isCurrent) Color(0xFF2A2A2A) else Color.Transparent
-                            ) {
-                                Row(
+                        if (tabsToShow.isEmpty()) {
+                            item {
+                                Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                        .padding(32.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "No tabs in this group",
+                                        color = Color.Gray,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
+                        } else {
+                            items(tabsToShow) { tab ->
+                                val isCurrent = tab == currentTab
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            currentTabIndex = tabs.indexOf(tab)
+                                            showTabManager = false
+                                        },
+                                    color = if (isCurrent) Color(0xFF2A2A2A) else Color.Transparent
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
                                         Text(
                                             text = tab.title,
                                             color = if (isCurrent) Color.White else Color.Gray,
                                             maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
                                         )
-                                        if (!tab.isHomeTab) {
-                                            Text(
-                                                text = tab.url,
-                                                color = Color.Gray.copy(alpha = 0.7f),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                    }
-                                    if (!tab.isHomeTab) {
                                         IconButton(onClick = {
                                             tab.session.close()
                                             tabs.remove(tab)
                                             if (tabs.isEmpty()) {
-                                                tabs.add(homeTab)
+                                                val s = GeckoSession().apply {
+                                                    applySettingsToSession(this)
+                                                    open(runtime)
+                                                    loadUri("about:blank")
+                                                }
+                                                tabs.add(TabState(s).also { setupDelegates(it) })
                                                 currentTabIndex = 0
                                             } else {
                                                 if (currentTabIndex >= tabs.size) {
                                                     currentTabIndex = tabs.lastIndex
                                                 }
                                             }
-                                            // Update selected domain
-                                            selectedDomain = if (tabs[currentTabIndex].isHomeTab) {
-                                                "Home"
-                                            } else {
-                                                getDomainName(tabs[currentTabIndex].url)
-                                            }
+                                            selectedDomain = getDomainName(tabs[currentTabIndex].url)
                                         }) {
                                             Icon(
                                                 Icons.Default.Close,
@@ -468,7 +434,6 @@ fun GreyBrowser() {
                                 }
                                 tabs.add(TabState(s).also { setupDelegates(it) })
                                 currentTabIndex = tabs.lastIndex
-                                selectedDomain = "Home"
                                 showTabManager = false
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -489,7 +454,7 @@ fun GreyBrowser() {
                                 onClick = {
                                     if (isPinned) {
                                         pinnedDomains.remove(selectedDomain)
-                                    } else if (selectedDomain != "All" && selectedDomain != "Home") {
+                                    } else if (selectedDomain.isNotBlank()) {
                                         pinnedDomains.add(selectedDomain)
                                     }
                                 },
@@ -497,11 +462,11 @@ fun GreyBrowser() {
                                 shape = RectangleShape,
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                                 border = BorderStroke(1.dp, Color.White),
-                                enabled = selectedDomain != "All" && selectedDomain != "Home"
+                                enabled = selectedDomain.isNotBlank()
                             ) {
                                 Text(
                                     if (isPinned) "Unpin Group" else "Pin Group",
-                                    color = if (selectedDomain != "All" && selectedDomain != "Home") Color.White else Color.Gray
+                                    color = if (selectedDomain.isNotBlank()) Color.White else Color.Gray
                                 )
                             }
 
@@ -509,29 +474,34 @@ fun GreyBrowser() {
 
                             OutlinedButton(
                                 onClick = {
-                                    val tabsToRemove = when (selectedDomain) {
-                                        "Home" -> listOf(homeTab)
-                                        "All" -> tabs.toList()
-                                        else -> domainGroups[selectedDomain] ?: emptyList()
+                                    if (selectedDomain.isNotBlank()) {
+                                        val tabsToRemove = domainGroups[selectedDomain] ?: emptyList()
+                                        tabsToRemove.forEach { it.session.close() }
+                                        tabs.removeAll(tabsToRemove)
+                                        
+                                        if (tabs.isEmpty()) {
+                                            val s = GeckoSession().apply {
+                                                applySettingsToSession(this)
+                                                open(runtime)
+                                                loadUri("about:blank")
+                                            }
+                                            tabs.add(TabState(s).also { setupDelegates(it) })
+                                            currentTabIndex = 0
+                                        } else {
+                                            currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+                                        }
+                                        selectedDomain = getDomainName(tabs[currentTabIndex].url)
                                     }
-                                    tabsToRemove.forEach { it.session.close() }
-                                    tabs.removeAll(tabsToRemove)
-                                    
-                                    if (tabs.isEmpty() || !tabs.contains(homeTab)) {
-                                        tabs.add(0, homeTab)
-                                    }
-                                    currentTabIndex = 0
-                                    selectedDomain = "Home"
                                 },
                                 modifier = Modifier.weight(1f),
                                 shape = RectangleShape,
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                                 border = BorderStroke(1.dp, Color.White),
-                                enabled = selectedDomain != "Home" || tabs.size > 1
+                                enabled = selectedDomain.isNotBlank()
                             ) {
                                 Text(
                                     "Delete Group",
-                                    color = if (selectedDomain != "Home" || tabs.size > 1) Color.White else Color.Gray
+                                    color = if (selectedDomain.isNotBlank()) Color.White else Color.Gray
                                 )
                             }
                         }
@@ -568,7 +538,7 @@ fun GreyBrowser() {
                     value = urlInput,
                     onValueChange = { urlInput = it },
                     singleLine = true,
-                    placeholder = { Text("Search or enter URL", color = Color.White.copy(alpha = 0.5f)) },
+                    placeholder = { Text("Enter URL", color = Color.White.copy(alpha = 0.5f)) },
                     modifier = Modifier
                         .weight(1f)
                         .padding(vertical = 8.dp)
@@ -589,7 +559,7 @@ fun GreyBrowser() {
                             }
                         },
                     textStyle = TextStyle(
-                        color = if (currentTab.isHomeTab) Color.White.copy(alpha = 0.7f) else if (isLoading) Color.Gray else Color.White,
+                        color = if (isLoading) Color.Gray else Color.White,
                         fontSize = 16.sp
                     ),
                     shape = RectangleShape,
@@ -597,11 +567,8 @@ fun GreyBrowser() {
                     keyboardActions = KeyboardActions(
                         onGo = {
                             val input = urlInput.text
-                            if (input.isNotBlank() && input != "about:blank") {
-                                val uri = if (input.contains("://")) input else "https://$input"
-                                currentTab.session.loadUri(uri)
-                                currentTab.isHomeTab = false
-                            }
+                            val uri = if (input.contains("://")) input else "https://$input"
+                            currentTab.session.loadUri(uri)
                         }
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -643,57 +610,6 @@ fun GreyBrowser() {
     }
 }
 
-// ── Group Chip Component ─────────────────────────────────────────
-@Composable
-fun GroupChip(
-    domain: String,
-    isSelected: Boolean,
-    isPinned: Boolean,
-    tabCount: Int,
-    onClick: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .padding(end = 8.dp)
-            .clickable(onClick = onClick)
-            .border(
-                if (isSelected) 1.dp else 0.dp,
-                Color.White,
-                RectangleShape
-            ),
-        color = if (isSelected) Color(0xFF2A2A2A) else Color.Transparent
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (isPinned) {
-                Text("📌 ", fontSize = 12.sp)
-            }
-            if (domain == "Home") {
-                Text("🏠 ", fontSize = 12.sp)
-            }
-            Text(
-                domain,
-                color = Color.White,
-                fontSize = 14.sp
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Box(
-                modifier = Modifier
-                    .background(Color.DarkGray)
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    tabCount.toString(),
-                    color = Color.White,
-                    fontSize = 10.sp
-                )
-            }
-        }
-    }
-}
-
 // ── Custom Menu Item Helper ───────────────────────────────────────
 @Composable
 fun ContextMenuItem(text: String, onClick: () -> Unit) {
@@ -707,7 +623,7 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
     }
 }
 
-// ── Scripting & Settings Dialogs ──────────────────────────────────
+// ── Scripting & Settings Dialogs remain unchanged below this line ──
 @Composable
 fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: (String) -> Unit) {
     var script by remember { mutableStateOf(initialScript) }
@@ -716,45 +632,17 @@ fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: 
         title = { Text("Inject JavaScript", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
-                Text(
-                    "Write or paste JS below. It will execute immediately on the current tab.",
-                    color = Color.Gray,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
+                Text("Write or paste JS below. It will execute immediately on the current tab.", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.padding(bottom = 8.dp))
                 OutlinedTextField(
-                    value = script,
-                    onValueChange = { script = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(200.dp),
+                    value = script, onValueChange = { script = it }, modifier = Modifier.fillMaxWidth().height(200.dp),
                     textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.White,
-                        unfocusedBorderColor = Color.White,
-                        cursorColor = Color.White,
-                        focusedContainerColor = Color(0xFF1E1E1E),
-                        unfocusedContainerColor = Color(0xFF1E1E1E)
-                    ),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
                     shape = RectangleShape
                 )
             }
         },
-        confirmButton = {
-            TextButton(onClick = { onSaveAndRun(script) }) {
-                Text("Run", color = Color.White)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close", color = Color.White)
-            }
-        },
-        containerColor = Color(0xFF1E1E1E),
-        titleContentColor = Color.White,
-        textContentColor = Color.White,
-        shape = RectangleShape,
-        tonalElevation = 0.dp
+        confirmButton = { TextButton(onClick = { onSaveAndRun(script) }) { Text("Run", color = Color.White) } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = Color.White) } },
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
     )
 }
 
@@ -766,19 +654,12 @@ fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsAp
     var autoplayMedia by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
 
     val applyChanges = {
-        prefs.edit()
-            .putBoolean("javascript.enabled", jsEnabled)
-            .putBoolean("privacy.trackingprotection.enabled", trackingProtection)
-            .putInt("network.cookie.cookieBehavior", cookieBehavior)
-            .putBoolean("media.autoplay.enabled", autoplayMedia)
-            .apply()
-        onSettingsApplied()
-        onDismiss()
+        prefs.edit().putBoolean("javascript.enabled", jsEnabled).putBoolean("privacy.trackingprotection.enabled", trackingProtection).putInt("network.cookie.cookieBehavior", cookieBehavior).putBoolean("media.autoplay.enabled", autoplayMedia).apply()
+        onSettingsApplied(); onDismiss()
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
+        onDismissRequest = onDismiss, title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
                 SettingSwitch(label = "JavaScript", checked = jsEnabled, onCheckedChange = { jsEnabled = it })
@@ -788,44 +669,16 @@ fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsAp
                 SettingSwitch(label = "Autoplay Media", checked = autoplayMedia, onCheckedChange = { autoplayMedia = it })
             }
         },
-        confirmButton = {
-            TextButton(onClick = applyChanges) {
-                Text("OK", color = Color.White)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = Color.White)
-            }
-        },
-        containerColor = Color(0xFF1E1E1E),
-        titleContentColor = Color.White,
-        textContentColor = Color.White,
-        shape = RectangleShape,
-        tonalElevation = 0.dp
+        confirmButton = { TextButton(onClick = applyChanges) { Text("OK", color = Color.White) } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) } },
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
     )
 }
 
 @Composable
 fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = Color.White, fontSize = 14.sp)
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = Color(0xFF444444),
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color(0xFF444444)
-            )
-        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
     }
 }
 
@@ -838,43 +691,11 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
 
     Box {
         OutlinedTextField(
-            value = selectedText,
-            onValueChange = {},
-            readOnly = true,
-            trailingIcon = {
-                Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-            shape = RectangleShape,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color.White,
-                unfocusedBorderColor = Color.White,
-                focusedContainerColor = Color(0xFF1E1E1E),
-                unfocusedContainerColor = Color(0xFF1E1E1E)
-            ),
-            enabled = true
+            value = selectedText, onValueChange = {}, readOnly = true, trailingIcon = { Icon(Icons.Default.Close, contentDescription = null, tint = Color.White) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), enabled = true
         )
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .clickable { expanded = true }
-        )
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.border(1.dp, Color.White, RectangleShape),
-            containerColor = Color(0xFF1E1E1E),
-            shape = RectangleShape
-        ) {
-            options.forEach { (label, value) ->
-                DropdownMenuItem(
-                    text = { Text(label, color = Color.White) },
-                    onClick = { onChange(value); expanded = false }
-                )
-            }
+        Box(modifier = Modifier.matchParentSize().clickable { expanded = true })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+            options.forEach { (label, value) -> DropdownMenuItem(text = { Text(label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
         }
     }
 }
