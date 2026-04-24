@@ -185,7 +185,8 @@ fun GreyBrowser() {
         }
     }
 
-    // Home blank session (always exists, not shown in tabs)
+    // Home blank session - the persistent "lobby" canvas
+    // Always exists, not shown in tabs, is the default state
     val homeSession = remember {
         GeckoSession().apply {
             applySettingsToSession(this)
@@ -201,10 +202,11 @@ fun GreyBrowser() {
         }
     }
 
-    // Tabs list - only real websites, no blank tabs
+    // Tabs list - stores real website tabs only (not the home blank page)
     val tabs = remember { mutableStateListOf<TabState>() }
     
-    var currentTabIndex by remember { mutableIntStateOf(-1) } // -1 means home tab
+    // -1 = home/blank page, 0+ = index into tabs list
+    var currentTabIndex by remember { mutableIntStateOf(-1) }
     var showTabManager by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -224,23 +226,26 @@ fun GreyBrowser() {
         tab.session.close()  // GeckoView: Close session to free resources
         tabs.removeAt(index)
         if (tabs.isEmpty()) {
-            currentTabIndex = -1 // Back to home
-        } else {
-            currentTabIndex = minOf(index, tabs.lastIndex)
+            currentTabIndex = -1 // Back to home/blank page
+        } else if (currentTabIndex > index) {
+            currentTabIndex--
+        } else if (currentTabIndex == index && tabs.isNotEmpty()) {
+            currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
         }
     }
 
     // ── Navigation / Back Button Handling ─────────────────────────
     BackHandler {
         if (currentTab.isBlankTab) {
+            // On blank page - if there are tabs in background, go to last one
             if (tabs.isNotEmpty()) {
-                // Go back to last website tab
                 currentTabIndex = tabs.lastIndex
             } else {
+                // No tabs, exit app
                 activity?.finish()
             }
         } else {
-            // GeckoView: Navigate back in history
+            // On a website - try to go back in history
             currentTab.session.goBack()
         }
     }
@@ -292,8 +297,8 @@ fun GreyBrowser() {
                 ContextMenuItem("New Tab") {
                     val s = GeckoSession().apply { 
                         applySettingsToSession(this)
-                        open(runtime)  // GeckoView: Must open session
-                        loadUri(contextMenuUri!!)  // GeckoView: Load URL
+                        open(runtime)
+                        loadUri(contextMenuUri!!)
                     }
                     tabs.add(TabState(s).also { 
                         setupDelegates(it)
@@ -305,13 +310,14 @@ fun GreyBrowser() {
                 ContextMenuItem("Open in Background") {
                     val s = GeckoSession().apply { 
                         applySettingsToSession(this)
-                        open(runtime)  // GeckoView: Must open session
-                        loadUri(contextMenuUri!!)  // GeckoView: Load URL
+                        open(runtime)
+                        loadUri(contextMenuUri!!)
                     }
                     tabs.add(TabState(s).also { 
                         setupDelegates(it)
                         it.isBlankTab = false
                     })
+                    // Don't switch to new tab - stays in background
                     showContextMenu = false
                 }
                 ContextMenuItem("Copy link") {
@@ -383,7 +389,6 @@ fun GreyBrowser() {
                     }
 
                     // ── Horizontal Group Bar ──
-                    // Only show if there are domain groups
                     if (sortedDomains.isNotEmpty()) {
                         LazyRow(
                             modifier = Modifier
@@ -438,7 +443,6 @@ fun GreyBrowser() {
                     }
 
                     // ── Tab List ──
-                    // Show tabs filtered by selected domain, or all tabs if no domain selected
                     val tabsToShow = if (selectedDomain.isBlank()) {
                         tabs.toList()
                     } else {
@@ -559,21 +563,11 @@ fun GreyBrowser() {
                             .padding(16.dp)
                             .navigationBarsPadding()
                     ) {
-                        // New Tab button
+                        // New Tab button - switches to home/blank page (the lobby)
                         OutlinedButton(
                             onClick = {
-                                // GeckoView: Create new blank session
-                                val session = GeckoSession().apply {
-                                    applySettingsToSession(this)
-                                    open(runtime)  // GeckoView: Must open session
-                                    loadUri("about:blank")  // GeckoView: Load blank page
-                                }
-                                val newTab = TabState(session).apply {
-                                    setupDelegates(this)
-                                    isBlankTab = true
-                                }
-                                tabs.add(newTab)
-                                currentTabIndex = tabs.lastIndex
+                                // Switch to home/blank page - don't create new session
+                                currentTabIndex = -1
                                 showTabManager = false
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -614,11 +608,11 @@ fun GreyBrowser() {
                                     onClick = {
                                         // Close all tabs in the selected domain group
                                         val tabsToRemove = domainGroups[selectedDomain] ?: emptyList()
-                                        tabsToRemove.forEach { it.session.close() }  // GeckoView: Close sessions
+                                        tabsToRemove.forEach { it.session.close() }
                                         tabs.removeAll(tabsToRemove)
                                         
                                         if (tabs.isEmpty()) {
-                                            currentTabIndex = -1 // Back to home
+                                            currentTabIndex = -1 // Back to home/blank page
                                         } else {
                                             currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
                                         }
@@ -709,8 +703,24 @@ fun GreyBrowser() {
                             val input = urlInput.text
                             if (input.isNotBlank()) {
                                 val uri = if (input.contains("://")) input else "https://$input"
-                                // GeckoView: Load URL in current session
-                                currentTab.session.loadUri(uri)
+                                
+                                if (currentTab.isBlankTab) {
+                                    // On home/blank page - create a new tab for this URL
+                                    val session = GeckoSession().apply {
+                                        applySettingsToSession(this)
+                                        open(runtime)
+                                        loadUri(uri)
+                                    }
+                                    val newTab = TabState(session).apply {
+                                        setupDelegates(this)
+                                        isBlankTab = false
+                                    }
+                                    tabs.add(newTab)
+                                    currentTabIndex = tabs.lastIndex
+                                } else {
+                                    // On an existing website tab - load URL in current session
+                                    currentTab.session.loadUri(uri)
+                                }
                             }
                         }
                     ),
