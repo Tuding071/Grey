@@ -2,11 +2,11 @@ package com.grey.browser
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -55,7 +55,6 @@ fun GreyBrowser() {
     val applySettingsToSession = { session: GeckoSession ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
         session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
-        // Suspend media when inactive acts as our autoplay proxy for background tabs
         session.settings.suspendMediaWhenInactive = !prefs.getBoolean("media.autoplay.enabled", true)
     }
 
@@ -63,7 +62,7 @@ fun GreyBrowser() {
     val tabs = remember {
         mutableStateListOf<GeckoSession>().apply {
             val initialSession = GeckoSession().apply {
-                applySettingsToSession(this) // Apply settings immediately on boot
+                applySettingsToSession(this)
                 open(runtime)
                 loadUri("about:blank")
             }
@@ -74,11 +73,10 @@ fun GreyBrowser() {
     var currentTabIndex by remember { mutableIntStateOf(0) }
     var showTabManager by remember { mutableStateOf(false) }
 
-    // Menu state
+    // Menus & Dialogs state
     var showMenu by remember { mutableStateOf(false) }
-
-    // Settings dialog state
     var showSettings by remember { mutableStateOf(false) }
+    var showScripting by remember { mutableStateOf(false) }
 
     // GeckoView for the current tab
     @Composable
@@ -102,10 +100,24 @@ fun GreyBrowser() {
             prefs = prefs,
             onDismiss = { showSettings = false },
             onSettingsApplied = {
-                // When "OK" is pressed, update ALL currently open tabs instantly
                 tabs.forEach { session ->
                     applySettingsToSession(session)
                 }
+            }
+        )
+    }
+
+    // ── Scripting Dialog ──────────────────────────────────────
+    if (showScripting) {
+        ScriptingDialog(
+            initialScript = prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "",
+            onDismiss = { showScripting = false },
+            onSaveAndRun = { script ->
+                prefs.edit().putString("user_script", script).apply()
+                // Inject via the javascript: URI scheme. We encode it to handle newlines and special characters.
+                val jsUri = "javascript:" + Uri.encode("(function(){\n$script\n})();")
+                tabs[currentTabIndex].loadUri(jsUri)
+                showScripting = false
             }
         )
     }
@@ -173,7 +185,7 @@ fun GreyBrowser() {
                 OutlinedButton(
                     onClick = {
                         val s = GeckoSession().apply {
-                            applySettingsToSession(this) // Apply settings to the new tab!
+                            applySettingsToSession(this)
                             open(runtime)
                             loadUri("about:blank")
                         }
@@ -186,7 +198,7 @@ fun GreyBrowser() {
                         .padding(16.dp),
                     shape = RectangleShape,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = BorderStroke(2.dp, Color.White)
+                    border = BorderStroke(1.dp, Color.White) // Standardized 1.dp border
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
                     Spacer(modifier = Modifier.width(8.dp))
@@ -196,7 +208,6 @@ fun GreyBrowser() {
         }
     }
 
-    // URL bar state
     var urlInput by remember { mutableStateOf("about:blank") }
     LaunchedEffect(currentTabIndex) {
         urlInput = "about:blank"
@@ -204,19 +215,16 @@ fun GreyBrowser() {
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF121212)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // ── Top row: Tab button | URL bar | Menu button ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Tab button
                 IconButton(onClick = { showTabManager = true }) {
                     Icon(Icons.Default.Tab, contentDescription = "Open tabs", tint = Color.White)
                 }
 
-                // URL bar
                 OutlinedTextField(
                     value = urlInput,
                     onValueChange = { urlInput = it },
@@ -244,7 +252,6 @@ fun GreyBrowser() {
                     )
                 )
 
-                // Menu button with dropdown (Added border for visibility)
                 Box {
                     IconButton(onClick = { showMenu = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "Menu", tint = Color.White)
@@ -252,11 +259,18 @@ fun GreyBrowser() {
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
-                        // Border added here for better visual separation against the background
-                        modifier = Modifier.border(1.dp, Color(0xFF555555), RectangleShape),
+                        // Standardized 1.dp border
+                        modifier = Modifier.border(1.dp, Color.White, RectangleShape),
                         containerColor = Color(0xFF1E1E1E),
                         shape = RectangleShape
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Scripting", color = Color.White) },
+                            onClick = {
+                                showMenu = false
+                                showScripting = true
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text("Settings", color = Color.White) },
                             onClick = {
@@ -268,7 +282,6 @@ fun GreyBrowser() {
                 }
             }
 
-            // Web view area
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 GeckoViewBox()
             }
@@ -276,12 +289,60 @@ fun GreyBrowser() {
     }
 }
 
+// ── Scripting Dialog ──────────────────────────────────────────────
+@Composable
+fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: (String) -> Unit) {
+    var script by remember { mutableStateOf(initialScript) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Inject JavaScript", color = Color.White, fontSize = 20.sp) },
+        text = {
+            Column {
+                Text(
+                    text = "Write or paste JS below. It will execute immediately on the current tab.",
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                OutlinedTextField(
+                    value = script,
+                    onValueChange = { script = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp),
+                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.White,
+                        unfocusedBorderColor = Color.White,
+                        cursorColor = Color.White,
+                        focusedContainerColor = Color(0xFF1E1E1E),
+                        unfocusedContainerColor = Color(0xFF1E1E1E)
+                    ),
+                    shape = RectangleShape
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSaveAndRun(script) }) { Text("Run", color = Color.White) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close", color = Color.White) }
+        },
+        containerColor = Color(0xFF1E1E1E),
+        titleContentColor = Color.White,
+        textContentColor = Color.White,
+        shape = RectangleShape,
+        tonalElevation = 0.dp
+    )
+}
+
 // ── Settings Dialog ───────────────────────────────────────────────
 @Composable
 fun SettingsDialog(
     prefs: SharedPreferences, 
     onDismiss: () -> Unit,
-    onSettingsApplied: () -> Unit // Callback to trigger Gecko updates
+    onSettingsApplied: () -> Unit
 ) {
     var jsEnabled by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
     var trackingProtection by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
@@ -296,7 +357,7 @@ fun SettingsDialog(
             .putBoolean("media.autoplay.enabled", autoplayMedia)
             .apply()
             
-        onSettingsApplied() // Tells the browser engine to fetch the new values
+        onSettingsApplied()
         onDismiss()
     }
 
@@ -305,34 +366,15 @@ fun SettingsDialog(
         title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
-                SettingSwitch(
-                    label = "JavaScript",
-                    checked = jsEnabled,
-                    onCheckedChange = { jsEnabled = it }
-                )
-                SettingSwitch(
-                    label = "Tracking Protection",
-                    checked = trackingProtection,
-                    onCheckedChange = { trackingProtection = it }
-                )
+                SettingSwitch(label = "JavaScript", checked = jsEnabled, onCheckedChange = { jsEnabled = it })
+                SettingSwitch(label = "Tracking Protection", checked = trackingProtection, onCheckedChange = { trackingProtection = it })
                 Text("Cookie Behavior", color = Color.White, fontSize = 14.sp)
-                CookieBehaviorSelector(
-                    current = cookieBehavior,
-                    onChange = { cookieBehavior = it }
-                )
-                SettingSwitch(
-                    label = "Autoplay Media",
-                    checked = autoplayMedia,
-                    onCheckedChange = { autoplayMedia = it }
-                )
+                CookieBehaviorSelector(current = cookieBehavior, onChange = { cookieBehavior = it })
+                SettingSwitch(label = "Autoplay Media", checked = autoplayMedia, onCheckedChange = { autoplayMedia = it })
             }
         },
-        confirmButton = {
-            TextButton(onClick = applyChanges) { Text("OK", color = Color.White) }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) }
-        },
+        confirmButton = { TextButton(onClick = applyChanges) { Text("OK", color = Color.White) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) } },
         containerColor = Color(0xFF1E1E1E),
         titleContentColor = Color.White,
         textContentColor = Color.White,
@@ -397,7 +439,7 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.border(1.dp, Color(0xFF555555), RectangleShape),
+            modifier = Modifier.border(1.dp, Color.White, RectangleShape), // Standardized 1.dp border
             containerColor = Color(0xFF1E1E1E),
             shape = RectangleShape
         ) {
