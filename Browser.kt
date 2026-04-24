@@ -19,10 +19,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.SelectAll
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -118,9 +118,16 @@ fun GreyBrowser() {
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 tabState.progress = 100
                 tabState.lastUpdated = System.currentTimeMillis()
+                // Update URL after page stops
+                tabState.url = session.currentUrl ?: tabState.url
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
                 tabState.progress = progress
+                // Update URL during navigation
+                val currentUrl = session.currentUrl
+                if (currentUrl != null && currentUrl != "about:blank") {
+                    tabState.url = currentUrl
+                }
             }
         }
         tabState.session.contentDelegate = object : GeckoSession.ContentDelegate {
@@ -138,6 +145,16 @@ fun GreyBrowser() {
                 if (element.linkUri != null) {
                     contextMenuUri = element.linkUri
                     showContextMenu = true
+                }
+            }
+        }
+        tabState.session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLocationChange(session: GeckoSession, url: String?) {
+                url?.let {
+                    tabState.url = it
+                    if (it != "about:blank") {
+                        tabState.isBlankTab = false
+                    }
                 }
             }
         }
@@ -175,6 +192,19 @@ fun GreyBrowser() {
     // Get current tab (home tab or website tab)
     val currentTab = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
 
+    // Helper to remove a tab properly
+    fun removeTab(index: Int) {
+        if (index < 0 || index >= tabs.size) return
+        val tab = tabs[index]
+        tab.session.close()
+        tabs.removeAt(index)
+        if (tabs.isEmpty()) {
+            currentTabIndex = -1 // Back to home
+        } else {
+            currentTabIndex = minOf(index, tabs.lastIndex)
+        }
+    }
+
     // ── Navigation / Back Button Handling ─────────────────────────
     BackHandler {
         if (currentTab.isBlankTab) {
@@ -186,39 +216,11 @@ fun GreyBrowser() {
             }
         } else if (currentTab.url == "about:blank") {
             // Shouldn't happen now, but handle just in case
-            removeTab(currentTabIndex)
+            val index = tabs.indexOf(currentTab)
+            if (index >= 0) removeTab(index)
         } else {
             currentTab.session.goBack()
         }
-    }
-
-    // Helper to remove a tab properly
-    fun removeTab(index: Int) {
-        val tab = tabs[index]
-        tab.session.close()
-        tabs.removeAt(index)
-        if (tabs.isEmpty()) {
-            currentTabIndex = -1 // Back to home
-        } else {
-            currentTabIndex = minOf(index, tabs.lastIndex)
-        }
-    }
-
-    // Helper to create a new website tab
-    fun createNewTab(url: String = "about:blank") {
-        val session = GeckoSession().apply {
-            applySettingsToSession(this)
-            open(runtime)
-            loadUri(url)
-        }
-        val tabState = TabState(session).apply {
-            setupDelegates(this)
-            if (url != "about:blank") {
-                isBlankTab = false
-            }
-        }
-        tabs.add(tabState)
-        currentTabIndex = tabs.lastIndex
     }
 
     @Composable
@@ -596,7 +598,8 @@ fun GreyBrowser() {
     var isUrlFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(currentTab.url) {
+    // Update URL input when tab changes or URL updates
+    LaunchedEffect(currentTab, currentTab.url) {
         if (!isUrlFocused) {
             urlInput = TextFieldValue(currentTab.url)
         }
@@ -691,7 +694,7 @@ fun GreyBrowser() {
                                 focusRequester.requestFocus()
                             }) {
                                 Icon(
-                                    Icons.AutoMirrored.Filled.SelectAll,
+                                    Icons.Default.SelectAll,
                                     contentDescription = "Select all",
                                     tint = Color.White
                                 )
