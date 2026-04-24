@@ -118,16 +118,9 @@ fun GreyBrowser() {
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 tabState.progress = 100
                 tabState.lastUpdated = System.currentTimeMillis()
-                // Update URL after page stops
-                tabState.url = session.currentUrl ?: tabState.url
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
                 tabState.progress = progress
-                // Update URL during navigation
-                val currentUrl = session.currentUrl
-                if (currentUrl != null && currentUrl != "about:blank") {
-                    tabState.url = currentUrl
-                }
             }
         }
         tabState.session.contentDelegate = object : GeckoSession.ContentDelegate {
@@ -149,10 +142,15 @@ fun GreyBrowser() {
             }
         }
         tabState.session.navigationDelegate = object : GeckoSession.NavigationDelegate {
-            override fun onLocationChange(session: GeckoSession, url: String?) {
-                url?.let {
-                    tabState.url = it
-                    if (it != "about:blank") {
+            override fun onLocationChange(
+                session: GeckoSession,
+                url: String?,
+                perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
+                hasUserGesture: Boolean
+            ) {
+                url?.let { newUrl ->
+                    tabState.url = newUrl
+                    if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
                     }
                 }
