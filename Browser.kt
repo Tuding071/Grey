@@ -94,6 +94,7 @@ class TabState(val session: GeckoSession) {
     var progress by mutableIntStateOf(100)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
     var isBlankTab by mutableStateOf(true)
+    var hasEverLoaded by mutableStateOf(false)  // Track if page was ever loaded via loadUri
 }
 
 // Helper to extract the main domain for grouping (ignores subdomains)
@@ -137,6 +138,7 @@ fun GreyBrowser() {
                 tabState.url = url
                 tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
+                tabState.hasEverLoaded = true
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
                 }
@@ -215,7 +217,6 @@ fun GreyBrowser() {
     // ═══════════════════════════════════════════════════════════════
     // SESSION MANAGEMENT: Only ONE session active at a time
     // Tab manager open = ALL paused
-    // This runs EVERY time showTabManager or currentTabIndex changes
     // ═══════════════════════════════════════════════════════════════
     LaunchedEffect(showTabManager, currentTabIndex) {
         if (showTabManager) {
@@ -224,12 +225,17 @@ fun GreyBrowser() {
             tabs.forEach { it.session.setActive(false) }
         } else {
             // Tab manager closed: only active tab runs
-            // Pause home if not active
             homeSession.setActive(currentTabIndex == -1)
             
             // Pause all tabs except the active one
             tabs.forEachIndexed { index, tabState ->
-                tabState.session.setActive(index == currentTabIndex)
+                val isActive = index == currentTabIndex
+                tabState.session.setActive(isActive)
+                
+                // If this tab is becoming active and has never loaded, load it now
+                if (isActive && !tabState.hasEverLoaded && tabState.url != "about:blank") {
+                    tabState.session.loadUri(tabState.url)
+                }
             }
         }
     }
@@ -249,20 +255,28 @@ fun GreyBrowser() {
         }
     }
 
-    // Create background tab: load normally, don't switch, system will pause it
+    // Create background tab: placeholder only, no network until visited
     fun createBackgroundTab(url: String) {
         val session = GeckoSession().apply {
             applySettingsToSession(this)
             open(runtime)
-            loadUri(url)  // Load normally
-            setActive(false)  // Immediately pause since it's background
+            // NO loadUri() - completely empty, zero network
+            setActive(false)
+        }
+        val hostName = try {
+            Uri.parse(url).host?.removePrefix("www.") ?: url
+        } catch (e: Exception) {
+            url
         }
         val tabState = TabState(session).apply {
             setupDelegates(this)
-            isBlankTab = false
+            this.url = url  // Save URL for display and grouping
+            this.title = hostName  // Show host as title
+            this.isBlankTab = false
+            this.hasEverLoaded = false  // Never loaded
+            this.progress = 100  // Not loading
         }
         tabs.add(tabState)
-        // Don't switch currentTabIndex - stays on current tab
     }
 
     BackHandler {
@@ -326,6 +340,7 @@ fun GreyBrowser() {
                     tabs.add(TabState(s).also { 
                         setupDelegates(it)
                         it.isBlankTab = false
+                        it.hasEverLoaded = true
                     })
                     currentTabIndex = tabs.lastIndex
                     showContextMenu = false
@@ -490,6 +505,7 @@ fun GreyBrowser() {
                             } else {
                                 items(tabsToShow) { tab ->
                                     val isCurrent = tab == currentTab
+                                    val isPlaceholder = !tab.hasEverLoaded
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -506,14 +522,23 @@ fun GreyBrowser() {
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    if (isPlaceholder) {
+                                                        Text(
+                                                            "⬜ ",
+                                                            color = Color.Gray,
+                                                            fontSize = 12.sp
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = tab.title,
+                                                        color = if (isCurrent) Color.White else Color.Gray,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
                                                 Text(
-                                                    text = tab.title,
-                                                    color = if (isCurrent) Color.White else Color.Gray,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Text(
-                                                    text = tab.url,
+                                                    text = if (isPlaceholder) "Tap to load" else tab.url,
                                                     color = Color.Gray.copy(alpha = 0.7f),
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
@@ -682,6 +707,7 @@ fun GreyBrowser() {
                                     val newTab = TabState(session).apply {
                                         setupDelegates(this)
                                         isBlankTab = false
+                                        hasEverLoaded = true
                                     }
                                     tabs.add(newTab)
                                     currentTabIndex = tabs.lastIndex
