@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +30,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
@@ -68,7 +70,7 @@ class TabState(val session: GeckoSession) {
     var favicon by mutableStateOf<Bitmap?>(null)
 }
 
-// Favicon Cache (max 100, LRU - deletes oldest automatically)
+// Favicon Cache (max 100, LRU)
 val faviconCache = object : LinkedHashMap<String, Bitmap>(100, 0.75f, true) {
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean {
         return size > 100
@@ -125,14 +127,6 @@ fun GreyBrowser() {
                 tabState.title = title ?: "New Tab"
             }
 
-            override fun onFaviconChange(session: GeckoSession, favicon: Bitmap?) {
-                tabState.favicon = favicon
-                favicon?.let {
-                    val domain = getDomainName(tabState.url)
-                    faviconCache[domain] = it
-                }
-            }
-
             override fun onContextMenu(
                 session: GeckoSession,
                 screenX: Int,
@@ -147,10 +141,9 @@ fun GreyBrowser() {
         }
     }
 
-    // Tabs list
+    // Tabs
     val tabs = remember { mutableStateListOf<TabState>() }
 
-    // Create initial tab if empty
     LaunchedEffect(Unit) {
         if (tabs.isEmpty()) {
             val initialSession = GeckoSession().apply {
@@ -199,7 +192,7 @@ fun GreyBrowser() {
         )
     }
 
-    // ── Dialogs ───────────────────────────────────────────────────
+    // Dialogs
     if (showSettings) {
         SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }) {
             tabs.forEach { applySettingsToSession(it.session) }
@@ -218,7 +211,7 @@ fun GreyBrowser() {
         )
     }
 
-    // ── Context Menu ──────────────────────────────────────────────
+    // Context Menu
     if (showContextMenu && contextMenuUri != null) {
         Popup(
             alignment = Alignment.Center,
@@ -252,7 +245,7 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Fullscreen Tab Manager ────────────────────────────────────
+    // Fullscreen Tab Manager
     if (showTabManager) {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }
         val sortedDomains = domainGroups.keys.sortedWith(
@@ -273,7 +266,6 @@ fun GreyBrowser() {
             dragHandle = null
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Header
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -287,7 +279,6 @@ fun GreyBrowser() {
 
                 Divider(color = Color.DarkGray)
 
-                // Group Bar
                 LazyRow(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
                     items(sortedDomains) { domain ->
                         val isSelected = domain == selectedDomain
@@ -322,7 +313,6 @@ fun GreyBrowser() {
 
                 Divider(color = Color.DarkGray)
 
-                // Tab List
                 val tabsToShow = domainGroups[selectedDomain] ?: emptyList()
                 val listState = rememberLazyListState()
 
@@ -350,7 +340,6 @@ fun GreyBrowser() {
                                 modifier = Modifier.fillMaxWidth().padding(16.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Favicon
                                 if (favicon != null) {
                                     Image(
                                         bitmap = favicon.asImageBitmap(),
@@ -408,7 +397,6 @@ fun GreyBrowser() {
                     }
                 }
 
-                // Bottom Actions
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                     OutlinedButton(
                         onClick = {
@@ -433,7 +421,7 @@ fun GreyBrowser() {
 
                     Spacer(Modifier.height(8.dp))
 
-                    Row(modifier = Modifier.fillMaxWidth()) {
+                    Row {
                         val isPinned = pinnedDomains.contains(selectedDomain)
                         OutlinedButton(
                             onClick = {
@@ -478,7 +466,7 @@ fun GreyBrowser() {
         }
     }
 
-    // ── URL Bar with improved updating and select-all ─────────────
+    // URL Bar
     var urlInput by remember { mutableStateOf(TextFieldValue(currentTab.url)) }
     var isUrlFocused by remember { mutableStateOf(false) }
 
@@ -549,19 +537,12 @@ fun GreyBrowser() {
                         containerColor = Color(0xFF1E1E1E),
                         shape = RectangleShape
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("Scripting", color = Color.White) },
-                            onClick = { showMenu = false; showScripting = true }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Settings", color = Color.White) },
-                            onClick = { showMenu = false; showSettings = true }
-                        )
+                        DropdownMenuItem(text = { Text("Scripting", color = Color.White) }, onClick = { showMenu = false; showScripting = true })
+                        DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                     }
                 }
             }
 
-            // Web Content Area
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 GeckoViewBox()
             }
@@ -569,7 +550,7 @@ fun GreyBrowser() {
     }
 }
 
-// ── Helper Composables ─────────────────────────────────────────────
+// ── Helper Composables (unchanged) ─────────────────────────────────
 @Composable
 fun ContextMenuItem(text: String, onClick: () -> Unit) {
     Box(
