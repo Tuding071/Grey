@@ -1,6 +1,7 @@
 package com.grey.browser
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -17,21 +18,27 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
@@ -41,199 +48,644 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import java.io.File
 import java.io.FileOutputStream
-import java.util.UUID
-
-// ── Media Management (LRU Cache) ──────────────────────────────────
-object GeckoMediaManager {
-    fun saveMedia(context: Context, id: String, bitmap: Bitmap, folder: String, limit: Int) {
-        val dir = File(context.filesDir, folder).apply { if (!exists()) mkdirs() }
-        val file = File(dir, "$id.jpg")
-        FileOutputStream(file).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 70, out)
-        }
-        val files = dir.listFiles()?.sortedBy { it.lastModified() } ?: return
-        if (files.size > limit) {
-            files.take(files.size - limit).forEach { it.delete() }
-        }
-    }
-
-    fun loadMedia(context: Context, id: String, folder: String): Bitmap? {
-        val file = File(File(context.filesDir, folder), "$id.jpg")
-        return if (file.exists()) BitmapFactory.decodeFile(file.absolutePath) else null
-    }
-}
-
-// ── State Wrapper ──────────────────────────────────────────────────
-class TabState(val session: GeckoSession, val id: String = UUID.randomUUID().toString()) {
-    var title by mutableStateOf("New Tab")
-    var url by mutableStateOf("about:blank")
-    var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
-}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { GreyBrowser() }
+        setContent {
+            GreyBrowser()
+        }
     }
 }
 
+// ── Cache Manager for Thumbnails & Favicons ─────────────────────────
+object ThumbnailCacheManager {
+    fun saveImage(context: Context, folderName: String, fileName: String, bitmap: Bitmap, limit: Int) {
+        val dir = File(context.filesDir, folderName)
+        if (!dir.exists()) dir.mkdirs()
+
+        // Clean up url strings to be safe file names
+        val safeFileName = fileName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val file = File(dir, "$safeFileName.png")
+        
+        try {
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 80, out) // Compress for storage
+            }
+            
+            // Enforce Limits: Delete oldest if over limit
+            val files = dir.listFiles()?.sortedBy { it.lastModified() } ?: return
+            if (files.size > limit) {
+                val toDeleteCount = files.size - limit
+                for (i in 0 until toDeleteCount) {
+                    files[i].delete()
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun getImage(context: Context, folderName: String, fileName: String): Bitmap? {
+        val safeFileName = fileName.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        val file = File(context.filesDir, "$folderName/$safeFileName.png")
+        if (file.exists()) {
+            return BitmapFactory.decodeFile(file.absolutePath)
+        }
+        return null
+    }
+}
+
+// ── State Wrapper for Tabs ──────────────────────────────────────────
+class TabState(val session: GeckoSession) {
+    var title by mutableStateOf("New Tab")
+    var url by mutableStateOf("about:blank")
+    var progress by mutableIntStateOf(100)
+    var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
+}
+
+fun getDomainName(url: String): String {
+    if (url == "about:blank" || url.isBlank()) return "Home"
+    return try {
+        Uri.parse(url).host?.removePrefix("www.") ?: "Unknown"
+    } catch (e: Exception) {
+        "Unknown"
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
+    val activity = context as? ComponentActivity
+    val clipboardManager = LocalClipboardManager.current
     val runtime = remember { GeckoRuntime.create(context) }
-    val tabs = remember { mutableStateListOf<TabState>() }
+    val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
+    val coroutineScope = rememberCoroutineScope()
+
+    val applySettingsToSession = { session: GeckoSession ->
+        session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
+        session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
+        session.settings.suspendMediaWhenInactive = !prefs.getBoolean("media.autoplay.enabled", true)
+    }
+
+    var showContextMenu by remember { mutableStateOf(false) }
+    var contextMenuUri by remember { mutableStateOf<String?>(null) }
+
+    val setupDelegates = { tabState: TabState ->
+        tabState.session.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(session: GeckoSession, url: String) {
+                tabState.url = url
+                tabState.progress = 5
+                tabState.lastUpdated = System.currentTimeMillis()
+            }
+            override fun onPageStop(session: GeckoSession, success: Boolean) {
+                tabState.progress = 100
+                tabState.lastUpdated = System.currentTimeMillis()
+            }
+            override fun onProgressChange(session: GeckoSession, progress: Int) {
+                tabState.progress = progress
+            }
+        }
+        
+        // Navigation Delegate is required to catch real URLs dynamically changing
+        tabState.session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLocationChange(session: GeckoSession, url: String?) {
+                if (url != null) {
+                    tabState.url = url
+                    tabState.lastUpdated = System.currentTimeMillis()
+                }
+            }
+        }
+
+        tabState.session.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onTitleChange(session: GeckoSession, title: String?) {
+                tabState.title = title ?: "New Tab"
+            }
+            override fun onContextMenu(
+                session: GeckoSession, screenX: Int, screenY: Int, element: GeckoSession.ContentDelegate.ContextElement
+            ) {
+                if (element.linkUri != null) {
+                    contextMenuUri = element.linkUri
+                    showContextMenu = true
+                }
+            }
+        }
+    }
+
+    // Tabs Manager State
+    val tabs = remember {
+        mutableStateListOf<TabState>().apply {
+            val initialSession = GeckoSession().apply {
+                applySettingsToSession(this)
+                open(runtime)
+                loadUri("about:blank")
+            }
+            val initialTab = TabState(initialSession)
+            setupDelegates(initialTab)
+            add(initialTab)
+        }
+    }
+
     var currentTabIndex by remember { mutableIntStateOf(0) }
     var showTabManager by remember { mutableStateOf(false) }
-    var previewTab by remember { mutableStateOf<TabState?>(null) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showScripting by remember { mutableStateOf(false) }
 
-    // Helper to add tabs
-    fun addNewTab(url: String = "about:blank") {
-        val session = GeckoSession().apply { open(runtime); loadUri(url) }
-        val newTab = TabState(session)
-        
-        session.progressDelegate = object : GeckoSession.ProgressDelegate {
-            override fun onLocationChange(session: GeckoSession, url: String?) {
-                newTab.url = url ?: "about:blank"
-                newTab.lastUpdated = System.currentTimeMillis()
-            }
-        }
-        session.contentDelegate = object : GeckoSession.ContentDelegate {
-            override fun onTitleChange(session: GeckoSession, title: String?) {
-                newTab.title = title ?: "New Tab"
-            }
-        }
-        tabs.add(newTab)
-        currentTabIndex = tabs.lastIndex
-    }
+    // Grouping State
+    val pinnedDomains = remember { mutableStateListOf<String>() }
+    var selectedDomain by remember { mutableStateOf("Home") }
 
-    // Initialize first tab
-    if (tabs.isEmpty()) { LaunchedEffect(Unit) { addNewTab() } }
+    val currentTab = tabs.getOrNull(currentTabIndex) ?: tabs.first()
 
-    val currentTab = tabs.getOrNull(currentTabIndex) ?: return
-
-    // URL Field State
-    var urlInput by remember { mutableStateOf(TextFieldValue(currentTab.url)) }
-    LaunchedEffect(currentTab.url) { urlInput = TextFieldValue(currentTab.url) }
-
+    // ── Navigation / Back Button Handling ─────────────────────────
     BackHandler {
-        if (showTabManager) showTabManager = false
-        else if (currentTab.session.canGoBack()) currentTab.session.goBack()
-        else if (tabs.size > 1) {
-            tabs.removeAt(currentTabIndex)
-            currentTabIndex = tabs.lastIndex
+        if (showTabManager) {
+            showTabManager = false
+        } else if (currentTab.url == "about:blank") {
+            if (tabs.size > 1) {
+                tabs.remove(currentTab)
+                currentTab.session.close()
+                currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+            } else {
+                activity?.finish()
+            }
+        } else {
+            currentTab.session.goBack()
         }
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // ── Top Bar ──
-            Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { 
-                    // Capture thumbnail before opening manager
-                    currentTab.session.screenshot().accept { bm ->
-                        if (bm != null) GeckoMediaManager.saveMedia(context, currentTab.id, bm, "thumbs", 50)
-                    }
-                    showTabManager = true 
-                }) {
-                    Icon(Icons.Default.Tab, null, tint = Color.White)
-                }
-
-                OutlinedTextField(
-                    value = urlInput,
-                    onValueChange = { urlInput = it },
-                    modifier = Modifier.weight(1f).onFocusChanged {
-                        if (it.isFocused) {
-                            urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length))
-                        }
-                    },
-                    textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
-                    singleLine = true,
-                    shape = RectangleShape,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { currentTab.session.loadUri(urlInput.text) }),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.White, unfocusedBorderColor = Color.Gray,
-                        focusedContainerColor = Color.Black, unfocusedContainerColor = Color.Black
-                    )
-                )
-            }
-
-            // ── GeckoView Content ──
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                AndroidView(
-                    factory = { GeckoView(it).apply { setSession(currentTab.session) } },
-                    update = { it.setSession(currentTab.session) },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // ── Full Screen Tab Manager ──
-                if (showTabManager) {
-                    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                        Column(modifier = Modifier.systemBarsPadding()) {
-                            Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { showTabManager = false }) { Icon(Icons.Default.Close, null, tint = Color.White) }
-                                Text("Tabs", color = Color.White, fontSize = 20.sp)
-                                Spacer(Modifier.weight(1f))
-                                IconButton(onClick = { addNewTab(); showTabManager = false }) { Icon(Icons.Default.Add, null, tint = Color.White) }
-                            }
-
-                            LazyColumn(modifier = Modifier.weight(1f)) {
-                                items(tabs) { tab ->
-                                    val isCurrent = tab == currentTab
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth()
-                                            .background(if (isCurrent) Color(0xFF1A1A1A) else Color.Transparent)
-                                        .clickable { previewTab = tab }
-                                        .padding(16.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(tab.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                        IconButton(onClick = { 
-                                            val idx = tabs.indexOf(tab)
-                                            tabs.remove(tab)
-                                            if (tabs.isEmpty()) addNewTab()
-                                            currentTabIndex = tabs.lastIndex
-                                        }) { Icon(Icons.Default.Close, null, tint = Color.Gray, modifier = Modifier.size(18.dp)) }
-                                    }
-                                }
-                            }
-                        }
+    @Composable
+    fun GeckoViewBox() {
+        AndroidView(
+            factory = { ctx -> 
+                GeckoView(ctx).apply { 
+                    setSession(currentTab.session)
+                } 
+            },
+            update = { geckoView -> 
+                geckoView.setSession(currentTab.session) 
+                
+                // Example hook: Capture thumbnail when tab manager is about to open
+                if (showTabManager && currentTab.progress == 100) {
+                    coroutineScope.launch {
+                        // For GeckoView, extracting pixels usually requires session.compositorController
+                        // As a fallback implementation structure: 
+                        // val bitmap = extractBitmapFromView(geckoView) 
+                        // ThumbnailCacheManager.saveImage(context, "thumbnails", currentTab.url, bitmap, 50)
                     }
                 }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+    }
 
-                // ── Center Preview Popup ──
-                if (previewTab != null) {
-                    Popup(alignment = Alignment.Center, onDismissRequest = { previewTab = null }) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(0.8f).aspectRatio(0.7f),
-                            border = BorderStroke(1.dp, Color.White),
-                            colors = CardDefaults.cardColors(containerColor = Color.Black),
-                            shape = RectangleShape
+    // ── Tab Manager Full Screen Overlay ───────────────────────────────
+    if (showTabManager) {
+        val domainGroups = tabs.groupBy { getDomainName(it.url) }
+        val sortedDomains = domainGroups.keys.sortedWith(
+            compareByDescending<String> { pinnedDomains.contains(it) }
+            .thenByDescending { domain -> domainGroups[domain]?.maxOfOrNull { it.lastUpdated } ?: 0L }
+        )
+
+        LaunchedEffect(Unit) {
+            selectedDomain = getDomainName(currentTab.url)
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color(0xFF121212) // Pitch black/dark background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF1E1E1E)).padding(16.dp), 
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = { showTabManager = false }) { 
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White) 
+                    }
+                    Text("Tabs", style = TextStyle(color = Color.White, fontSize = 20.sp))
+                }
+
+                // Horizontal Group Bar (Favicon/Domain)
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF1E1E1E)).padding(horizontal = 8.dp, vertical = 8.dp)
+                ) {
+                    items(sortedDomains) { domain ->
+                        val isSelected = domain == selectedDomain
+                        val isPinned = pinnedDomains.contains(domain)
+                        val tabCount = domainGroups[domain]?.size ?: 0
+                        
+                        // Load favicon dynamically
+                        var faviconBitmap by remember { mutableStateOf<Bitmap?>(null) }
+                        LaunchedEffect(domain) {
+                            withContext(Dispatchers.IO) {
+                                faviconBitmap = ThumbnailCacheManager.getImage(context, "favicons", domain)
+                            }
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .padding(end = 8.dp)
+                                .clickable { selectedDomain = domain }
+                                .border(if (isSelected) 1.dp else 0.dp, Color.White, RectangleShape),
+                            color = if (isSelected) Color(0xFF2A2A2A) else Color.Transparent
                         ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                val thumb = GeckoMediaManager.loadMedia(context, previewTab!!.id, "thumbs")
-                                Box(modifier = Modifier.weight(1f).fillMaxWidth().clickable {
-                                    currentTabIndex = tabs.indexOf(previewTab)
-                                    previewTab = null
-                                    showTabManager = false
-                                }) {
-                                    if (thumb != null) {
-                                        Image(thumb.asImageBitmap(), null, modifier = Modifier.fillMaxSize())
-                                    } else {
-                                        Text("No Preview Available", color = Color.Gray, modifier = Modifier.align(Alignment.Center))
-                                    }
+                            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (isPinned) Text("📌 ", fontSize = 12.sp)
+                                
+                                if (faviconBitmap != null) {
+                                    Image(
+                                        bitmap = faviconBitmap!!.asImageBitmap(),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                } else {
+                                    // Fallback to domain text if no favicon
+                                    Text(domain, color = Color.White, fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.width(6.dp))
                                 }
-                                Text(previewTab!!.title, color = Color.White, modifier = Modifier.padding(8.dp), maxLines = 1)
+                                
+                                // Group tab counter badge
+                                Box(modifier = Modifier.background(Color.Gray).padding(horizontal = 4.dp, vertical = 2.dp)) {
+                                    Text(tabCount.toString(), color = Color.White, fontSize = 10.sp)
+                                }
                             }
                         }
                     }
                 }
+
+                Divider(color = Color.DarkGray, thickness = 1.dp)
+
+                // Tab List for Selected Group (Thumbnails Centered)
+                val tabsToShow = domainGroups[selectedDomain] ?: emptyList()
+                val listState = rememberLazyListState()
+                
+                LaunchedEffect(selectedDomain) {
+                    val index = tabsToShow.indexOf(currentTab)
+                    if (index >= 0) listState.scrollToItem(index)
+                }
+
+                LazyColumn(
+                    state = listState, 
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(tabsToShow) { tab ->
+                        val isCurrent = tab == currentTab
+                        
+                        var thumbBitmap by remember { mutableStateOf<Bitmap?>(null) }
+                        LaunchedEffect(tab.url) {
+                            withContext(Dispatchers.IO) {
+                                thumbBitmap = ThumbnailCacheManager.getImage(context, "thumbnails", tab.url)
+                            }
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    currentTabIndex = tabs.indexOf(tab)
+                                    showTabManager = false
+                                }
+                                .border(if (isCurrent) 2.dp else 1.dp, if (isCurrent) Color.White else Color.DarkGray, RectangleShape),
+                            color = Color(0xFF1E1E1E)
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                // Top bar of the card
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = tab.title,
+                                        color = if (isCurrent) Color.White else Color.Gray,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(onClick = {
+                                        tab.session.close()
+                                        tabs.remove(tab)
+                                        if (tabs.isEmpty()) {
+                                            val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri("about:blank") }
+                                            tabs.add(TabState(s).also { setupDelegates(it) })
+                                            currentTabIndex = 0
+                                        } else {
+                                            if (currentTabIndex >= tabs.size) currentTabIndex = tabs.lastIndex
+                                        }
+                                        selectedDomain = getDomainName(tabs[currentTabIndex].url)
+                                    }) {
+                                        Icon(Icons.Default.Close, contentDescription = "Close tab", tint = Color.White)
+                                    }
+                                }
+                                
+                                // Thumbnail Preview Center
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(200.dp)
+                                        .background(Color.Black),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (thumbBitmap != null) {
+                                        Image(
+                                            bitmap = thumbBitmap!!.asImageBitmap(),
+                                            contentDescription = "Tab Preview",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    } else {
+                                        Text("No Preview", color = Color.Gray)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Bottom Actions
+                Column(modifier = Modifier.fillMaxWidth().background(Color(0xFF1E1E1E)).padding(16.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri("about:blank") }
+                            tabs.add(TabState(s).also { setupDelegates(it) })
+                            currentTabIndex = tabs.lastIndex
+                            selectedDomain = "Home"
+                            showTabManager = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("New Tab", color = Color.White)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        val isPinned = pinnedDomains.contains(selectedDomain)
+                        OutlinedButton(
+                            onClick = {
+                                if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RectangleShape,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color.White)
+                        ) {
+                            Text(if (isPinned) "Unpin Group" else "Pin Group")
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        OutlinedButton(
+                            onClick = {
+                                val tabsToRemove = tabs.filter { getDomainName(it.url) == selectedDomain }
+                                tabsToRemove.forEach { it.session.close() }
+                                tabs.removeAll(tabsToRemove)
+                                
+                                if (tabs.isEmpty()) {
+                                    val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri("about:blank") }
+                                    tabs.add(TabState(s).also { setupDelegates(it) })
+                                    currentTabIndex = 0
+                                } else {
+                                    currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+                                }
+                                selectedDomain = getDomainName(tabs[currentTabIndex].url)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RectangleShape,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color.White)
+                        ) {
+                            Text("Delete Group")
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    // ── Main UI Content ───────────────────────────────────────────
+    if (!showTabManager) {
+        // Dialogs
+        if (showSettings) {
+            SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }, onSettingsApplied = { tabs.forEach { applySettingsToSession(it.session) } })
+        }
+        if (showScripting) {
+            ScriptingDialog(
+                initialScript = prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "",
+                onDismiss = { showScripting = false },
+                onSaveAndRun = { script ->
+                    prefs.edit().putString("user_script", script).apply()
+                    currentTab.session.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();"))
+                    showScripting = false
+                }
+            )
+        }
+        if (showContextMenu && contextMenuUri != null) {
+            Popup(alignment = Alignment.Center, onDismissRequest = { showContextMenu = false }, properties = PopupProperties(focusable = true)) {
+                Column(modifier = Modifier.border(1.dp, Color.White, RectangleShape).background(Color(0xFF1E1E1E)).width(IntrinsicSize.Max)) {
+                    ContextMenuItem("New Tab") {
+                        val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(contextMenuUri!!) }
+                        tabs.add(TabState(s).also { setupDelegates(it) })
+                        currentTabIndex = tabs.lastIndex
+                        showContextMenu = false
+                    }
+                    ContextMenuItem("Open in Background") {
+                        val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(contextMenuUri!!) }
+                        tabs.add(TabState(s).also { setupDelegates(it) })
+                        showContextMenu = false
+                    }
+                    ContextMenuItem("Copy link") {
+                        clipboardManager.setText(AnnotatedString(contextMenuUri!!))
+                        showContextMenu = false
+                    }
+                }
+            }
+        }
+
+        var urlInput by remember { mutableStateOf(TextFieldValue(currentTab.url)) }
+        var isUrlFocused by remember { mutableStateOf(false) }
+
+        // Sync real URL updates to field when NOT focused
+        LaunchedEffect(currentTab.url) {
+            if (!isUrlFocused) {
+                urlInput = TextFieldValue(currentTab.url)
+            }
+        }
+
+        Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF121212)) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = { showTabManager = true }) {
+                        Icon(Icons.Default.Tab, contentDescription = "Open tabs", tint = Color.White)
+                    }
+
+                    val isLoading = currentTab.progress in 1..99
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = { urlInput = it },
+                        singleLine = true,
+                        placeholder = { Text("Enter URL", color = Color.White.copy(alpha = 0.5f)) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = 8.dp)
+                            .background(Color(0xFF1E1E1E))
+                            .onFocusChanged { focusState ->
+                                // Select all when focus is gained
+                                if (focusState.isFocused && !isUrlFocused) {
+                                    urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length))
+                                }
+                                isUrlFocused = focusState.isFocused
+                            }
+                            .drawBehind {
+                                if (isLoading) {
+                                    val fraction = currentTab.progress / 100f
+                                    drawRect(color = Color.White, size = size.copy(width = size.width * fraction))
+                                }
+                            },
+                        textStyle = TextStyle(color = if (isLoading) Color.Gray else Color.White, fontSize = 16.sp),
+                        shape = RectangleShape,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(
+                            onGo = {
+                                val input = urlInput.text
+                                val uri = if (input.contains("://")) input else "https://$input"
+                                currentTab.session.loadUri(uri)
+                                // Remove focus after go
+                            }
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
+                            focusedBorderColor = Color.White, unfocusedBorderColor = Color.White,
+                            cursorColor = if (isLoading) Color.Gray else Color.White
+                        )
+                    )
+
+                    Box {
+                        IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "Menu", tint = Color.White) }
+                        DropdownMenu(
+                            expanded = showMenu, onDismissRequest = { showMenu = false },
+                            modifier = Modifier.border(1.dp, Color.White, RectangleShape),
+                            containerColor = Color(0xFF1E1E1E)
+                        ) {
+                            DropdownMenuItem(text = { Text("Scripting", color = Color.White) }, onClick = { showMenu = false; showScripting = true })
+                            DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
+                        }
+                    }
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    GeckoViewBox()
+                }
+            }
+        }
+    }
+}
+
+// ── Custom Menu Item Helper ───────────────────────────────────────
+@Composable
+fun ContextMenuItem(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Text(text, color = Color.White, fontSize = 16.sp)
+    }
+}
+
+// ── Scripting & Settings Dialogs ──────────────────────────────────
+@Composable
+fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: (String) -> Unit) {
+    var script by remember { mutableStateOf(initialScript) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Inject JavaScript", color = Color.White, fontSize = 20.sp) },
+        text = {
+            Column {
+                Text("Write or paste JS below. It will execute immediately on the current tab.", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.padding(bottom = 8.dp))
+                OutlinedTextField(
+                    value = script, onValueChange = { script = it }, modifier = Modifier.fillMaxWidth().height(200.dp),
+                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
+                    shape = RectangleShape
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSaveAndRun(script) }) { Text("Run", color = Color.White) } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Close", color = Color.White) } },
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
+    )
+}
+
+@Composable
+fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
+    var jsEnabled by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
+    var trackingProtection by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
+    var cookieBehavior by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
+    var autoplayMedia by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
+
+    val applyChanges = {
+        prefs.edit().putBoolean("javascript.enabled", jsEnabled).putBoolean("privacy.trackingprotection.enabled", trackingProtection).putInt("network.cookie.cookieBehavior", cookieBehavior).putBoolean("media.autoplay.enabled", autoplayMedia).apply()
+        onSettingsApplied(); onDismiss()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss, title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
+        text = {
+            Column {
+                SettingSwitch(label = "JavaScript", checked = jsEnabled, onCheckedChange = { jsEnabled = it })
+                SettingSwitch(label = "Tracking Protection", checked = trackingProtection, onCheckedChange = { trackingProtection = it })
+                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp)
+                CookieBehaviorSelector(current = cookieBehavior, onChange = { cookieBehavior = it })
+                SettingSwitch(label = "Autoplay Media", checked = autoplayMedia, onCheckedChange = { autoplayMedia = it })
+            }
+        },
+        confirmButton = { TextButton(onClick = applyChanges) { Text("OK", color = Color.White) } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) } },
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
+    )
+}
+
+@Composable
+fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 14.sp)
+        Switch(checked = checked, onCheckedChange = onCheckedChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
+    val selectedText = options.firstOrNull { it.second == current }?.first ?: "Accept all"
+
+    Box {
+        OutlinedTextField(
+            value = selectedText, onValueChange = {}, readOnly = true, trailingIcon = { Icon(Icons.Default.Close, contentDescription = null, tint = Color.White) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), enabled = true
+        )
+        Box(modifier = Modifier.matchParentSize().clickable { expanded = true })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E)) {
+            options.forEach { (label, value) -> DropdownMenuItem(text = { Text(label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
         }
     }
 }
