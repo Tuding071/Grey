@@ -96,7 +96,7 @@ class TabState {
     var progress by mutableIntStateOf(100)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
     var isBlankTab by mutableStateOf(true)
-    var isDiscarded by mutableStateOf(false)  // Session closed, needs reload
+    var isDiscarded by mutableStateOf(false)
 }
 
 // Helper to extract the main domain for grouping (ignores subdomains)
@@ -136,8 +136,9 @@ fun GreyBrowser() {
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuUri by remember { mutableStateOf<String?>(null) }
 
-    val setupDelegates = { tabState: TabState ->
-        val session = tabState.session ?: return@remember
+    // Use anonymous function instead of lambda for proper return
+    val setupDelegates = fun(tabState: TabState) {
+        val session = tabState.session ?: return
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 tabState.url = url
@@ -226,7 +227,6 @@ fun GreyBrowser() {
     fun enforceTabLimit() {
         val loadedTabs = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
         if (loadedTabs.size > MAX_LOADED_TABS) {
-            // Find the oldest loaded tab that is NOT the current tab
             val toDiscard = loadedTabs
                 .filter { tabs.indexOf(it) != currentTabIndex }
                 .minByOrNull { it.lastUpdated }
@@ -237,7 +237,6 @@ fun GreyBrowser() {
                 tab.session = null
                 tab.isDiscarded = true
                 tab.progress = 100
-                // URL and title are preserved for grouping and display
             }
         }
     }
@@ -248,14 +247,14 @@ fun GreyBrowser() {
             val newSession = GeckoSession().apply {
                 applySettingsToSession(this)
                 open(runtime)
-                setActive(false)  // Start paused, will be activated if it's the current tab
+                setActive(false)
                 loadUri(tab.url)
             }
             tab.session = newSession
             tab.isDiscarded = false
             setupDelegates(tab)
-            tab.lastUpdated = System.currentTimeMillis()  // Mark as newest
-            enforceTabLimit()  // This might discard another tab
+            tab.lastUpdated = System.currentTimeMillis()
+            enforceTabLimit()
         }
     }
 
@@ -264,17 +263,14 @@ fun GreyBrowser() {
     // ═══════════════════════════════════════════════════════════════
     LaunchedEffect(showTabManager, currentTabIndex) {
         if (showTabManager) {
-            // Tab manager open: EVERYTHING paused
             homeSession.setActive(false)
             tabs.forEach { it.session?.setActive(false) }
         } else {
-            // Tab manager closed: only active tab runs
             homeSession.setActive(currentTabIndex == -1)
             
             tabs.forEachIndexed { index, tabState ->
                 val isActive = index == currentTabIndex
                 
-                // If this tab is active and discarded, restore it first
                 if (isActive && tabState.isDiscarded) {
                     restoreTab(tabState)
                 }
@@ -290,7 +286,7 @@ fun GreyBrowser() {
             applySettingsToSession(this)
             open(runtime)
             loadUri(url)
-            setActive(false)  // Start paused
+            setActive(false)
         }
         val tabState = TabState().apply {
             this.session = session
@@ -301,7 +297,7 @@ fun GreyBrowser() {
             setupDelegates(this)
         }
         tabs.add(tabState)
-        enforceTabLimit()  // This will discard oldest if exceeds 10
+        enforceTabLimit()
     }
 
     fun removeTab(index: Int) {
@@ -341,7 +337,6 @@ fun GreyBrowser() {
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            // Discarded tab being restored - show loading
             Box(
                 modifier = Modifier.fillMaxSize().background(Color(0xFF121212)),
                 contentAlignment = Alignment.Center
