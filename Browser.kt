@@ -68,7 +68,7 @@ class TabState(val session: GeckoSession) {
     var favicon by mutableStateOf<Bitmap?>(null)
 }
 
-// Favicon Cache (max 100, removes oldest when full)
+// Favicon Cache (max 100, LRU - deletes oldest automatically)
 val faviconCache = object : LinkedHashMap<String, Bitmap>(100, 0.75f, true) {
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean {
         return size > 100
@@ -93,7 +93,7 @@ fun GreyBrowser() {
     val runtime = remember { GeckoRuntime.create(context) }
     val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
 
-    val applySettingsToSession = { session: GeckoSession ->
+    val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
         session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
         session.settings.suspendMediaWhenInactive = !prefs.getBoolean("media.autoplay.enabled", true)
@@ -102,7 +102,7 @@ fun GreyBrowser() {
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuUri by remember { mutableStateOf<String?>(null) }
 
-    val setupDelegates = { tabState: TabState ->
+    val setupDelegates: (TabState) -> Unit = { tabState ->
         tabState.session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 tabState.url = url
@@ -125,6 +125,14 @@ fun GreyBrowser() {
                 tabState.title = title ?: "New Tab"
             }
 
+            override fun onFaviconChange(session: GeckoSession, favicon: Bitmap?) {
+                tabState.favicon = favicon
+                favicon?.let {
+                    val domain = getDomainName(tabState.url)
+                    faviconCache[domain] = it
+                }
+            }
+
             override fun onContextMenu(
                 session: GeckoSession,
                 screenX: Int,
@@ -136,20 +144,15 @@ fun GreyBrowser() {
                     showContextMenu = true
                 }
             }
-
-            override fun onFaviconChange(session: GeckoSession, favicon: Bitmap?) {
-                tabState.favicon = favicon
-                favicon?.let {
-                    val domain = getDomainName(tabState.url)
-                    faviconCache[domain] = it
-                }
-            }
         }
     }
 
-    // Tabs Manager State
-    val tabs = remember {
-        mutableStateListOf<TabState>().apply {
+    // Tabs list
+    val tabs = remember { mutableStateListOf<TabState>() }
+
+    // Create initial tab if empty
+    LaunchedEffect(Unit) {
+        if (tabs.isEmpty()) {
             val initialSession = GeckoSession().apply {
                 applySettingsToSession(this)
                 open(runtime)
@@ -157,7 +160,7 @@ fun GreyBrowser() {
             }
             val initialTab = TabState(initialSession)
             setupDelegates(initialTab)
-            add(initialTab)
+            tabs.add(initialTab)
         }
     }
 
@@ -170,7 +173,7 @@ fun GreyBrowser() {
     val pinnedDomains = remember { mutableStateListOf<String>() }
     var selectedDomain by remember { mutableStateOf("Blank") }
 
-    val currentTab = tabs.getOrNull(currentTabIndex) ?: tabs.first()
+    val currentTab = tabs.getOrNull(currentTabIndex) ?: tabs.firstOrNull() ?: return
 
     // Back Handler
     BackHandler {
@@ -196,11 +199,11 @@ fun GreyBrowser() {
         )
     }
 
-    // Dialogs
+    // ── Dialogs ───────────────────────────────────────────────────
     if (showSettings) {
-        SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }, onSettingsApplied = {
+        SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }) {
             tabs.forEach { applySettingsToSession(it.session) }
-        })
+        }
     }
 
     if (showScripting) {
@@ -215,7 +218,7 @@ fun GreyBrowser() {
         )
     }
 
-    // Context Menu
+    // ── Context Menu ──────────────────────────────────────────────
     if (showContextMenu && contextMenuUri != null) {
         Popup(
             alignment = Alignment.Center,
@@ -230,13 +233,15 @@ fun GreyBrowser() {
             ) {
                 ContextMenuItem("New Tab") {
                     val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(contextMenuUri!!) }
-                    tabs.add(TabState(s).also { setupDelegates(it) })
+                    val newTab = TabState(s).also { setupDelegates(it) }
+                    tabs.add(newTab)
                     currentTabIndex = tabs.lastIndex
                     showContextMenu = false
                 }
                 ContextMenuItem("Open in Background") {
                     val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(contextMenuUri!!) }
-                    tabs.add(TabState(s).also { setupDelegates(it) })
+                    val newTab = TabState(s).also { setupDelegates(it) }
+                    tabs.add(newTab)
                     showContextMenu = false
                 }
                 ContextMenuItem("Copy link") {
@@ -247,7 +252,7 @@ fun GreyBrowser() {
         }
     }
 
-    // Fullscreen Tab Manager
+    // ── Fullscreen Tab Manager ────────────────────────────────────
     if (showTabManager) {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }
         val sortedDomains = domainGroups.keys.sortedWith(
@@ -287,7 +292,7 @@ fun GreyBrowser() {
                     items(sortedDomains) { domain ->
                         val isSelected = domain == selectedDomain
                         val isPinned = pinnedDomains.contains(domain)
-                        val count = domainGroups[domain]?.size ?: 0
+                        val tabCount = domainGroups[domain]?.size ?: 0
 
                         Surface(
                             modifier = Modifier
@@ -308,7 +313,7 @@ fun GreyBrowser() {
                                     modifier = Modifier.background(Color.DarkGray, RectangleShape)
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
-                                    Text(count.toString(), fontSize = 11.sp, color = Color.White)
+                                    Text(tabCount.toString(), fontSize = 11.sp, color = Color.White)
                                 }
                             }
                         }
@@ -342,9 +347,7 @@ fun GreyBrowser() {
                             color = if (isCurrent) Color(0xFF2A2A2A) else Color.Transparent
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 // Favicon
@@ -356,8 +359,7 @@ fun GreyBrowser() {
                                     )
                                 } else {
                                     Box(
-                                        modifier = Modifier.size(24.dp)
-                                            .background(Color.DarkGray, RectangleShape),
+                                        modifier = Modifier.size(24.dp).background(Color.DarkGray, RectangleShape),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text("🌐", fontSize = 14.sp)
@@ -387,13 +389,12 @@ fun GreyBrowser() {
                                     tabs.remove(tab)
 
                                     if (tabs.isEmpty()) {
-                                        val newSession = GeckoSession().apply {
+                                        val s = GeckoSession().apply {
                                             applySettingsToSession(this)
                                             open(runtime)
                                             loadUri("about:blank")
                                         }
-                                        val newTab = TabState(newSession)
-                                        setupDelegates(newTab)
+                                        val newTab = TabState(s).also { setupDelegates(it) }
                                         tabs.add(newTab)
                                         currentTabIndex = 0
                                     } else if (currentTabIndex >= tabs.size) {
@@ -416,7 +417,8 @@ fun GreyBrowser() {
                                 open(runtime)
                                 loadUri("about:blank")
                             }
-                            tabs.add(TabState(s).also { setupDelegates(it) })
+                            val newTab = TabState(s).also { setupDelegates(it) }
+                            tabs.add(newTab)
                             currentTabIndex = tabs.lastIndex
                             showTabManager = false
                         },
@@ -431,12 +433,11 @@ fun GreyBrowser() {
 
                     Spacer(Modifier.height(8.dp))
 
-                    Row {
+                    Row(modifier = Modifier.fillMaxWidth()) {
                         val isPinned = pinnedDomains.contains(selectedDomain)
                         OutlinedButton(
                             onClick = {
-                                if (isPinned) pinnedDomains.remove(selectedDomain)
-                                else pinnedDomains.add(selectedDomain)
+                                if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain)
                             },
                             modifier = Modifier.weight(1f),
                             shape = RectangleShape,
@@ -462,7 +463,7 @@ fun GreyBrowser() {
                                     tabs.add(TabState(s).also { setupDelegates(it) })
                                     currentTabIndex = 0
                                 } else {
-                                    currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+                                    currentTabIndex = currentTabIndex.coerceAtMost(tabs.lastIndex)
                                 }
                             },
                             modifier = Modifier.weight(1f),
@@ -477,7 +478,7 @@ fun GreyBrowser() {
         }
     }
 
-    // URL Bar
+    // ── URL Bar with improved updating and select-all ─────────────
     var urlInput by remember { mutableStateOf(TextFieldValue(currentTab.url)) }
     var isUrlFocused by remember { mutableStateOf(false) }
 
@@ -545,7 +546,6 @@ fun GreyBrowser() {
                     DropdownMenu(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
-                        modifier = Modifier.border(1.dp, Color.White, RectangleShape),
                         containerColor = Color(0xFF1E1E1E),
                         shape = RectangleShape
                     ) {
@@ -561,6 +561,7 @@ fun GreyBrowser() {
                 }
             }
 
+            // Web Content Area
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 GeckoViewBox()
             }
@@ -651,7 +652,7 @@ fun SettingsDialog(
             Column {
                 SettingSwitch(label = "JavaScript", checked = jsEnabled, onCheckedChange = { jsEnabled = it })
                 SettingSwitch(label = "Tracking Protection", checked = trackingProtection, onCheckedChange = { trackingProtection = it })
-                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp)
+                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp))
                 CookieBehaviorSelector(current = cookieBehavior, onChange = { cookieBehavior = it })
                 SettingSwitch(label = "Autoplay Media", checked = autoplayMedia, onCheckedChange = { autoplayMedia = it })
             }
