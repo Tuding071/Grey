@@ -14,9 +14,12 @@ package com.grey.browser
 // - session.loadUri() to load URLs
 // - session.goBack() / session.goForward() for navigation
 // - session.stop() to cancel loading
+// - session.setActive(false) to pause session (saves CPU/network)
+// - session.setActive(true) to resume session
 // - session.settings for browser settings
 // - No "currentUrl" property, use NavigationDelegate.onLocationChange
 // - GeckoSession must be opened with runtime before use
+// - GeckoSession.open() requires GeckoRuntime
 //
 // API Reference: https://mozilla.github.io/geckoview/javadoc/mozilla-central/
 // ═══════════════════════════════════════════════════════════════════
@@ -88,6 +91,7 @@ class TabState(val session: GeckoSession) {
     var progress by mutableIntStateOf(100)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
     var isBlankTab by mutableStateOf(true)
+    var hasLoaded by mutableStateOf(false)  // Track if page was ever loaded
 }
 
 // Helper to extract the main domain for grouping (ignores subdomains)
@@ -136,6 +140,7 @@ fun GreyBrowser() {
                 tabState.url = url
                 tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
+                tabState.hasLoaded = true
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
                 }
@@ -219,10 +224,38 @@ fun GreyBrowser() {
     // Get current tab (home tab or website tab)
     val currentTab = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
 
+    // ═══════════════════════════════════════════════════════════════
+    // FOREGROUND-ONLY TAB MANAGEMENT
+    // Pause all inactive tabs, only active tab runs
+    // ═══════════════════════════════════════════════════════════════
+    LaunchedEffect(currentTabIndex) {
+        // Pause all website tabs
+        tabs.forEachIndexed { index, tabState ->
+            if (index != currentTabIndex) {
+                // GeckoView: Pause inactive sessions to save CPU/network
+                tabState.session.setActive(false)
+            }
+        }
+        // Resume the active tab (if it's a website tab)
+        if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
+            val activeTab = tabs[currentTabIndex]
+            // GeckoView: Resume active session
+            activeTab.session.setActive(true)
+            // If never loaded, load now
+            if (!activeTab.hasLoaded && activeTab.url != "about:blank") {
+                activeTab.session.loadUri(activeTab.url)
+            }
+        }
+        // Home tab always stays active
+        homeSession.setActive(currentTabIndex == -1)
+    }
+
     // Helper to remove a tab properly
     fun removeTab(index: Int) {
         if (index < 0 || index >= tabs.size) return
         val tab = tabs[index]
+        // GeckoView: Pause before closing
+        tab.session.setActive(false)
         tab.session.close()  // GeckoView: Close session to free resources
         tabs.removeAt(index)
         if (tabs.isEmpty()) {
@@ -232,6 +265,23 @@ fun GreyBrowser() {
         } else if (currentTabIndex == index && tabs.isNotEmpty()) {
             currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
         }
+    }
+
+    // Helper to create a tab without loading (for "Open in Background")
+    fun createBackgroundTab(url: String) {
+        val session = GeckoSession().apply {
+            applySettingsToSession(this)
+            open(runtime)
+            // GeckoView: Don't loadUri yet - will load when first visited
+            setActive(false)  // GeckoView: Start paused
+        }
+        val tabState = TabState(session).apply {
+            setupDelegates(this)
+            this.url = url  // Set URL for grouping, but don't load
+            this.isBlankTab = false
+            this.hasLoaded = false  // Mark as not loaded
+        }
+        tabs.add(tabState)
     }
 
     // ── Navigation / Back Button Handling ─────────────────────────
@@ -246,6 +296,7 @@ fun GreyBrowser() {
             }
         } else {
             // On a website - try to go back in history
+            // GeckoView: Navigate back
             currentTab.session.goBack()
         }
     }
@@ -294,30 +345,25 @@ fun GreyBrowser() {
                     .background(Color(0xFF1E1E1E))
                     .width(IntrinsicSize.Max)
             ) {
+                // "Open in New Tab" - creates session, loads immediately, switches to it
                 ContextMenuItem("New Tab") {
                     val s = GeckoSession().apply { 
                         applySettingsToSession(this)
                         open(runtime)
-                        loadUri(contextMenuUri!!)
+                        loadUri(contextMenuUri!!)  // GeckoView: Load now (foreground)
                     }
                     tabs.add(TabState(s).also { 
                         setupDelegates(it)
                         it.isBlankTab = false
+                        it.hasLoaded = true
                     })
                     currentTabIndex = tabs.lastIndex
                     showContextMenu = false
                 }
+                // "Open in Background" - creates session, does NOT load until visited
                 ContextMenuItem("Open in Background") {
-                    val s = GeckoSession().apply { 
-                        applySettingsToSession(this)
-                        open(runtime)
-                        loadUri(contextMenuUri!!)
-                    }
-                    tabs.add(TabState(s).also { 
-                        setupDelegates(it)
-                        it.isBlankTab = false
-                    })
-                    // Don't switch to new tab - stays in background
+                    createBackgroundTab(contextMenuUri!!)
+                    // Don't switch to new tab - stays in background, not loaded
                     showContextMenu = false
                 }
                 ContextMenuItem("Copy link") {
@@ -506,6 +552,7 @@ fun GreyBrowser() {
                             } else {
                                 items(tabsToShow) { tab ->
                                     val isCurrent = tab == currentTab
+                                    val isLoaded = tab.hasLoaded
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -522,19 +569,31 @@ fun GreyBrowser() {
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = tab.title,
-                                                    color = if (isCurrent) Color.White else Color.Gray,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Text(
-                                                    text = tab.url,
-                                                    color = Color.Gray.copy(alpha = 0.7f),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    fontSize = 12.sp
-                                                )
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    // Show indicator for unloaded tabs
+                                                    if (!isLoaded) {
+                                                        Text(
+                                                            "⬜ ",
+                                                            color = Color.Gray,
+                                                            fontSize = 12.sp
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = if (isLoaded) tab.title else tab.url,
+                                                        color = if (isCurrent) Color.White else Color.Gray,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                if (isLoaded) {
+                                                    Text(
+                                                        text = tab.url,
+                                                        color = Color.Gray.copy(alpha = 0.7f),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        fontSize = 12.sp
+                                                    )
+                                                }
                                             }
                                             // Close button for each tab
                                             IconButton(onClick = {
@@ -608,7 +667,10 @@ fun GreyBrowser() {
                                     onClick = {
                                         // Close all tabs in the selected domain group
                                         val tabsToRemove = domainGroups[selectedDomain] ?: emptyList()
-                                        tabsToRemove.forEach { it.session.close() }
+                                        tabsToRemove.forEach { 
+                                            it.session.setActive(false)  // GeckoView: Pause before close
+                                            it.session.close()  // GeckoView: Close session
+                                        }
                                         tabs.removeAll(tabsToRemove)
                                         
                                         if (tabs.isEmpty()) {
@@ -709,16 +771,18 @@ fun GreyBrowser() {
                                     val session = GeckoSession().apply {
                                         applySettingsToSession(this)
                                         open(runtime)
-                                        loadUri(uri)
+                                        loadUri(uri)  // GeckoView: Load URL
                                     }
                                     val newTab = TabState(session).apply {
                                         setupDelegates(this)
                                         isBlankTab = false
+                                        hasLoaded = true
                                     }
                                     tabs.add(newTab)
                                     currentTabIndex = tabs.lastIndex
                                 } else {
                                     // On an existing website tab - load URL in current session
+                                    // GeckoView: Load URL
                                     currentTab.session.loadUri(uri)
                                 }
                             }
