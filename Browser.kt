@@ -656,6 +656,10 @@ fun GreyBrowser() {
                 domainGroups[domain]?.maxOfOrNull { it.lastUpdated } ?: 0L 
             }
         )
+        
+        // Split into pinned and unpinned
+        val pinnedSortedDomains = sortedDomains.filter { pinnedDomains.contains(it) }
+        val unpinnedSortedDomains = sortedDomains.filter { !pinnedDomains.contains(it) }
 
         LaunchedEffect(Unit) {
             selectedDomain = if (currentTab.isBlankTab) "" else getDomainName(currentTab.url)
@@ -694,92 +698,103 @@ fun GreyBrowser() {
                         }
                     }
 
+                    // ── Group Bar ──
                     if (sortedDomains.isNotEmpty()) {
-                        LazyRow(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            items(sortedDomains) { domain ->
-                                val isSelected = domain == selectedDomain
-                                val isPinned = pinnedDomains.contains(domain)
-                                val tabCount = domainGroups[domain]?.size ?: 0
-
-                                LaunchedEffect(domain) {
-                                    if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
-                                        faviconLoading[domain] = true
-                                        val cached = FaviconCache.getFaviconBitmap(context, domain)
-                                        if (cached != null) {
-                                            faviconBitmaps[domain] = cached
-                                        } else {
-                                            val downloaded = FaviconCache.downloadAndCacheFavicon(context, domain)
-                                            faviconBitmaps[domain] = downloaded
-                                        }
-                                        faviconLoading[domain] = false
+                        val groupRowState = rememberLazyListState()
+                        
+                        // Auto-scroll to selected domain
+                        LaunchedEffect(sortedDomains, selectedDomain) {
+                            val index = sortedDomains.indexOf(selectedDomain)
+                            if (index >= 0) {
+                                groupRowState.animateScrollToItem(index)
+                            }
+                        }
+                        
+                        Column {
+                            // Pinned section
+                            if (pinnedSortedDomains.isNotEmpty()) {
+                                Text(
+                                    "Pinned",
+                                    color = Color.White.copy(alpha = 0.7f),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+                                LazyRow(
+                                    state = groupRowState,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    items(pinnedSortedDomains) { domain ->
+                                        GroupChip(
+                                            domain = domain,
+                                            isSelected = domain == selectedDomain,
+                                            isPinned = true,
+                                            tabCount = domainGroups[domain]?.size ?: 0,
+                                            selected = { selectedDomain = domain },
+                                            faviconBitmap = faviconBitmaps[domain],
+                                            onLoadFavicon = {
+                                                if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
+                                                    faviconLoading[domain] = true
+                                                    coroutineScope.launch {
+                                                        val cached = FaviconCache.getFaviconBitmap(context, domain)
+                                                        if (cached != null) {
+                                                            faviconBitmaps[domain] = cached
+                                                        } else {
+                                                            val downloaded = FaviconCache.downloadAndCacheFavicon(context, domain)
+                                                            faviconBitmaps[domain] = downloaded
+                                                        }
+                                                        faviconLoading[domain] = false
+                                                    }
+                                                }
+                                            }
+                                        )
                                     }
                                 }
-
-                                Surface(
+                            }
+                            
+                            // Thick divider
+                            if (pinnedSortedDomains.isNotEmpty() && unpinnedSortedDomains.isNotEmpty()) {
+                                Divider(
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    thickness = 2.dp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                            
+                            // Unpinned section
+                            if (unpinnedSortedDomains.isNotEmpty()) {
+                                LazyRow(
+                                    state = groupRowState,
                                     modifier = Modifier
-                                        .padding(end = 8.dp)
-                                        .clickable { selectedDomain = domain }
-                                        .border(
-                                            if (isSelected) 1.dp else 0.dp,
-                                            Color.White,
-                                            RectangleShape
-                                        ),
-                                    color = if (isSelected) Color(0xFF2A2A2A) else Color.Transparent
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        if (isPinned) {
-                                            Icon(
-                                                Icons.Default.PushPin,
-                                                contentDescription = "Pinned",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                        }
-                                        
-                                        val bitmap = faviconBitmaps[domain]
-                                        if (bitmap != null) {
-                                            androidx.compose.foundation.Image(
-                                                bitmap = bitmap.asImageBitmap(),
-                                                contentDescription = domain,
-                                                modifier = Modifier
-                                                    .size(20.dp)
-                                                    .clip(CircleShape),
-                                                contentScale = ContentScale.Fit
-                                            )
-                                        } else {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(20.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color.DarkGray),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = domain.take(1).uppercase(),
-                                                    color = Color.White,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
+                                    items(unpinnedSortedDomains) { domain ->
+                                        GroupChip(
+                                            domain = domain,
+                                            isSelected = domain == selectedDomain,
+                                            isPinned = false,
+                                            tabCount = domainGroups[domain]?.size ?: 0,
+                                            selected = { selectedDomain = domain },
+                                            faviconBitmap = faviconBitmaps[domain],
+                                            onLoadFavicon = {
+                                                if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
+                                                    faviconLoading[domain] = true
+                                                    coroutineScope.launch {
+                                                        val cached = FaviconCache.getFaviconBitmap(context, domain)
+                                                        if (cached != null) {
+                                                            faviconBitmaps[domain] = cached
+                                                        } else {
+                                                            val downloaded = FaviconCache.downloadAndCacheFavicon(context, domain)
+                                                            faviconBitmaps[domain] = downloaded
+                                                        }
+                                                        faviconLoading[domain] = false
+                                                    }
+                                                }
                                             }
-                                        }
-                                        
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        
-                                        Box(
-                                            modifier = Modifier
-                                                .background(Color.DarkGray)
-                                                .padding(horizontal = 4.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(tabCount.toString(), color = Color.White, fontSize = 10.sp)
-                                        }
+                                        )
                                     }
                                 }
                             }
@@ -848,7 +863,7 @@ fun GreyBrowser() {
                                                 currentTabIndex = tabs.indexOf(tab)
                                                 showTabManager = false
                                             },
-                                        color = if (isCurrent) Color(0xFF2A2A2A) else Color.Transparent
+                                        color = if (isCurrent) Color.White else Color.Transparent
                                     ) {
                                         Row(
                                             modifier = Modifier
@@ -859,13 +874,13 @@ fun GreyBrowser() {
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(
                                                     text = tab.title,
-                                                    color = if (isCurrent) Color.White else Color.Gray,
+                                                    color = if (isCurrent) Color.Black else Color.White,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
                                                 Text(
                                                     text = tab.url,
-                                                    color = Color.Gray.copy(alpha = 0.7f),
+                                                    color = if (isCurrent) Color.DarkGray else Color.Gray.copy(alpha = 0.7f),
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
                                                     fontSize = 12.sp
@@ -877,7 +892,11 @@ fun GreyBrowser() {
                                                 selectedDomain = if (currentTabIndex == -1) "" 
                                                     else getDomainName(tabs[currentTabIndex].url)
                                             }) {
-                                                Icon(Icons.Default.Close, contentDescription = "Close tab", tint = Color.White)
+                                                Icon(
+                                                    Icons.Default.Close,
+                                                    contentDescription = "Close tab",
+                                                    tint = if (isCurrent) Color.Black else Color.White
+                                                )
                                             }
                                         }
                                     }
@@ -1080,6 +1099,91 @@ fun GreyBrowser() {
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 GeckoViewBox()
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ── GROUP CHIP COMPOSABLE ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+@Composable
+fun GroupChip(
+    domain: String,
+    isSelected: Boolean,
+    isPinned: Boolean,
+    tabCount: Int,
+    selected: () -> Unit,
+    faviconBitmap: Bitmap?,
+    onLoadFavicon: () -> Unit
+) {
+    LaunchedEffect(domain) {
+        onLoadFavicon()
+    }
+    
+    Surface(
+        modifier = Modifier
+            .padding(end = 8.dp)
+            .clickable { selected() }
+            .border(
+                if (isSelected) 1.dp else 0.dp,
+                if (isSelected) Color.White else Color.Transparent,
+                RectangleShape
+            ),
+        color = if (isSelected) Color.White else Color.Transparent
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isPinned) {
+                Icon(
+                    Icons.Default.PushPin,
+                    contentDescription = "Pinned",
+                    tint = if (isSelected) Color.Black else Color.White,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+            }
+            
+            if (faviconBitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = faviconBitmap.asImageBitmap(),
+                    contentDescription = domain,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape),
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(if (isSelected) Color.LightGray else Color.DarkGray),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = domain.take(1).uppercase(),
+                        color = if (isSelected) Color.Black else Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.width(6.dp))
+            
+            Box(
+                modifier = Modifier
+                    .background(if (isSelected) Color.LightGray else Color.DarkGray)
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    tabCount.toString(),
+                    color = if (isSelected) Color.Black else Color.White,
+                    fontSize = 10.sp
+                )
             }
         }
     }
