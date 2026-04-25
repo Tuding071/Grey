@@ -122,7 +122,6 @@ class MainActivity : ComponentActivity() {
 }
 
 // ── Favicon Cache Manager ────────────────────────────────────────────
-// Tries multiple favicon sources for better coverage
 object FaviconCache {
     private const val MAX_FAVICONS = 50
     private const val FAVICON_DIR = "favicons"
@@ -172,7 +171,6 @@ object FaviconCache {
         return BitmapFactory.decodeFile(file.absolutePath)
     }
     
-    // Try multiple sources for favicon
     private fun tryDownload(urlStr: String): Bitmap? {
         return try {
             val url = URL(urlStr); val conn = url.openConnection() as HttpURLConnection
@@ -186,17 +184,13 @@ object FaviconCache {
     }
     
     suspend fun downloadAndCacheFavicon(context: Context, domain: String): Bitmap? = withContext(Dispatchers.IO) {
-        // Try multiple sources in order
         val sources = listOf(
             "https://www.google.com/s2/favicons?domain=$domain&sz=64",
             "https://$domain/favicon.ico",
             "https://$domain/favicon.png"
         )
         var bitmap: Bitmap? = null
-        for (src in sources) {
-            bitmap = tryDownload(src)
-            if (bitmap != null) break
-        }
+        for (src in sources) { bitmap = tryDownload(src); if (bitmap != null) break }
         if (bitmap != null) {
             FileOutputStream(getFaviconFile(context, domain)).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             val meta = loadMeta(context); meta.removeAll { it.domain == domain }
@@ -214,7 +208,10 @@ fun saveTabs(context: Context) { context.getSharedPreferences(PREFS_NAME, Contex
 
 fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<String>) {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    val tabsArray = JSONArray(); for (tab in tabs) { if (!tab.isBlankTab) { val obj = JSONObject(); obj.put("url", tab.url); obj.put("title", tab.title); tabsArray.put(obj) } }
+    val tabsArray = JSONArray()
+    for (tab in tabs) {
+        if (!tab.isBlankTab) { val obj = JSONObject(); obj.put("url", tab.url); obj.put("title", tab.title); tabsArray.put(obj) }
+    }
     prefs.edit().putString(KEY_TABS, tabsArray.toString()).apply()
     val pinnedArray = JSONArray(); for (d in pinnedDomains) pinnedArray.put(d)
     prefs.edit().putString(KEY_PINNED, pinnedArray.toString()).apply()
@@ -223,8 +220,13 @@ fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<Str
 fun loadTabsData(context: Context): Pair<List<Pair<String, String>>, List<String>> {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     val tabsList = mutableListOf<Pair<String, String>>()
-    prefs.getString(KEY_TABS, null)?.let { json -> try { val arr = JSONArray(json); for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); tabsList.add(Pair(o.getString("url"), o.optString("title", o.getString("url")))) } } catch (e: Exception) { } }
-    val pinnedList = mutableListOf<String>(); prefs.getString(KEY_PINNED, null)?.let { json -> try { val arr = JSONArray(json); for (i in 0 until arr.length()) pinnedList.add(arr.getString(i)) } catch (e: Exception) { } }
+    prefs.getString(KEY_TABS, null)?.let { json ->
+        try { val arr = JSONArray(json); for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); tabsList.add(Pair(o.getString("url"), o.optString("title", o.getString("url")))) } } catch (e: Exception) { }
+    }
+    val pinnedList = mutableListOf<String>()
+    prefs.getString(KEY_PINNED, null)?.let { json ->
+        try { val arr = JSONArray(json); for (i in 0 until arr.length()) pinnedList.add(arr.getString(i)) } catch (e: Exception) { }
+    }
     return Pair(tabsList, pinnedList)
 }
 
@@ -240,19 +242,19 @@ class TabState {
 
 fun getDomainName(url: String): String {
     if (url == "about:blank" || url.isBlank()) return ""
-    return try { val host = Uri.parse(url).host?.removePrefix("www.") ?: return ""; val parts = host.split("."); if (parts.size >= 2) "${parts[parts.size - 2]}.${parts[parts.size - 1]}" else host } catch (e: Exception) { "Unknown" }
+    return try {
+        val host = Uri.parse(url).host?.removePrefix("www.") ?: return ""
+        val parts = host.split("."); if (parts.size >= 2) "${parts[parts.size - 2]}.${parts[parts.size - 1]}" else host
+    } catch (e: Exception) { "Unknown" }
 }
 
 const val MAX_LOADED_TABS = 10
 
-// Resolve URL: if it's a search query, use Google; otherwise format as URL
 fun resolveUrl(input: String): String {
     if (input.isBlank()) return "about:blank"
-    // If it has a scheme or looks like a domain, treat as URL
-    if (input.contains("://") || input.contains(".") && !input.contains(" ")) {
+    if (input.contains("://") || (input.contains(".") && !input.contains(" "))) {
         return if (input.contains("://")) input else "https://$input"
     }
-    // Otherwise, search Google
     return "https://www.google.com/search?q=${Uri.encode(input)}"
 }
 
@@ -276,23 +278,36 @@ fun GreyBrowser() {
     val setupDelegates = fun(tabState: TabState) {
         val session = tabState.session ?: return
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
-            override fun onPageStart(s: GeckoSession, url: String) { tabState.url = url; tabState.progress = 5; tabState.lastUpdated = System.currentTimeMillis(); if (url != "about:blank") tabState.isBlankTab = false }
+            override fun onPageStart(s: GeckoSession, url: String) {
+                tabState.url = url; tabState.progress = 5; tabState.lastUpdated = System.currentTimeMillis()
+                if (url != "about:blank") tabState.isBlankTab = false
+            }
             override fun onPageStop(s: GeckoSession, success: Boolean) { tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis() }
             override fun onProgressChange(s: GeckoSession, progress: Int) { tabState.progress = progress }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(s: GeckoSession, title: String?) { if (!tabState.isBlankTab) tabState.title = title ?: tabState.url }
-            override fun onContextMenu(session: GeckoSession, screenX: Int, screenY: Int, element: GeckoSession.ContentDelegate.ContextElement) { if (element.linkUri != null) { contextMenuUri = element.linkUri; showContextMenu = true } }
+            override fun onContextMenu(session: GeckoSession, screenX: Int, screenY: Int, element: GeckoSession.ContentDelegate.ContextElement) {
+                if (element.linkUri != null) { contextMenuUri = element.linkUri; showContextMenu = true }
+            }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
-            override fun onLocationChange(session: GeckoSession, url: String?, perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>, hasUserGesture: Boolean) { url?.let { newUrl -> tabState.url = newUrl; if (newUrl != "about:blank") tabState.isBlankTab = false } }
+            override fun onLocationChange(session: GeckoSession, url: String?, perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>, hasUserGesture: Boolean) {
+                url?.let { newUrl -> tabState.url = newUrl; if (newUrl != "about:blank") tabState.isBlankTab = false }
+            }
         }
     }
 
     val homeSession = remember { GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri("about:blank") } }
     val homeTab = remember { TabState().apply { session = homeSession; isBlankTab = true; title = "Home"; setupDelegates(this) } }
 
-    val tabs = remember { val (savedTabs, _) = loadTabsData(context); mutableStateListOf<TabState>().apply { for ((url, title) in savedTabs) add(TabState().apply { this.url = url; this.title = title; isBlankTab = false; isDiscarded = true; session = null }) } }
+    val tabs = remember {
+        val (savedTabs, _) = loadTabsData(context)
+        mutableStateListOf<TabState>().apply {
+            for ((url, title) in savedTabs) add(TabState().apply { this.url = url; this.title = title; isBlankTab = false; isDiscarded = true; session = null })
+        }
+    }
+    
     var currentTabIndex by remember { mutableIntStateOf(-1) }
     var showTabManager by remember { mutableStateOf(false) }; var showMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }; var showScripting by remember { mutableStateOf(false) }
@@ -307,50 +322,125 @@ fun GreyBrowser() {
     LaunchedEffect(tabs.toList(), pinnedDomains.toList()) { saveTabsData(context, tabs, pinnedDomains) }
     LaunchedEffect(tabs.map { "${it.url}|${it.title}" }.joinToString()) { saveTabsData(context, tabs, pinnedDomains) }
 
-    fun enforceTabLimit() { val loaded = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }; if (loaded.size > MAX_LOADED_TABS) { val toDiscard = loaded.filter { tabs.indexOf(it) != currentTabIndex }.minByOrNull { it.lastUpdated }; toDiscard?.let { tab -> tab.session?.setActive(false); tab.session?.close(); tab.session = null; tab.isDiscarded = true; tab.progress = 100 } } }
-    fun restoreTab(tab: TabState) { if (tab.isDiscarded && tab.session == null) { val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); setActive(false); loadUri(tab.url) }; tab.session = s; tab.isDiscarded = false; setupDelegates(tab); tab.lastUpdated = System.currentTimeMillis(); enforceTabLimit() } }
+    fun enforceTabLimit() {
+        val loaded = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
+        if (loaded.size > MAX_LOADED_TABS) {
+            val toDiscard = loaded.filter { tabs.indexOf(it) != currentTabIndex }.minByOrNull { it.lastUpdated }
+            toDiscard?.let { tab -> tab.session?.setActive(false); tab.session?.close(); tab.session = null; tab.isDiscarded = true; tab.progress = 100 }
+        }
+    }
+    fun restoreTab(tab: TabState) {
+        if (tab.isDiscarded && tab.session == null) {
+            val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); setActive(false); loadUri(tab.url) }
+            tab.session = s; tab.isDiscarded = false; setupDelegates(tab); tab.lastUpdated = System.currentTimeMillis(); enforceTabLimit()
+        }
+    }
 
-    fun loadFavicon(domain: String) { if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) { faviconLoading[domain] = true; scope.launch { faviconBitmaps[domain] = FaviconCache.getFaviconBitmap(context, domain) ?: FaviconCache.downloadAndCacheFavicon(context, domain); faviconLoading[domain] = false } } }
-    fun loadTabFavicon(domain: String) { if (domain.isNotBlank() && !tabFavicons.containsKey(domain) && tabFaviconLoading[domain] != true) { tabFaviconLoading[domain] = true; scope.launch { tabFavicons[domain] = FaviconCache.getFaviconBitmap(context, domain) ?: FaviconCache.downloadAndCacheFavicon(context, domain); tabFaviconLoading[domain] = false } } }
+    fun loadFavicon(domain: String) {
+        if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
+            faviconLoading[domain] = true
+            scope.launch { faviconBitmaps[domain] = FaviconCache.getFaviconBitmap(context, domain) ?: FaviconCache.downloadAndCacheFavicon(context, domain); faviconLoading[domain] = false }
+        }
+    }
+    fun loadTabFavicon(domain: String) {
+        if (domain.isNotBlank() && !tabFavicons.containsKey(domain) && tabFaviconLoading[domain] != true) {
+            tabFaviconLoading[domain] = true
+            scope.launch { tabFavicons[domain] = FaviconCache.getFaviconBitmap(context, domain) ?: FaviconCache.downloadAndCacheFavicon(context, domain); tabFaviconLoading[domain] = false }
+        }
+    }
 
-    LaunchedEffect(showTabManager, currentTabIndex) { if (showTabManager) { homeSession.setActive(false); tabs.forEach { it.session?.setActive(false) } } else { homeSession.setActive(currentTabIndex == -1); tabs.forEachIndexed { i, ts -> val active = i == currentTabIndex; if (active && ts.isDiscarded) restoreTab(ts); ts.session?.setActive(active) } } }
+    LaunchedEffect(showTabManager, currentTabIndex) {
+        if (showTabManager) { homeSession.setActive(false); tabs.forEach { it.session?.setActive(false) } }
+        else {
+            homeSession.setActive(currentTabIndex == -1)
+            tabs.forEachIndexed { i, ts -> val active = i == currentTabIndex; if (active && ts.isDiscarded) restoreTab(ts); ts.session?.setActive(active) }
+        }
+    }
 
-    fun createBackgroundTab(url: String) { val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(url); setActive(false) }; val ts = TabState().apply { session = s; this.url = url; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) }; tabs.add(ts); enforceTabLimit() }
-    fun createForegroundTab(url: String) { val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(url) }; val ts = TabState().apply { session = s; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) }; tabs.add(ts); currentTabIndex = tabs.lastIndex; enforceTabLimit() }
+    fun createBackgroundTab(url: String) {
+        val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(url); setActive(false) }
+        tabs.add(TabState().apply { session = s; this.url = url; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) })
+        enforceTabLimit()
+    }
+    fun createForegroundTab(url: String) {
+        val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(url) }
+        tabs.add(TabState().apply { session = s; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) })
+        currentTabIndex = tabs.lastIndex; enforceTabLimit()
+    }
 
-    fun removeTab(index: Int) { if (index < 0 || index >= tabs.size) return; val tab = tabs[index]; tab.session?.setActive(false); tab.session?.close(); tabs.removeAt(index); if (tabs.isEmpty()) currentTabIndex = -1 else if (currentTabIndex > index) currentTabIndex-- else if (currentTabIndex == index && tabs.isNotEmpty()) currentTabIndex = minOf(currentTabIndex, tabs.lastIndex) }
+    fun removeTab(index: Int) {
+        if (index < 0 || index >= tabs.size) return
+        val tab = tabs[index]; tab.session?.setActive(false); tab.session?.close(); tabs.removeAt(index)
+        if (tabs.isEmpty()) currentTabIndex = -1
+        else if (currentTabIndex > index) currentTabIndex--
+        else if (currentTabIndex == index && tabs.isNotEmpty()) currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+    }
 
-    BackHandler { if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() } else currentTab.session?.goBack() }
+    BackHandler {
+        if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() }
+        else currentTab.session?.goBack()
+    }
 
     @Composable
-    fun GeckoViewBox() { val s = currentTab.session; if (s != null) AndroidView(factory = { ctx -> GeckoView(ctx).apply { setSession(s) } }, update = { gv -> gv.setSession(s) }, modifier = Modifier.fillMaxSize()) else Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) } }
+    fun GeckoViewBox() {
+        val s = currentTab.session
+        if (s != null) AndroidView(factory = { ctx -> GeckoView(ctx).apply { setSession(s) } }, update = { gv -> gv.setSession(s) }, modifier = Modifier.fillMaxSize())
+        else Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
+    }
 
-    if (showSettings) SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } }
-    if (showScripting) ScriptingDialog(prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "", { showScripting = false }) { script -> prefs.edit().putString("user_script", script).apply(); currentTab.session?.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();")); showScripting = false }
-    if (showContextMenu && contextMenuUri != null) { Popup(alignment = Alignment.Center, onDismissRequest = { showContextMenu = false }, properties = PopupProperties(focusable = true)) { Column(Modifier.border(1.dp, Color.White, RectangleShape).background(Color(0xFF1E1E1E)).width(IntrinsicSize.Max)) { ContextMenuItem("New Tab") { createForegroundTab(contextMenuUri!!); showContextMenu = false }; ContextMenuItem("Open in Background") { createBackgroundTab(contextMenuUri!!); showContextMenu = false }; ContextMenuItem("Copy link") { clipboardManager.setText(AnnotatedString(contextMenuUri!!)); showContextMenu = false } } } }
+    if (showSettings) {
+        SettingsDialog(
+            prefs = prefs,
+            onDismiss = { showSettings = false },
+            onSettingsApplied = { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } }
+        )
+    }
+    if (showScripting) {
+        ScriptingDialog(
+            initialScript = prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "",
+            onDismiss = { showScripting = false },
+            onSaveAndRun = { script -> prefs.edit().putString("user_script", script).apply(); currentTab.session?.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();")); showScripting = false }
+        )
+    }
+
+    if (showContextMenu && contextMenuUri != null) {
+        Popup(alignment = Alignment.Center, onDismissRequest = { showContextMenu = false }, properties = PopupProperties(focusable = true)) {
+            Column(Modifier.border(1.dp, Color.White, RectangleShape).background(Color(0xFF1E1E1E)).width(IntrinsicSize.Max)) {
+                ContextMenuItem("New Tab") { createForegroundTab(contextMenuUri!!); showContextMenu = false }
+                ContextMenuItem("Open in Background") { createBackgroundTab(contextMenuUri!!); showContextMenu = false }
+                ContextMenuItem("Copy link") { clipboardManager.setText(AnnotatedString(contextMenuUri!!)); showContextMenu = false }
+            }
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // ── TAB MANAGER ───────────────────────────────────────────────
     // ═══════════════════════════════════════════════════════════════
     if (showTabManager) {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
-        // Stable sort: pinned first (by pin order), then by first tab index
-        val sortedDomains = domainGroups.keys.sortedWith(compareByDescending<String> { pinnedDomains.contains(it) }.thenBy { d -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE })
+        val sortedDomains = domainGroups.keys.sortedWith(
+            compareByDescending<String> { pinnedDomains.contains(it) }
+                .thenBy { d: String -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE }
+        )
         val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }
         val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
         val currentTabDomain = if (currentTab.isBlankTab) "" else getDomainName(currentTab.url)
 
-        LaunchedEffect(Unit) { selectedDomain = ""; if (currentTabDomain.isNotBlank()) { blinkTargetDomain.value = currentTabDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" } }
+        LaunchedEffect(Unit) {
+            selectedDomain = ""
+            if (currentTabDomain.isNotBlank()) { blinkTargetDomain.value = currentTabDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" }
+        }
 
         Popup(alignment = Alignment.TopStart, onDismissRequest = { showTabManager = false }, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
             Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
                 Column(Modifier.fillMaxSize()) {
-                    // Header
-                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) { IconButton({ showTabManager = false }) { Icon(Icons.Default.Close, "Close", tint = Color.White) }; Text("Tabs", color = Color.White, fontSize = 18.sp); if (tabs.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${tabs.size})", color = Color.Gray, fontSize = 14.sp) } }
+                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton({ showTabManager = false }) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                        Text("Tabs", color = Color.White, fontSize = 18.sp)
+                        if (tabs.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${tabs.size})", color = Color.Gray, fontSize = 14.sp) }
+                    }
 
-                    // Body: Sidebar + Tabs
                     Row(Modifier.weight(1f).fillMaxWidth()) {
-                        // Vertical sidebar: All → Pinned → Unpinned
                         val groupListState = rememberLazyListState()
                         val allSidebarItems = listOf("__ALL__") + pinnedSorted + unpinnedSorted
                         
@@ -360,32 +450,35 @@ fun GreyBrowser() {
                         }
                         
                         LazyColumn(state = groupListState, modifier = Modifier.width(56.dp).fillMaxHeight().padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            // All
                             item { AllGroupChip(isSelected = selectedDomain.isBlank(), tabCount = tabs.size, onClick = { selectedDomain = "" }) }
-                            // Pinned groups
-                            items(pinnedSorted) { domain ->
+                            items(pinnedSorted) { domain: String ->
                                 SidebarGroupChip(domain = domain, isSelected = domain == selectedDomain, tabCount = domainGroups[domain]?.size ?: 0, onClick = { selectedDomain = domain }, favicon = faviconBitmaps[domain], onAppear = { loadFavicon(domain) }, isBlinking = showBlink && blinkTargetDomain.value == domain, isPinned = true)
                             }
-                            // Unpinned groups
-                            items(unpinnedSorted) { domain ->
+                            items(unpinnedSorted) { domain: String ->
                                 SidebarGroupChip(domain = domain, isSelected = domain == selectedDomain, tabCount = domainGroups[domain]?.size ?: 0, onClick = { selectedDomain = domain }, favicon = faviconBitmaps[domain], onAppear = { loadFavicon(domain) }, isBlinking = showBlink && blinkTargetDomain.value == domain, isPinned = false)
                             }
                         }
                         
                         VerticalDivider(color = Color.DarkGray, modifier = Modifier.fillMaxHeight().width(1.dp))
 
-                        // Tab list
                         val tabsToShow = if (selectedDomain.isBlank()) tabs.toList() else domainGroups[selectedDomain] ?: emptyList()
                         val tabListState = rememberLazyListState()
                         LaunchedEffect(selectedDomain) { val idx = tabsToShow.indexOf(currentTab); if (idx >= 0) tabListState.scrollToItem(idx) }
 
                         if (tabs.isEmpty()) {
-                            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("No open tabs", color = Color.Gray, fontSize = 16.sp); Spacer(Modifier.height(8.dp)); Text("Tap 'New Tab' to start browsing", color = Color.Gray.copy(alpha = 0.7f), fontSize = 14.sp) } }
+                            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("No open tabs", color = Color.Gray, fontSize = 16.sp)
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Tap 'New Tab' to start browsing", color = Color.Gray.copy(alpha = 0.7f), fontSize = 14.sp)
+                                }
+                            }
                         } else {
                             LazyColumn(state = tabListState, modifier = Modifier.weight(1f).fillMaxHeight()) {
-                                if (tabsToShow.isEmpty()) { item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No tabs in this group", color = Color.Gray, fontSize = 14.sp) } } }
-                                else {
-                                    items(tabsToShow) { tab ->
+                                if (tabsToShow.isEmpty()) {
+                                    item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No tabs in this group", color = Color.Gray, fontSize = 14.sp) } }
+                                } else {
+                                    items(tabsToShow) { tab: TabState ->
                                         val isCurrent = tab == currentTab
                                         val tabDomain = getDomainName(tab.url)
                                         LaunchedEffect(tab.url) { loadTabFavicon(tabDomain) }
@@ -393,15 +486,15 @@ fun GreyBrowser() {
                                         
                                         Surface(
                                             Modifier.fillMaxWidth().clickable { currentTabIndex = tabs.indexOf(tab); showTabManager = false }
-                                                .border(0.5.dp, Color.DarkGray, RectangleShape), // Border on each tab
+                                                .border(0.5.dp, Color.DarkGray, RectangleShape),
                                             color = if (isCurrent) Color.White else Color.Transparent
                                         ) {
                                             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                // Tab favicon
                                                 if (tabFav != null) Image(tabFav.asImageBitmap(), tabDomain, Modifier.size(16.dp).clip(CircleShape), contentScale = ContentScale.Fit)
-                                                else Box(Modifier.size(16.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(tabDomain.take(1).uppercase(), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold) }
+                                                else Box(Modifier.size(16.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) {
+                                                    Text(tabDomain.take(1).uppercase(), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                                }
                                                 Spacer(Modifier.width(8.dp))
-                                                // Title only (no URL line)
                                                 Text(
                                                     text = if (tab.title == "New Tab" || tab.title.isBlank()) tab.url else tab.title,
                                                     color = if (isCurrent) Color.Black else Color.White,
@@ -420,10 +513,38 @@ fun GreyBrowser() {
                         }
                     }
 
-                    // Bottom
                     Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                        OutlinedButton(onClick = { currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White) }
-                        if (selectedDomain.isNotBlank() && tabs.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Row(Modifier.fillMaxWidth()) { val isPinned = pinnedDomains.contains(selectedDomain); OutlinedButton(onClick = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp) }; Spacer(Modifier.width(8.dp)); OutlinedButton(onClick = { val toRemove = domainGroups[selectedDomain] ?: emptyList(); toRemove.forEach { it.session?.setActive(false); it.session?.close() }; tabs.removeAll(toRemove); if (tabs.isEmpty()) currentTabIndex = -1 else currentTabIndex = minOf(currentTabIndex, tabs.lastIndex); selectedDomain = if (currentTabIndex == -1) "" else getDomainName(tabs[currentTabIndex].url) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Delete Group", fontSize = 13.sp) } } }
+                        OutlinedButton(
+                            onClick = { currentTabIndex = -1; showTabManager = false },
+                            modifier = Modifier.fillMaxWidth(), shape = RectangleShape,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color.White)
+                        ) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White) }
+                        if (selectedDomain.isNotBlank() && tabs.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth()) {
+                                val isPinned = pinnedDomains.contains(selectedDomain)
+                                OutlinedButton(
+                                    onClick = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) },
+                                    modifier = Modifier.weight(1f), shape = RectangleShape,
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                    border = BorderStroke(1.dp, Color.White)
+                                ) { Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp) }
+                                Spacer(Modifier.width(8.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        val toRemove = domainGroups[selectedDomain] ?: emptyList()
+                                        toRemove.forEach { it.session?.setActive(false); it.session?.close() }
+                                        tabs.removeAll(toRemove)
+                                        if (tabs.isEmpty()) currentTabIndex = -1 else currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+                                        selectedDomain = if (currentTabIndex == -1) "" else getDomainName(tabs[currentTabIndex].url)
+                                    },
+                                    modifier = Modifier.weight(1f), shape = RectangleShape,
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                    border = BorderStroke(1.dp, Color.White)
+                                ) { Text("Delete Group", fontSize = 13.sp) }
+                            }
+                        }
                     }
                 }
             }
@@ -442,14 +563,27 @@ fun GreyBrowser() {
                 OutlinedTextField(
                     value = urlInput, onValueChange = { urlInput = it }, singleLine = true,
                     placeholder = { Text(if (currentTab.isBlankTab) "Search or enter URL" else currentTab.url.take(50), color = Color.White.copy(alpha = 0.5f), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    modifier = Modifier.weight(1f).padding(vertical = 8.dp).background(Color(0xFF1E1E1E)).focusRequester(focusRequester).onFocusChanged { isUrlFocused = it.isFocused }.drawBehind { if (isLoading) drawRect(Color.White, size = size.copy(width = size.width * currentTab.progress / 100f)) },
+                    modifier = Modifier.weight(1f).padding(vertical = 8.dp).background(Color(0xFF1E1E1E)).focusRequester(focusRequester).onFocusChanged { isUrlFocused = it.isFocused }
+                        .drawBehind { if (isLoading) drawRect(Color.White, size = size.copy(width = size.width * currentTab.progress / 100f)) },
                     textStyle = TextStyle(if (isLoading) Color.Gray else Color.White, 16.sp), shape = RectangleShape,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri) } }),
+                    keyboardActions = KeyboardActions(onGo = {
+                        val input = urlInput.text
+                        if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri) }
+                    }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
-                    trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
+                    trailingIcon = {
+                        if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) }
+                        else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) }
+                    }
                 )
-                Box { IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }; DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) { DropdownMenuItem(text = { Text("Scripting", color = Color.White) }, onClick = { showMenu = false; showScripting = true }); DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true }) } }
+                Box {
+                    IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+                        DropdownMenuItem(text = { Text("Scripting", color = Color.White) }, onClick = { showMenu = false; showScripting = true })
+                        DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
+                    }
+                }
             }
             Box(Modifier.weight(1f).fillMaxWidth()) { GeckoViewBox() }
         }
@@ -462,17 +596,25 @@ fun GreyBrowser() {
 
 @Composable
 fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
-    val bg = if (isSelected) Color.White else Color.Transparent; val fg = if (isSelected) Color.Black else Color.White
+    val bg = if (isSelected) Color.White else Color.Transparent
+    val fg = if (isSelected) Color.Black else Color.White
     val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
     Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
-        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(2.dp)); Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) } }
+        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(2.dp))
+            Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
+        }
     }
 }
 
 @Composable
 fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick: () -> Unit, favicon: Bitmap?, onAppear: () -> Unit, isBlinking: Boolean = false, isPinned: Boolean = false) {
     LaunchedEffect(domain) { onAppear() }
-    val blinkAlpha = if (isBlinking) { val transition = rememberInfiniteTransition(label = "blink_$domain"); transition.animateFloat(initialValue = 0.2f, targetValue = 0.5f, animationSpec = infiniteRepeatable(tween(400), RepeatMode.Reverse), label = "blinkV") } else null
+    val blinkAlpha = if (isBlinking) {
+        val transition = rememberInfiniteTransition(label = "blink_$domain")
+        transition.animateFloat(initialValue = 0.2f, targetValue = 0.5f, animationSpec = infiniteRepeatable(tween(400), RepeatMode.Reverse), label = "blinkV")
+    } else null
     val bgAlpha = if (isBlinking && blinkAlpha != null) blinkAlpha.value else if (isSelected) 1f else 0f
     val bg = Color.White.copy(alpha = bgAlpha)
     val fg = if (isSelected) Color.Black else Color.White
@@ -480,44 +622,98 @@ fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick
     
     Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
         Box(Modifier.padding(6.dp)) {
-            // Pin icon top-left
             if (isPinned) { Icon(Icons.Default.PushPin, "Pinned", tint = fg, modifier = Modifier.size(12.dp).align(Alignment.TopStart)) }
-            // Favicon center
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(Modifier.height(4.dp))
                 if (favicon != null) Image(favicon.asImageBitmap(), domain, Modifier.size(24.dp).clip(CircleShape), contentScale = ContentScale.Fit)
-                else Box(Modifier.size(24.dp).clip(CircleShape).background(if (isSelected) Color.LightGray else Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                else Box(Modifier.size(24.dp).clip(CircleShape).background(if (isSelected) Color.LightGray else Color.DarkGray), contentAlignment = Alignment.Center) {
+                    Text(domain.take(1).uppercase(), color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
             }
-            // Tab count bottom-right
-            Box(Modifier.align(Alignment.BottomEnd).background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
+            Box(Modifier.align(Alignment.BottomEnd).background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) {
+                Text(tabCount.toString(), color = fg, fontSize = 9.sp)
+            }
         }
     }
 }
 
 @Composable
-fun ContextMenuItem(text: String, onClick: () -> Unit) { Box(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) { Text(text, color = Color.White, fontSize = 16.sp) } }
+fun ContextMenuItem(text: String, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) { Text(text, color = Color.White, fontSize = 16.sp) }
+}
 
 // ── Dialogs ──────────────────────────────────────────────────────
 @Composable
 fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: (String) -> Unit) {
     var script by remember { mutableStateOf(initialScript) }
-    AlertDialog(onDismiss, { TextButton({ onSaveAndRun(script) }) { Text("Run", Color.White) } }, { TextButton(onDismiss) { Text("Close", Color.White) } }, title = { Text("Inject JavaScript", color = Color.White, fontSize = 20.sp) }, text = { Column { Text("Write or paste JS below.", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.padding(bottom = 8.dp)); OutlinedTextField(script, { script = it }, Modifier.fillMaxWidth().height(200.dp), TextStyle(Color.White, 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape) } }, containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Inject JavaScript", color = Color.White, fontSize = 20.sp) },
+        text = {
+            Column {
+                Text("Write or paste JS below.", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.padding(bottom = 8.dp))
+                OutlinedTextField(
+                    value = script, onValueChange = { script = it },
+                    modifier = Modifier.fillMaxWidth().height(200.dp),
+                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
+                    shape = RectangleShape
+                )
+            }
+        },
+        confirmButton = { TextButton({ onSaveAndRun(script) }) { Text("Run", color = Color.White) } },
+        dismissButton = { TextButton(onDismiss) { Text("Close", color = Color.White) } },
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
+    )
 }
 
 @Composable
 fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
-    var js by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }; var tp by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
-    var cb by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }; var am by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
-    AlertDialog(onDismiss, { TextButton({ prefs.edit().putBoolean("javascript.enabled", js).putBoolean("privacy.trackingprotection.enabled", tp).putInt("network.cookie.cookieBehavior", cb).putBoolean("media.autoplay.enabled", am).apply(); onSettingsApplied(); onDismiss() }) { Text("OK", Color.White) } }, { TextButton(onDismiss) { Text("Cancel", Color.White) } }, title = { Text("Settings", color = Color.White, fontSize = 20.sp) }, text = { Column { SettingSwitch("JavaScript", js) { js = it }; SettingSwitch("Tracking Protection", tp) { tp = it }; Text("Cookie Behavior", Color.White, 14.sp); CookieBehaviorSelector(cb) { cb = it }; SettingSwitch("Autoplay Media", am) { am = it } } }, containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp)
+    var js by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
+    var tp by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
+    var cb by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
+    var am by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
+    val apply = {
+        prefs.edit().putBoolean("javascript.enabled", js).putBoolean("privacy.trackingprotection.enabled", tp).putInt("network.cookie.cookieBehavior", cb).putBoolean("media.autoplay.enabled", am).apply()
+        onSettingsApplied(); onDismiss()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
+        text = {
+            Column {
+                SettingSwitch("JavaScript", js) { js = it }
+                SettingSwitch("Tracking Protection", tp) { tp = it }
+                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp)
+                CookieBehaviorSelector(cb) { cb = it }
+                SettingSwitch("Autoplay Media", am) { am = it }
+            }
+        },
+        confirmButton = { TextButton(apply) { Text("OK", color = Color.White) } },
+        dismissButton = { TextButton(onDismiss) { Text("Cancel", color = Color.White) } },
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
+    )
 }
 
 @Composable
-fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) { Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text(label, Color.White, 14.sp); Switch(checked, onChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444))) } }
+fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 14.sp)
+        Switch(checked, onChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }; val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2); val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
-    Box { OutlinedTextField(st, {}, true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, Modifier.fillMaxWidth().padding(vertical = 4.dp), TextStyle(Color.White, 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E))); Box(Modifier.matchParentSize().clickable { expanded = true })
-        DropdownMenu(expanded, { expanded = false }, Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) { options.forEach { (l, v) -> DropdownMenuItem({ Text(l, Color.White) }, { onChange(v); expanded = false }) } } }
+    var expanded by remember { mutableStateOf(false) }
+    val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
+    val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
+    Box {
+        OutlinedTextField(st, {}, true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, Modifier.fillMaxWidth().padding(vertical = 4.dp), TextStyle(Color.White, 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)))
+        Box(Modifier.matchParentSize().clickable { expanded = true })
+        DropdownMenu(expanded, { expanded = false }, Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+            options.forEach { (l, v) -> DropdownMenuItem({ Text(l, Color.White) }, { onChange(v); expanded = false }) }
+        }
+    }
 }
