@@ -83,7 +83,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -169,10 +171,6 @@ object FaviconCache {
     fun getFaviconFile(context: Context, domain: String): File {
         val safeName = domain.replace(".", "_").replace("/", "_") + ".png"
         return File(getFaviconDir(context), safeName)
-    }
-    
-    fun hasFavicon(context: Context, domain: String): Boolean {
-        return getFaviconFile(context, domain).exists()
     }
     
     fun getFaviconBitmap(context: Context, domain: String): Bitmap? {
@@ -341,7 +339,7 @@ fun GreyBrowser() {
     val focusManager = LocalFocusManager.current
     val runtime = remember { GeckoRuntime.create(context) }
     val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
-    val coroutineScope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
 
     val applySettingsToSession = { session: GeckoSession ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -494,6 +492,23 @@ fun GreyBrowser() {
             setupDelegates(tab)
             tab.lastUpdated = System.currentTimeMillis()
             enforceTabLimit()
+        }
+    }
+
+    // Load favicon for a domain
+    fun loadFavicon(domain: String) {
+        if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
+            faviconLoading[domain] = true
+            scope.launch {
+                val cached = FaviconCache.getFaviconBitmap(context, domain)
+                if (cached != null) {
+                    faviconBitmaps[domain] = cached
+                } else {
+                    val downloaded = FaviconCache.downloadAndCacheFavicon(context, domain)
+                    faviconBitmaps[domain] = downloaded
+                }
+                faviconLoading[domain] = false
+            }
         }
     }
 
@@ -657,7 +672,6 @@ fun GreyBrowser() {
             }
         )
         
-        // Split into pinned and unpinned
         val pinnedSortedDomains = sortedDomains.filter { pinnedDomains.contains(it) }
         val unpinnedSortedDomains = sortedDomains.filter { !pinnedDomains.contains(it) }
 
@@ -702,7 +716,6 @@ fun GreyBrowser() {
                     if (sortedDomains.isNotEmpty()) {
                         val groupRowState = rememberLazyListState()
                         
-                        // Auto-scroll to selected domain
                         LaunchedEffect(sortedDomains, selectedDomain) {
                             val index = sortedDomains.indexOf(selectedDomain)
                             if (index >= 0) {
@@ -734,21 +747,7 @@ fun GreyBrowser() {
                                             tabCount = domainGroups[domain]?.size ?: 0,
                                             selected = { selectedDomain = domain },
                                             faviconBitmap = faviconBitmaps[domain],
-                                            onLoadFavicon = {
-                                                if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
-                                                    faviconLoading[domain] = true
-                                                    coroutineScope.launch {
-                                                        val cached = FaviconCache.getFaviconBitmap(context, domain)
-                                                        if (cached != null) {
-                                                            faviconBitmaps[domain] = cached
-                                                        } else {
-                                                            val downloaded = FaviconCache.downloadAndCacheFavicon(context, domain)
-                                                            faviconBitmaps[domain] = downloaded
-                                                        }
-                                                        faviconLoading[domain] = false
-                                                    }
-                                                }
-                                            }
+                                            onAppear = { loadFavicon(domain) }
                                         )
                                     }
                                 }
@@ -779,21 +778,7 @@ fun GreyBrowser() {
                                             tabCount = domainGroups[domain]?.size ?: 0,
                                             selected = { selectedDomain = domain },
                                             faviconBitmap = faviconBitmaps[domain],
-                                            onLoadFavicon = {
-                                                if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
-                                                    faviconLoading[domain] = true
-                                                    coroutineScope.launch {
-                                                        val cached = FaviconCache.getFaviconBitmap(context, domain)
-                                                        if (cached != null) {
-                                                            faviconBitmaps[domain] = cached
-                                                        } else {
-                                                            val downloaded = FaviconCache.downloadAndCacheFavicon(context, domain)
-                                                            faviconBitmaps[domain] = downloaded
-                                                        }
-                                                        faviconLoading[domain] = false
-                                                    }
-                                                }
-                                            }
+                                            onAppear = { loadFavicon(domain) }
                                         )
                                     }
                                 }
@@ -1115,10 +1100,10 @@ fun GroupChip(
     tabCount: Int,
     selected: () -> Unit,
     faviconBitmap: Bitmap?,
-    onLoadFavicon: () -> Unit
+    onAppear: () -> Unit
 ) {
     LaunchedEffect(domain) {
-        onLoadFavicon()
+        onAppear()
     }
     
     Surface(
