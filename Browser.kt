@@ -266,13 +266,13 @@ fun GreyBrowser() {
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(s: GeckoSession, title: String?) { if (!tabState.isBlankTab) tabState.title = title ?: "New Tab" }
-            override fun onContextMenu(s: GeckoSession, sx: Int, sy: Int, el: ContextElement) {
-                if (el.linkUri != null) { contextMenuUri = el.linkUri; showContextMenu = true }
+            override fun onContextMenu(session: GeckoSession, screenX: Int, screenY: Int, element: GeckoSession.ContentDelegate.ContextElement) {
+                if (element.linkUri != null) { contextMenuUri = element.linkUri; showContextMenu = true }
             }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
-            override fun onLocationChange(s: GeckoSession, url: String?, perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>, gesture: Boolean) {
-                url?.let { tabState.url = it; if (it != "about:blank") tabState.isBlankTab = false }
+            override fun onLocationChange(session: GeckoSession, url: String?, perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>, hasUserGesture: Boolean) {
+                url?.let { newUrl -> tabState.url = newUrl; if (newUrl != "about:blank") tabState.isBlankTab = false }
             }
         }
     }
@@ -342,18 +342,22 @@ fun GreyBrowser() {
 
     fun createBackgroundTab(url: String) {
         val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(url); setActive(false) }
-        tabs.add(TabState().apply { session = s; this.url = url; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) })
+        val ts = TabState().apply { session = s; this.url = url; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) }
+        tabs.add(ts)
         enforceTabLimit()
     }
     fun createForegroundTab(url: String) {
         val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(url) }
-        tabs.add(TabState().apply { session = s; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) })
+        val ts = TabState().apply { session = s; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) }
+        tabs.add(ts)
         currentTabIndex = tabs.lastIndex; enforceTabLimit()
     }
 
     fun removeTab(index: Int) {
         if (index < 0 || index >= tabs.size) return
-        tabs[index].let { it.session?.setActive(false); it.session?.close() }
+        val tab = tabs[index]
+        tab.session?.setActive(false)
+        tab.session?.close()
         tabs.removeAt(index)
         if (tabs.isEmpty()) currentTabIndex = -1
         else if (currentTabIndex > index) currentTabIndex--
