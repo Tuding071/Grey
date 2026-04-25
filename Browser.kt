@@ -405,7 +405,8 @@ fun GreyBrowser() {
         val pinnedSorted: List<String> = sortedDomains.filter { pinnedDomains.contains(it) }
         val unpinnedSorted: List<String> = sortedDomains.filter { !pinnedDomains.contains(it) }
 
-        LaunchedEffect(Unit) { selectedDomain = if (currentTab.isBlankTab) "" else getDomainName(currentTab.url) }
+        // Default to "All" if no domain selected or current tab is blank
+        LaunchedEffect(Unit) { if (selectedDomain.isBlank()) selectedDomain = "" }
 
         Popup(alignment = Alignment.TopStart, onDismissRequest = { showTabManager = false }, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
             Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
@@ -429,20 +430,44 @@ fun GreyBrowser() {
 
                     // ── Body: Left Groups | Right Tabs ──
                     Row(Modifier.weight(1f).fillMaxWidth()) {
-                        if (unpinnedSorted.isNotEmpty()) {
-                            val groupListState = rememberLazyListState()
-                            LaunchedEffect(unpinnedSorted, selectedDomain) {
-                                val idx = unpinnedSorted.indexOf(selectedDomain)
-                                if (idx >= 0) groupListState.animateScrollToItem(idx)
-                            }
-                            LazyColumn(state = groupListState, modifier = Modifier.width(56.dp).fillMaxHeight().padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                items(unpinnedSorted) { domain: String ->
-                                    VerticalGroupChip(domain, domain == selectedDomain, domainGroups[domain]?.size ?: 0, { selectedDomain = domain }, faviconBitmaps[domain]) { loadFavicon(domain) }
-                                }
-                            }
-                            VerticalDivider(color = Color.DarkGray, modifier = Modifier.fillMaxHeight().width(1.dp))
+                        // Left sidebar - PERMANENT "All" + groups
+                        val groupListState = rememberLazyListState()
+                        
+                        // Auto-scroll to selected domain in sidebar (skip index 0 which is "All")
+                        LaunchedEffect(unpinnedSorted, selectedDomain) {
+                            val idx = if (selectedDomain.isBlank()) 0 else unpinnedSorted.indexOf(selectedDomain) + 1
+                            if (idx >= 0) groupListState.animateScrollToItem(idx)
                         }
+                        
+                        LazyColumn(
+                            state = groupListState,
+                            modifier = Modifier.width(56.dp).fillMaxHeight().padding(vertical = 4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            // "All" - permanent first item
+                            item {
+                                AllGroupChip(
+                                    isSelected = selectedDomain.isBlank(),
+                                    tabCount = tabs.size,
+                                    onClick = { selectedDomain = "" }
+                                )
+                            }
+                            // Other groups
+                            items(unpinnedSorted) { domain: String ->
+                                VerticalGroupChip(
+                                    domain = domain,
+                                    isSelected = domain == selectedDomain,
+                                    tabCount = domainGroups[domain]?.size ?: 0,
+                                    onClick = { selectedDomain = domain },
+                                    favicon = faviconBitmaps[domain],
+                                    onAppear = { loadFavicon(domain) }
+                                )
+                            }
+                        }
+                        
+                        VerticalDivider(color = Color.DarkGray, modifier = Modifier.fillMaxHeight().width(1.dp))
 
+                        // Right: Tab list
                         val tabsToShow: List<TabState> = if (selectedDomain.isBlank()) tabs.toList() else domainGroups[selectedDomain] ?: emptyList()
                         val tabListState = rememberLazyListState()
                         LaunchedEffect(selectedDomain) {
@@ -496,6 +521,7 @@ fun GreyBrowser() {
                             Spacer(Modifier.width(8.dp))
                             Text("New Tab", color = Color.White)
                         }
+                        // Only show Pin/Delete when a specific group is selected (not "All")
                         if (selectedDomain.isNotBlank() && tabs.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             Row(Modifier.fillMaxWidth()) {
@@ -593,6 +619,19 @@ fun GroupChip(domain: String, isSelected: Boolean, isPinned: Boolean, tabCount: 
             }
             Spacer(Modifier.width(6.dp))
             Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 2.dp)) { Text(tabCount.toString(), color = fg, fontSize = 10.sp) }
+        }
+    }
+}
+
+@Composable
+fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
+    val bg = if (isSelected) Color.White else Color.Transparent
+    val fg = if (isSelected) Color.Black else Color.White
+    Surface(Modifier.padding(vertical = 4.dp).clickable { onClick() }.border(if (isSelected) 1.dp else 0.dp, if (isSelected) Color.White else Color.Transparent, RectangleShape), color = bg) {
+        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(2.dp))
+            Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
         }
     }
 }
