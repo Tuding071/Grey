@@ -113,8 +113,6 @@ jobs:
 
           dependencies {
               implementation("org.mozilla.geckoview:geckoview:${GECKO_VERSION}")
-              implementation("io.coil-kt:coil-compose:2.7.0")
-              implementation("io.coil-kt:coil-network-okhttp:2.7.0")
               implementation("androidx.core:core-ktx:1.15.0")
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
               implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
