@@ -208,12 +208,12 @@ fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<Str
 fun loadTabsData(context: Context): Pair<List<Pair<String, String>>, List<String>> {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     val tabsList = mutableListOf<Pair<String, String>>()
-    prefs.getString(KEY_TABS, null)?.let {
-        try { val arr = JSONArray(it); for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); tabsList.add(Pair(o.getString("url"), o.optString("title", o.getString("url")))) } } catch (e: Exception) { }
+    prefs.getString(KEY_TABS, null)?.let { json: String ->
+        try { val arr = JSONArray(json); for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); tabsList.add(Pair(o.getString("url"), o.optString("title", o.getString("url")))) } } catch (e: Exception) { }
     }
     val pinnedList = mutableListOf<String>()
-    prefs.getString(KEY_PINNED, null)?.let {
-        try { val arr = JSONArray(it); for (i in 0 until arr.length()) pinnedList.add(arr.getString(i)) } catch (e: Exception) { }
+    prefs.getString(KEY_PINNED, null)?.let { json: String ->
+        try { val arr = JSONArray(json); for (i in 0 until arr.length()) pinnedList.add(arr.getString(i)) } catch (e: Exception) { }
     }
     return Pair(tabsList, pinnedList)
 }
@@ -248,10 +248,10 @@ fun GreyBrowser() {
     val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
     val scope = rememberCoroutineScope()
 
-    val applySettingsToSession: (GeckoSession) -> Unit = {
-        it.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
-        it.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
-        it.settings.suspendMediaWhenInactive = true
+    val applySettingsToSession: (GeckoSession) -> Unit = { session: GeckoSession ->
+        session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
+        session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
+        session.settings.suspendMediaWhenInactive = true
     }
 
     var showContextMenu by remember { mutableStateOf(false) }
@@ -272,7 +272,7 @@ fun GreyBrowser() {
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(session: GeckoSession, url: String?, perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>, hasUserGesture: Boolean) {
-                url?.let { newUrl -> tabState.url = newUrl; if (newUrl != "about:blank") tabState.isBlankTab = false }
+                url?.let { newUrl: String -> tabState.url = newUrl; if (newUrl != "about:blank") tabState.isBlankTab = false }
             }
         }
     }
@@ -307,7 +307,7 @@ fun GreyBrowser() {
         val loaded = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
         if (loaded.size > MAX_LOADED_TABS) {
             val toDiscard = loaded.filter { tabs.indexOf(it) != currentTabIndex }.minByOrNull { it.lastUpdated }
-            toDiscard?.let { it.session?.setActive(false); it.session?.close(); it.session = null; it.isDiscarded = true; it.progress = 100 }
+            toDiscard?.let { tab: TabState -> tab.session?.setActive(false); tab.session?.close(); tab.session = null; tab.isDiscarded = true; tab.progress = 100 }
         }
     }
 
@@ -332,7 +332,7 @@ fun GreyBrowser() {
         if (showTabManager) { homeSession.setActive(false); tabs.forEach { it.session?.setActive(false) } }
         else {
             homeSession.setActive(currentTabIndex == -1)
-            tabs.forEachIndexed { i, ts ->
+            tabs.forEachIndexed { i: Int, ts: TabState ->
                 val active = i == currentTabIndex
                 if (active && ts.isDiscarded) restoreTab(ts)
                 ts.session?.setActive(active)
@@ -372,12 +372,12 @@ fun GreyBrowser() {
     @Composable
     fun GeckoViewBox() {
         val s = currentTab.session
-        if (s != null) AndroidView(factory = { GeckoView(it).apply { setSession(s) } }, update = { it.setSession(s) }, modifier = Modifier.fillMaxSize())
+        if (s != null) AndroidView(factory = { ctx -> GeckoView(ctx).apply { setSession(s) } }, update = { gv -> gv.setSession(s) }, modifier = Modifier.fillMaxSize())
         else Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
     }
 
-    if (showSettings) SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }, onSettingsApplied = { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } })
-    if (showScripting) ScriptingDialog(initialScript = prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "", onDismiss = { showScripting = false }, onSaveAndRun = { script ->
+    if (showSettings) SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }, onSettingsApplied = { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s: GeckoSession -> applySettingsToSession(s) } } })
+    if (showScripting) ScriptingDialog(initialScript = prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "", onDismiss = { showScripting = false }, onSaveAndRun = { script: String ->
         prefs.edit().putString("user_script", script).apply()
         currentTab.session?.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();"))
         showScripting = false
@@ -397,10 +397,13 @@ fun GreyBrowser() {
     // ── TAB MANAGER ───────────────────────────────────────────────
     // ═══════════════════════════════════════════════════════════════
     if (showTabManager) {
-        val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
-        val sortedDomains = domainGroups.keys.sortedWith(compareByDescending { pinnedDomains.contains(it) }.thenByDescending { d -> domainGroups[d]?.maxOfOrNull { it.lastUpdated } ?: 0L })
-        val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }
-        val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
+        val domainGroups: Map<String, List<TabState>> = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
+        val sortedDomains: List<String> = domainGroups.keys.sortedWith(
+            compareByDescending<String> { pinnedDomains.contains(it) }
+                .thenByDescending { d: String -> domainGroups[d]?.maxOfOrNull { it.lastUpdated } ?: 0L }
+        )
+        val pinnedSorted: List<String> = sortedDomains.filter { pinnedDomains.contains(it) }
+        val unpinnedSorted: List<String> = sortedDomains.filter { !pinnedDomains.contains(it) }
 
         LaunchedEffect(Unit) { selectedDomain = if (currentTab.isBlankTab) "" else getDomainName(currentTab.url) }
 
@@ -417,7 +420,7 @@ fun GreyBrowser() {
                     // ── Pinned Row ──
                     if (pinnedSorted.isNotEmpty()) {
                         LazyRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-                            items(pinnedSorted) { domain ->
+                            items(pinnedSorted) { domain: String ->
                                 GroupChip(domain, domain == selectedDomain, true, domainGroups[domain]?.size ?: 0, { selectedDomain = domain }, faviconBitmaps[domain]) { loadFavicon(domain) }
                             }
                         }
@@ -426,7 +429,6 @@ fun GreyBrowser() {
 
                     // ── Body: Left Groups | Right Tabs ──
                     Row(Modifier.weight(1f).fillMaxWidth()) {
-                        // Left sidebar (unpinned groups)
                         if (unpinnedSorted.isNotEmpty()) {
                             val groupListState = rememberLazyListState()
                             LaunchedEffect(unpinnedSorted, selectedDomain) {
@@ -434,15 +436,14 @@ fun GreyBrowser() {
                                 if (idx >= 0) groupListState.animateScrollToItem(idx)
                             }
                             LazyColumn(state = groupListState, modifier = Modifier.width(56.dp).fillMaxHeight().padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                items(unpinnedSorted) { domain ->
+                                items(unpinnedSorted) { domain: String ->
                                     VerticalGroupChip(domain, domain == selectedDomain, domainGroups[domain]?.size ?: 0, { selectedDomain = domain }, faviconBitmaps[domain]) { loadFavicon(domain) }
                                 }
                             }
                             VerticalDivider(color = Color.DarkGray, modifier = Modifier.fillMaxHeight().width(1.dp))
                         }
 
-                        // Right: Tab list
-                        val tabsToShow = if (selectedDomain.isBlank()) tabs.toList() else domainGroups[selectedDomain] ?: emptyList()
+                        val tabsToShow: List<TabState> = if (selectedDomain.isBlank()) tabs.toList() else domainGroups[selectedDomain] ?: emptyList()
                         val tabListState = rememberLazyListState()
                         LaunchedEffect(selectedDomain) {
                             val idx = tabsToShow.indexOf(currentTab)
@@ -462,7 +463,7 @@ fun GreyBrowser() {
                                 if (tabsToShow.isEmpty()) {
                                     item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No tabs in this group", color = Color.Gray, fontSize = 14.sp) } }
                                 } else {
-                                    items(tabsToShow) { tab ->
+                                    items(tabsToShow) { tab: TabState ->
                                         val isCurrent = tab == currentTab
                                         Surface(Modifier.fillMaxWidth().clickable { currentTabIndex = tabs.indexOf(tab); showTabManager = false }, color = if (isCurrent) Color.White else Color.Transparent) {
                                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -510,7 +511,7 @@ fun GreyBrowser() {
                                 OutlinedButton(
                                     onClick = {
                                         val toRemove = domainGroups[selectedDomain] ?: emptyList()
-                                        toRemove.forEach { it.session?.setActive(false); it.session?.close() }
+                                        toRemove.forEach { tab: TabState -> tab.session?.setActive(false); tab.session?.close() }
                                         tabs.removeAll(toRemove)
                                         if (tabs.isEmpty()) currentTabIndex = -1 else currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
                                         selectedDomain = if (currentTabIndex == -1) "" else getDomainName(tabs[currentTabIndex].url)
