@@ -114,6 +114,7 @@ jobs:
           dependencies {
               implementation("org.mozilla.geckoview:geckoview:${GECKO_VERSION}")
               implementation("io.coil-kt:coil-compose:2.7.0")
+              implementation("io.coil-kt:coil-network-okhttp:2.7.0")
               implementation("androidx.core:core-ktx:1.15.0")
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
               implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
@@ -227,9 +228,10 @@ jobs:
 
       - name: Bundle release
         run: |
-          mkdir -p Grey-release
+          mkdir -p Grey-release/.github/workflows
           cp app/build/outputs/apk/debug/app-arm64-v8a-debug.apk Grey-release/Grey.apk
           cp Browser.kt Grey-release/
+          cp .github/workflows/build.yml Grey-release/.github/workflows/ 2>/dev/null || true
           echo "Build:      #${{ github.run_number }}"          > Grey-release/BUILD_INFO.txt
           echo "GeckoView:  ${{ steps.gecko.outputs.version }}" >> Grey-release/BUILD_INFO.txt
           echo "Commit:     ${{ github.sha }}"                  >> Grey-release/BUILD_INFO.txt
