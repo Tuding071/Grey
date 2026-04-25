@@ -152,7 +152,12 @@ object FaviconCache {
     
     private fun saveMeta(context: Context, meta: List<FaviconMeta>) {
         val array = JSONArray()
-        for (item in meta) { val obj = JSONObject(); obj.put("domain", item.domain); obj.put("lastAccessed", item.lastAccessed); array.put(obj) }
+        for (item in meta) {
+            val obj = JSONObject()
+            obj.put("domain", item.domain)
+            obj.put("lastAccessed", item.lastAccessed)
+            array.put(obj)
+        }
         getMetaFile(context).writeText(array.toString())
     }
     
@@ -173,7 +178,8 @@ object FaviconCache {
     
     private fun tryDownload(urlStr: String): Bitmap? {
         return try {
-            val url = URL(urlStr); val conn = url.openConnection() as HttpURLConnection
+            val url = URL(urlStr)
+            val conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 4000; conn.readTimeout = 4000; conn.connect()
             if (conn.responseCode == 200) {
                 val bitmap = BitmapFactory.decodeStream(conn.inputStream)
@@ -190,12 +196,21 @@ object FaviconCache {
             "https://$domain/favicon.png"
         )
         var bitmap: Bitmap? = null
-        for (src in sources) { bitmap = tryDownload(src); if (bitmap != null) break }
+        for (src in sources) {
+            bitmap = tryDownload(src)
+            if (bitmap != null) break
+        }
         if (bitmap != null) {
-            FileOutputStream(getFaviconFile(context, domain)).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            val meta = loadMeta(context); meta.removeAll { it.domain == domain }
+            FileOutputStream(getFaviconFile(context, domain)).use {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            val meta = loadMeta(context)
+            meta.removeAll { it.domain == domain }
             meta.add(FaviconMeta(domain, System.currentTimeMillis()))
-            if (meta.size > MAX_FAVICONS) { val oldest = meta.minByOrNull { it.lastAccessed }; if (oldest != null) { meta.remove(oldest); getFaviconFile(context, oldest.domain).delete() } }
+            if (meta.size > MAX_FAVICONS) {
+                val oldest = meta.minByOrNull { it.lastAccessed }
+                if (oldest != null) { meta.remove(oldest); getFaviconFile(context, oldest.domain).delete() }
+            }
             saveMeta(context, meta)
         }
         bitmap
@@ -203,17 +218,28 @@ object FaviconCache {
 }
 
 // ── Tab Persistence ─────────────────────────────────────────────────
-private const val PREFS_NAME = "browser_tabs"; private const val KEY_TABS = "saved_tabs"; private const val KEY_PINNED = "pinned_domains"
-fun saveTabs(context: Context) { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().apply() }
+private const val PREFS_NAME = "browser_tabs"
+private const val KEY_TABS = "saved_tabs"
+private const val KEY_PINNED = "pinned_domains"
+
+fun saveTabs(context: Context) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().apply()
+}
 
 fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<String>) {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     val tabsArray = JSONArray()
     for (tab in tabs) {
-        if (!tab.isBlankTab) { val obj = JSONObject(); obj.put("url", tab.url); obj.put("title", tab.title); tabsArray.put(obj) }
+        if (!tab.isBlankTab) {
+            val obj = JSONObject()
+            obj.put("url", tab.url)
+            obj.put("title", tab.title)
+            tabsArray.put(obj)
+        }
     }
     prefs.edit().putString(KEY_TABS, tabsArray.toString()).apply()
-    val pinnedArray = JSONArray(); for (d in pinnedDomains) pinnedArray.put(d)
+    val pinnedArray = JSONArray()
+    for (d in pinnedDomains) pinnedArray.put(d)
     prefs.edit().putString(KEY_PINNED, pinnedArray.toString()).apply()
 }
 
@@ -221,11 +247,20 @@ fun loadTabsData(context: Context): Pair<List<Pair<String, String>>, List<String
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     val tabsList = mutableListOf<Pair<String, String>>()
     prefs.getString(KEY_TABS, null)?.let { json ->
-        try { val arr = JSONArray(json); for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); tabsList.add(Pair(o.getString("url"), o.optString("title", o.getString("url")))) } } catch (e: Exception) { }
+        try {
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                tabsList.add(Pair(o.getString("url"), o.optString("title", o.getString("url"))))
+            }
+        } catch (e: Exception) { }
     }
     val pinnedList = mutableListOf<String>()
     prefs.getString(KEY_PINNED, null)?.let { json ->
-        try { val arr = JSONArray(json); for (i in 0 until arr.length()) pinnedList.add(arr.getString(i)) } catch (e: Exception) { }
+        try {
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) pinnedList.add(arr.getString(i))
+        } catch (e: Exception) { }
     }
     return Pair(tabsList, pinnedList)
 }
@@ -244,7 +279,8 @@ fun getDomainName(url: String): String {
     if (url == "about:blank" || url.isBlank()) return ""
     return try {
         val host = Uri.parse(url).host?.removePrefix("www.") ?: return ""
-        val parts = host.split("."); if (parts.size >= 2) "${parts[parts.size - 2]}.${parts[parts.size - 1]}" else host
+        val parts = host.split(".")
+        if (parts.size >= 2) "${parts[parts.size - 2]}.${parts[parts.size - 1]}" else host
     } catch (e: Exception) { "Unknown" }
 }
 
@@ -261,8 +297,10 @@ fun resolveUrl(input: String): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GreyBrowser() {
-    val context = LocalContext.current; val activity = context as? ComponentActivity
-    val clipboardManager = LocalClipboardManager.current; val focusManager = LocalFocusManager.current
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
+    val clipboardManager = LocalClipboardManager.current
+    val focusManager = LocalFocusManager.current
     val runtime = remember { GeckoRuntime.create(context) }
     val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
     val scope = rememberCoroutineScope()
@@ -273,20 +311,26 @@ fun GreyBrowser() {
         session.settings.suspendMediaWhenInactive = true
     }
 
-    var showContextMenu by remember { mutableStateOf(false) }; var contextMenuUri by remember { mutableStateOf<String?>(null) }
+    var showContextMenu by remember { mutableStateOf(false) }
+    var contextMenuUri by remember { mutableStateOf<String?>(null) }
 
     val setupDelegates = fun(tabState: TabState) {
         val session = tabState.session ?: return
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(s: GeckoSession, url: String) {
-                tabState.url = url; tabState.progress = 5; tabState.lastUpdated = System.currentTimeMillis()
+                tabState.url = url; tabState.progress = 5
+                tabState.lastUpdated = System.currentTimeMillis()
                 if (url != "about:blank") tabState.isBlankTab = false
             }
-            override fun onPageStop(s: GeckoSession, success: Boolean) { tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis() }
+            override fun onPageStop(s: GeckoSession, success: Boolean) {
+                tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
+            }
             override fun onProgressChange(s: GeckoSession, progress: Int) { tabState.progress = progress }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
-            override fun onTitleChange(s: GeckoSession, title: String?) { if (!tabState.isBlankTab) tabState.title = title ?: tabState.url }
+            override fun onTitleChange(s: GeckoSession, title: String?) {
+                if (!tabState.isBlankTab) tabState.title = title ?: tabState.url
+            }
             override fun onContextMenu(session: GeckoSession, screenX: Int, screenY: Int, element: GeckoSession.ContentDelegate.ContextElement) {
                 if (element.linkUri != null) { contextMenuUri = element.linkUri; showContextMenu = true }
             }
@@ -298,26 +342,41 @@ fun GreyBrowser() {
         }
     }
 
-    val homeSession = remember { GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri("about:blank") } }
-    val homeTab = remember { TabState().apply { session = homeSession; isBlankTab = true; title = "Home"; setupDelegates(this) } }
+    val homeSession = remember {
+        GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri("about:blank") }
+    }
+    val homeTab = remember {
+        TabState().apply { session = homeSession; isBlankTab = true; title = "Home"; setupDelegates(this) }
+    }
 
     val tabs = remember {
         val (savedTabs, _) = loadTabsData(context)
         mutableStateListOf<TabState>().apply {
-            for ((url, title) in savedTabs) add(TabState().apply { this.url = url; this.title = title; isBlankTab = false; isDiscarded = true; session = null })
+            for ((url, title) in savedTabs) {
+                add(TabState().apply { this.url = url; this.title = title; isBlankTab = false; isDiscarded = true; session = null })
+            }
         }
     }
     
     var currentTabIndex by remember { mutableIntStateOf(-1) }
-    var showTabManager by remember { mutableStateOf(false) }; var showMenu by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }; var showScripting by remember { mutableStateOf(false) }
-    val pinnedDomains = remember { val (_, p) = loadTabsData(context); mutableStateListOf<String>().apply { addAll(p) } }
+    var showTabManager by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showScripting by remember { mutableStateOf(false) }
+
+    val pinnedDomains = remember {
+        val (_, p) = loadTabsData(context)
+        mutableStateListOf<String>().apply { addAll(p) }
+    }
     var selectedDomain by remember { mutableStateOf("") }
-    val faviconBitmaps = remember { mutableStateMapOf<String, Bitmap?>() }; val faviconLoading = remember { mutableStateMapOf<String, Boolean>() }
-    val tabFavicons = remember { mutableStateMapOf<String, Bitmap?>() }; val tabFaviconLoading = remember { mutableStateMapOf<String, Boolean>() }
+    val faviconBitmaps = remember { mutableStateMapOf<String, Bitmap?>() }
+    val faviconLoading = remember { mutableStateMapOf<String, Boolean>() }
+    val tabFavicons = remember { mutableStateMapOf<String, Bitmap?>() }
+    val tabFaviconLoading = remember { mutableStateMapOf<String, Boolean>() }
     val currentTab = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
 
-    var showBlink by remember { mutableStateOf(false) }; val blinkTargetDomain = remember { mutableStateOf("") }
+    var showBlink by remember { mutableStateOf(false) }
+    val blinkTargetDomain = remember { mutableStateOf("") }
 
     LaunchedEffect(tabs.toList(), pinnedDomains.toList()) { saveTabsData(context, tabs, pinnedDomains) }
     LaunchedEffect(tabs.map { "${it.url}|${it.title}" }.joinToString()) { saveTabsData(context, tabs, pinnedDomains) }
@@ -326,34 +385,54 @@ fun GreyBrowser() {
         val loaded = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
         if (loaded.size > MAX_LOADED_TABS) {
             val toDiscard = loaded.filter { tabs.indexOf(it) != currentTabIndex }.minByOrNull { it.lastUpdated }
-            toDiscard?.let { tab -> tab.session?.setActive(false); tab.session?.close(); tab.session = null; tab.isDiscarded = true; tab.progress = 100 }
+            toDiscard?.let { tab ->
+                tab.session?.setActive(false); tab.session?.close()
+                tab.session = null; tab.isDiscarded = true; tab.progress = 100
+            }
         }
     }
+    
     fun restoreTab(tab: TabState) {
         if (tab.isDiscarded && tab.session == null) {
             val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); setActive(false); loadUri(tab.url) }
-            tab.session = s; tab.isDiscarded = false; setupDelegates(tab); tab.lastUpdated = System.currentTimeMillis(); enforceTabLimit()
+            tab.session = s; tab.isDiscarded = false; setupDelegates(tab)
+            tab.lastUpdated = System.currentTimeMillis(); enforceTabLimit()
         }
     }
 
     fun loadFavicon(domain: String) {
         if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
             faviconLoading[domain] = true
-            scope.launch { faviconBitmaps[domain] = FaviconCache.getFaviconBitmap(context, domain) ?: FaviconCache.downloadAndCacheFavicon(context, domain); faviconLoading[domain] = false }
+            scope.launch {
+                faviconBitmaps[domain] = FaviconCache.getFaviconBitmap(context, domain)
+                    ?: FaviconCache.downloadAndCacheFavicon(context, domain)
+                faviconLoading[domain] = false
+            }
         }
     }
+    
     fun loadTabFavicon(domain: String) {
         if (domain.isNotBlank() && !tabFavicons.containsKey(domain) && tabFaviconLoading[domain] != true) {
             tabFaviconLoading[domain] = true
-            scope.launch { tabFavicons[domain] = FaviconCache.getFaviconBitmap(context, domain) ?: FaviconCache.downloadAndCacheFavicon(context, domain); tabFaviconLoading[domain] = false }
+            scope.launch {
+                tabFavicons[domain] = FaviconCache.getFaviconBitmap(context, domain)
+                    ?: FaviconCache.downloadAndCacheFavicon(context, domain)
+                tabFaviconLoading[domain] = false
+            }
         }
     }
 
     LaunchedEffect(showTabManager, currentTabIndex) {
-        if (showTabManager) { homeSession.setActive(false); tabs.forEach { it.session?.setActive(false) } }
-        else {
+        if (showTabManager) {
+            homeSession.setActive(false)
+            tabs.forEach { it.session?.setActive(false) }
+        } else {
             homeSession.setActive(currentTabIndex == -1)
-            tabs.forEachIndexed { i, ts -> val active = i == currentTabIndex; if (active && ts.isDiscarded) restoreTab(ts); ts.session?.setActive(active) }
+            tabs.forEachIndexed { i, ts ->
+                val active = i == currentTabIndex
+                if (active && ts.isDiscarded) restoreTab(ts)
+                ts.session?.setActive(active)
+            }
         }
     }
 
@@ -362,6 +441,7 @@ fun GreyBrowser() {
         tabs.add(TabState().apply { session = s; this.url = url; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) })
         enforceTabLimit()
     }
+    
     fun createForegroundTab(url: String) {
         val s = GeckoSession().apply { applySettingsToSession(this); open(runtime); loadUri(url) }
         tabs.add(TabState().apply { session = s; isBlankTab = false; isDiscarded = false; lastUpdated = System.currentTimeMillis(); setupDelegates(this) })
@@ -370,36 +450,48 @@ fun GreyBrowser() {
 
     fun removeTab(index: Int) {
         if (index < 0 || index >= tabs.size) return
-        val tab = tabs[index]; tab.session?.setActive(false); tab.session?.close(); tabs.removeAt(index)
+        val tab = tabs[index]
+        tab.session?.setActive(false); tab.session?.close()
+        tabs.removeAt(index)
         if (tabs.isEmpty()) currentTabIndex = -1
         else if (currentTabIndex > index) currentTabIndex--
         else if (currentTabIndex == index && tabs.isNotEmpty()) currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
     }
 
     BackHandler {
-        if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() }
-        else currentTab.session?.goBack()
+        if (currentTab.isBlankTab) {
+            if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish()
+        } else currentTab.session?.goBack()
     }
 
     @Composable
     fun GeckoViewBox() {
         val s = currentTab.session
-        if (s != null) AndroidView(factory = { ctx -> GeckoView(ctx).apply { setSession(s) } }, update = { gv -> gv.setSession(s) }, modifier = Modifier.fillMaxSize())
-        else Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
+        if (s != null) {
+            AndroidView(factory = { ctx -> GeckoView(ctx).apply { setSession(s) } }, update = { gv -> gv.setSession(s) }, modifier = Modifier.fillMaxSize())
+        } else {
+            Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = Color.White)
+            }
+        }
     }
 
     if (showSettings) {
-        SettingsDialog(
-            prefs = prefs,
-            onDismiss = { showSettings = false },
-            onSettingsApplied = { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } }
-        )
+        SettingsDialog(prefs = prefs, onDismiss = { showSettings = false }, onSettingsApplied = {
+            applySettingsToSession(homeSession)
+            tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } }
+        })
     }
+    
     if (showScripting) {
         ScriptingDialog(
             initialScript = prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "",
             onDismiss = { showScripting = false },
-            onSaveAndRun = { script -> prefs.edit().putString("user_script", script).apply(); currentTab.session?.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();")); showScripting = false }
+            onSaveAndRun = { script ->
+                prefs.edit().putString("user_script", script).apply()
+                currentTab.session?.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();"))
+                showScripting = false
+            }
         )
     }
 
@@ -428,7 +520,10 @@ fun GreyBrowser() {
 
         LaunchedEffect(Unit) {
             selectedDomain = ""
-            if (currentTabDomain.isNotBlank()) { blinkTargetDomain.value = currentTabDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" }
+            if (currentTabDomain.isNotBlank()) {
+                blinkTargetDomain.value = currentTabDomain; showBlink = true
+                delay(1500); showBlink = false; blinkTargetDomain.value = ""
+            }
         }
 
         Popup(alignment = Alignment.TopStart, onDismissRequest = { showTabManager = false }, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
@@ -463,7 +558,10 @@ fun GreyBrowser() {
 
                         val tabsToShow = if (selectedDomain.isBlank()) tabs.toList() else domainGroups[selectedDomain] ?: emptyList()
                         val tabListState = rememberLazyListState()
-                        LaunchedEffect(selectedDomain) { val idx = tabsToShow.indexOf(currentTab); if (idx >= 0) tabListState.scrollToItem(idx) }
+                        LaunchedEffect(selectedDomain) {
+                            val idx = tabsToShow.indexOf(currentTab)
+                            if (idx >= 0) tabListState.scrollToItem(idx)
+                        }
 
                         if (tabs.isEmpty()) {
                             Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
@@ -514,35 +612,26 @@ fun GreyBrowser() {
                     }
 
                     Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                        OutlinedButton(
-                            onClick = { currentTabIndex = -1; showTabManager = false },
-                            modifier = Modifier.fillMaxWidth(), shape = RectangleShape,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            border = BorderStroke(1.dp, Color.White)
-                        ) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White) }
+                        OutlinedButton(onClick = { currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                            Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White)
+                        }
                         if (selectedDomain.isNotBlank() && tabs.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             Row(Modifier.fillMaxWidth()) {
                                 val isPinned = pinnedDomains.contains(selectedDomain)
-                                OutlinedButton(
-                                    onClick = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) },
-                                    modifier = Modifier.weight(1f), shape = RectangleShape,
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                                    border = BorderStroke(1.dp, Color.White)
-                                ) { Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp) }
+                                OutlinedButton(onClick = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                                    Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp)
+                                }
                                 Spacer(Modifier.width(8.dp))
-                                OutlinedButton(
-                                    onClick = {
-                                        val toRemove = domainGroups[selectedDomain] ?: emptyList()
-                                        toRemove.forEach { it.session?.setActive(false); it.session?.close() }
-                                        tabs.removeAll(toRemove)
-                                        if (tabs.isEmpty()) currentTabIndex = -1 else currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
-                                        selectedDomain = if (currentTabIndex == -1) "" else getDomainName(tabs[currentTabIndex].url)
-                                    },
-                                    modifier = Modifier.weight(1f), shape = RectangleShape,
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                                    border = BorderStroke(1.dp, Color.White)
-                                ) { Text("Delete Group", fontSize = 13.sp) }
+                                OutlinedButton(onClick = {
+                                    val toRemove = domainGroups[selectedDomain] ?: emptyList()
+                                    toRemove.forEach { it.session?.setActive(false); it.session?.close() }
+                                    tabs.removeAll(toRemove)
+                                    if (tabs.isEmpty()) currentTabIndex = -1 else currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+                                    selectedDomain = if (currentTabIndex == -1) "" else getDomainName(tabs[currentTabIndex].url)
+                                }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                                    Text("Delete Group", fontSize = 13.sp)
+                                }
                             }
                         }
                     }
@@ -552,7 +641,8 @@ fun GreyBrowser() {
     }
 
     var urlInput by remember { mutableStateOf(TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url)) }
-    var isUrlFocused by remember { mutableStateOf(false) }; val focusRequester = remember { FocusRequester() }
+    var isUrlFocused by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
     LaunchedEffect(currentTab, currentTab.url) { if (!isUrlFocused) urlInput = TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url) }
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
@@ -569,7 +659,11 @@ fun GreyBrowser() {
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(onGo = {
                         val input = urlInput.text
-                        if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri) }
+                        if (input.isNotBlank()) {
+                            focusManager.clearFocus()
+                            val uri = resolveUrl(input)
+                            if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri)
+                        }
                     }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
                     trailingIcon = {
@@ -710,10 +804,19 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
     val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
     Box {
-        OutlinedTextField(st, {}, true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, Modifier.fillMaxWidth().padding(vertical = 4.dp), TextStyle(Color.White, 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)))
+        OutlinedTextField(
+            value = st,
+            onValueChange = {},
+            readOnly = true,
+            trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            textStyle = TextStyle(Color.White, 14.sp),
+            shape = RectangleShape,
+            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E))
+        )
         Box(Modifier.matchParentSize().clickable { expanded = true })
-        DropdownMenu(expanded, { expanded = false }, Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
-            options.forEach { (l, v) -> DropdownMenuItem({ Text(l, Color.White) }, { onChange(v); expanded = false }) }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+            options.forEach { (l, v) -> DropdownMenuItem(text = { Text(l, color = Color.White) }, onClick = { onChange(v); expanded = false }) }
         }
     }
 }
