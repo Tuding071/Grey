@@ -75,6 +75,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import org.json.JSONArray
+import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -86,6 +88,96 @@ class MainActivity : ComponentActivity() {
             GreyBrowser()
         }
     }
+    
+    override fun onPause() {
+        super.onPause()
+        // Save tabs when app goes to background
+        saveTabs(this)
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        // Save tabs when app is destroyed
+        saveTabs(this)
+    }
+}
+
+// ── Tab Persistence ─────────────────────────────────────────────────
+private const val PREFS_NAME = "browser_tabs"
+private const val KEY_TABS = "saved_tabs"
+private const val KEY_PINNED = "pinned_domains"
+
+// Save tabs metadata to SharedPreferences
+fun saveTabs(context: Context) {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val editor = prefs.edit()
+    
+    // Don't save if we haven't initialized yet (tabs will be empty)
+    // The actual saving is done in the composable
+    editor.apply()
+}
+
+fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<String>) {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val editor = prefs.edit()
+    
+    // Save tabs (only non-blank tabs)
+    val tabsArray = JSONArray()
+    for (tab in tabs) {
+        if (!tab.isBlankTab) {
+            val tabObj = JSONObject()
+            tabObj.put("url", tab.url)
+            tabObj.put("title", tab.title)
+            tabsArray.put(tabObj)
+        }
+    }
+    editor.putString(KEY_TABS, tabsArray.toString())
+    
+    // Save pinned domains
+    val pinnedArray = JSONArray()
+    for (domain in pinnedDomains) {
+        pinnedArray.put(domain)
+    }
+    editor.putString(KEY_PINNED, pinnedArray.toString())
+    
+    editor.apply()
+}
+
+fun loadTabsData(context: Context): Pair<List<Pair<String, String>>, List<String>> {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    
+    // Load tabs
+    val tabsList = mutableListOf<Pair<String, String>>()
+    val tabsJson = prefs.getString(KEY_TABS, null)
+    if (tabsJson != null) {
+        try {
+            val tabsArray = JSONArray(tabsJson)
+            for (i in 0 until tabsArray.length()) {
+                val tabObj = tabsArray.getJSONObject(i)
+                val url = tabObj.getString("url")
+                val title = tabObj.optString("title", url)
+                tabsList.add(Pair(url, title))
+            }
+        } catch (e: Exception) {
+            // Ignore malformed data
+        }
+    }
+    
+    // Load pinned domains
+    val pinnedList = mutableListOf<String>()
+    val pinnedJson = prefs.getString(KEY_PINNED, null)
+    if (pinnedJson != null) {
+        try {
+            val pinnedArray = JSONArray(pinnedJson)
+            for (i in 0 until pinnedArray.length()) {
+                pinnedList.add(pinnedArray.getString(i))
+            }
+        } catch (e: Exception) {
+            // Ignore malformed data
+        }
+    }
+    
+    return Pair(tabsList, pinnedList)
 }
 
 // ── State Wrapper for Tabs ──────────────────────────────────────────
@@ -207,22 +299,57 @@ fun GreyBrowser() {
         }
     }
 
-    val tabs = remember { mutableStateListOf<TabState>() }
+    // Load saved tabs on first launch
+    val tabs = remember {
+        val (savedTabs, savedPinned) = loadTabsData(context)
+        val list = mutableStateListOf<TabState>()
+        
+        // Restore saved tabs as discarded placeholders (no session, no loading)
+        for ((url, title) in savedTabs) {
+            val tabState = TabState().apply {
+                this.url = url
+                this.title = title
+                this.isBlankTab = false
+                this.isDiscarded = true
+                this.session = null  // No session - will be created when visited
+            }
+            list.add(tabState)
+        }
+        
+        list
+    }
     
-    var currentTabIndex by remember { mutableIntStateOf(-1) }
+    var currentTabIndex by remember { mutableIntStateOf(-1) }  // Always start on home page
     var showTabManager by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showScripting by remember { mutableStateOf(false) }
 
-    val pinnedDomains = remember { mutableStateListOf<String>() }
+    // Restore pinned domains from saved data
+    val pinnedDomains = remember {
+        val (_, savedPinned) = loadTabsData(context)
+        mutableStateListOf<String>().apply { addAll(savedPinned) }
+    }
     var selectedDomain by remember { mutableStateOf("") }
 
     val currentTab: TabState = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
 
     // ═══════════════════════════════════════════════════════════════
+    // SAVE TABS WHEN THEY CHANGE
+    // ═══════════════════════════════════════════════════════════════
+    // Save tabs whenever tabs list or pinned domains change
+    LaunchedEffect(tabs.toList(), pinnedDomains.toList()) {
+        saveTabsData(context, tabs, pinnedDomains)
+    }
+    
+    // Also save when tab properties change (title, url)
+    val tabsSnapshot = tabs.map { "${it.url}|${it.title}" }.joinToString()
+    LaunchedEffect(tabsSnapshot) {
+        saveTabsData(context, tabs, pinnedDomains)
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // TAB LIMIT ENFORCEMENT: Max 10 pre-loaded tabs
-    // Discard oldest when limit exceeded
     // ═══════════════════════════════════════════════════════════════
     fun enforceTabLimit() {
         val loadedTabs = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
@@ -280,7 +407,7 @@ fun GreyBrowser() {
         }
     }
 
-    // Create background tab: load, then enforce limit
+    // Create background tab: load URL, create session, then enforce limit
     fun createBackgroundTab(url: String) {
         val session = GeckoSession().apply {
             applySettingsToSession(this)
@@ -297,6 +424,25 @@ fun GreyBrowser() {
             setupDelegates(this)
         }
         tabs.add(tabState)
+        enforceTabLimit()
+    }
+    
+    // Create foreground tab: load URL, create session, switch to it
+    fun createForegroundTab(url: String) {
+        val session = GeckoSession().apply {
+            applySettingsToSession(this)
+            open(runtime)
+            loadUri(url)
+        }
+        val tabState = TabState().apply {
+            this.session = session
+            this.isBlankTab = false
+            this.isDiscarded = false
+            this.lastUpdated = System.currentTimeMillis()
+            setupDelegates(this)
+        }
+        tabs.add(tabState)
+        currentTabIndex = tabs.lastIndex
         enforceTabLimit()
     }
 
@@ -378,21 +524,7 @@ fun GreyBrowser() {
                     .width(IntrinsicSize.Max)
             ) {
                 ContextMenuItem("New Tab") {
-                    val session = GeckoSession().apply { 
-                        applySettingsToSession(this)
-                        open(runtime)
-                        loadUri(contextMenuUri!!)
-                    }
-                    val tabState = TabState().apply { 
-                        this.session = session
-                        this.isBlankTab = false
-                        this.isDiscarded = false
-                        this.lastUpdated = System.currentTimeMillis()
-                        setupDelegates(this)
-                    }
-                    tabs.add(tabState)
-                    currentTabIndex = tabs.lastIndex
-                    enforceTabLimit()
+                    createForegroundTab(contextMenuUri!!)
                     showContextMenu = false
                 }
                 ContextMenuItem("Open in Background") {
@@ -739,21 +871,7 @@ fun GreyBrowser() {
                                 focusManager.clearFocus()
                                 
                                 if (currentTab.isBlankTab) {
-                                    val session = GeckoSession().apply {
-                                        applySettingsToSession(this)
-                                        open(runtime)
-                                        loadUri(uri)
-                                    }
-                                    val newTab = TabState().apply {
-                                        this.session = session
-                                        isBlankTab = false
-                                        isDiscarded = false
-                                        lastUpdated = System.currentTimeMillis()
-                                        setupDelegates(this)
-                                    }
-                                    tabs.add(newTab)
-                                    currentTabIndex = tabs.lastIndex
-                                    enforceTabLimit()
+                                    createForegroundTab(uri)
                                 } else {
                                     currentTab.session?.loadUri(uri)
                                 }
