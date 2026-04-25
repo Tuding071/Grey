@@ -29,6 +29,8 @@ package com.grey.browser
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -43,30 +45,36 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -75,11 +83,17 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,14 +105,137 @@ class MainActivity : ComponentActivity() {
     
     override fun onPause() {
         super.onPause()
-        // Save tabs when app goes to background
         saveTabs(this)
     }
     
     override fun onDestroy() {
         super.onDestroy()
-        // Save tabs when app is destroyed
         saveTabs(this)
+    }
+}
+
+// ── Favicon Cache Manager ────────────────────────────────────────────
+object FaviconCache {
+    private const val MAX_FAVICONS = 50
+    private const val FAVICON_DIR = "favicons"
+    private const val META_FILE = "favicon_meta.json"
+    
+    data class FaviconMeta(
+        val domain: String,
+        val lastAccessed: Long = System.currentTimeMillis()
+    )
+    
+    private fun getFaviconDir(context: Context): File {
+        val dir = File(context.filesDir, FAVICON_DIR)
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+    
+    private fun getMetaFile(context: Context): File {
+        return File(context.filesDir, META_FILE)
+    }
+    
+    private fun loadMeta(context: Context): MutableList<FaviconMeta> {
+        val file = getMetaFile(context)
+        if (!file.exists()) return mutableListOf()
+        return try {
+            val json = file.readText()
+            val array = JSONArray(json)
+            val list = mutableListOf<FaviconMeta>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(FaviconMeta(
+                    domain = obj.getString("domain"),
+                    lastAccessed = obj.getLong("lastAccessed")
+                ))
+            }
+            list
+        } catch (e: Exception) {
+            mutableListOf()
+        }
+    }
+    
+    private fun saveMeta(context: Context, meta: List<FaviconMeta>) {
+        val array = JSONArray()
+        for (item in meta) {
+            val obj = JSONObject()
+            obj.put("domain", item.domain)
+            obj.put("lastAccessed", item.lastAccessed)
+            array.put(obj)
+        }
+        getMetaFile(context).writeText(array.toString())
+    }
+    
+    fun getFaviconFile(context: Context, domain: String): File {
+        val safeName = domain.replace(".", "_").replace("/", "_") + ".png"
+        return File(getFaviconDir(context), safeName)
+    }
+    
+    fun hasFavicon(context: Context, domain: String): Boolean {
+        return getFaviconFile(context, domain).exists()
+    }
+    
+    fun getFaviconBitmap(context: Context, domain: String): Bitmap? {
+        val file = getFaviconFile(context, domain)
+        if (!file.exists()) return null
+        
+        val meta = loadMeta(context)
+        val existing = meta.find { it.domain == domain }
+        if (existing != null) {
+            meta.remove(existing)
+            meta.add(existing.copy(lastAccessed = System.currentTimeMillis()))
+        } else {
+            meta.add(FaviconMeta(domain, System.currentTimeMillis()))
+        }
+        saveMeta(context, meta)
+        
+        return BitmapFactory.decodeFile(file.absolutePath)
+    }
+    
+    suspend fun downloadAndCacheFavicon(context: Context, domain: String): Bitmap? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = URL("https://$domain/favicon.ico")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                connection.connect()
+                
+                if (connection.responseCode == 200) {
+                    val inputStream = connection.inputStream
+                    val bitmap = BitmapFactory.decodeStream(inputStream)
+                    inputStream.close()
+                    
+                    if (bitmap != null) {
+                        val file = getFaviconFile(context, domain)
+                        FileOutputStream(file).use { out ->
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        }
+                        
+                        val meta = loadMeta(context)
+                        val existing = meta.find { it.domain == domain }
+                        if (existing != null) {
+                            meta.remove(existing)
+                        }
+                        meta.add(FaviconMeta(domain, System.currentTimeMillis()))
+                        
+                        if (meta.size > MAX_FAVICONS) {
+                            val oldest = meta.minByOrNull { it.lastAccessed }
+                            if (oldest != null) {
+                                meta.remove(oldest)
+                                val oldFile = getFaviconFile(context, oldest.domain)
+                                oldFile.delete()
+                            }
+                        }
+                        
+                        saveMeta(context, meta)
+                        return@withContext bitmap
+                    }
+                }
+                connection.disconnect()
+            } catch (e: Exception) { }
+            null
+        }
     }
 }
 
@@ -107,21 +244,15 @@ private const val PREFS_NAME = "browser_tabs"
 private const val KEY_TABS = "saved_tabs"
 private const val KEY_PINNED = "pinned_domains"
 
-// Save tabs metadata to SharedPreferences
 fun saveTabs(context: Context) {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    val editor = prefs.edit()
-    
-    // Don't save if we haven't initialized yet (tabs will be empty)
-    // The actual saving is done in the composable
-    editor.apply()
+    prefs.edit().apply()
 }
 
 fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<String>) {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     val editor = prefs.edit()
     
-    // Save tabs (only non-blank tabs)
     val tabsArray = JSONArray()
     for (tab in tabs) {
         if (!tab.isBlankTab) {
@@ -133,7 +264,6 @@ fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<Str
     }
     editor.putString(KEY_TABS, tabsArray.toString())
     
-    // Save pinned domains
     val pinnedArray = JSONArray()
     for (domain in pinnedDomains) {
         pinnedArray.put(domain)
@@ -146,7 +276,6 @@ fun saveTabsData(context: Context, tabs: List<TabState>, pinnedDomains: List<Str
 fun loadTabsData(context: Context): Pair<List<Pair<String, String>>, List<String>> {
     val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     
-    // Load tabs
     val tabsList = mutableListOf<Pair<String, String>>()
     val tabsJson = prefs.getString(KEY_TABS, null)
     if (tabsJson != null) {
@@ -158,12 +287,9 @@ fun loadTabsData(context: Context): Pair<List<Pair<String, String>>, List<String
                 val title = tabObj.optString("title", url)
                 tabsList.add(Pair(url, title))
             }
-        } catch (e: Exception) {
-            // Ignore malformed data
-        }
+        } catch (e: Exception) { }
     }
     
-    // Load pinned domains
     val pinnedList = mutableListOf<String>()
     val pinnedJson = prefs.getString(KEY_PINNED, null)
     if (pinnedJson != null) {
@@ -172,9 +298,7 @@ fun loadTabsData(context: Context): Pair<List<Pair<String, String>>, List<String
             for (i in 0 until pinnedArray.length()) {
                 pinnedList.add(pinnedArray.getString(i))
             }
-        } catch (e: Exception) {
-            // Ignore malformed data
-        }
+        } catch (e: Exception) { }
     }
     
     return Pair(tabsList, pinnedList)
@@ -191,7 +315,6 @@ class TabState {
     var isDiscarded by mutableStateOf(false)
 }
 
-// Helper to extract the main domain for grouping (ignores subdomains)
 fun getDomainName(url: String): String {
     if (url == "about:blank" || url.isBlank()) return ""
     return try {
@@ -218,6 +341,7 @@ fun GreyBrowser() {
     val focusManager = LocalFocusManager.current
     val runtime = remember { GeckoRuntime.create(context) }
     val prefs = remember { context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE) }
+    val coroutineScope = rememberCoroutineScope()
 
     val applySettingsToSession = { session: GeckoSession ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -228,7 +352,6 @@ fun GreyBrowser() {
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuUri by remember { mutableStateOf<String?>(null) }
 
-    // Use anonymous function instead of lambda for proper return
     val setupDelegates = fun(tabState: TabState) {
         val session = tabState.session ?: return
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
@@ -299,58 +422,48 @@ fun GreyBrowser() {
         }
     }
 
-    // Load saved tabs on first launch
     val tabs = remember {
         val (savedTabs, savedPinned) = loadTabsData(context)
         val list = mutableStateListOf<TabState>()
-        
-        // Restore saved tabs as discarded placeholders (no session, no loading)
         for ((url, title) in savedTabs) {
             val tabState = TabState().apply {
                 this.url = url
                 this.title = title
                 this.isBlankTab = false
                 this.isDiscarded = true
-                this.session = null  // No session - will be created when visited
+                this.session = null
             }
             list.add(tabState)
         }
-        
         list
     }
     
-    var currentTabIndex by remember { mutableIntStateOf(-1) }  // Always start on home page
+    var currentTabIndex by remember { mutableIntStateOf(-1) }
     var showTabManager by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showScripting by remember { mutableStateOf(false) }
 
-    // Restore pinned domains from saved data
     val pinnedDomains = remember {
         val (_, savedPinned) = loadTabsData(context)
         mutableStateListOf<String>().apply { addAll(savedPinned) }
     }
     var selectedDomain by remember { mutableStateOf("") }
 
+    val faviconBitmaps = remember { mutableStateMapOf<String, Bitmap?>() }
+    val faviconLoading = remember { mutableStateMapOf<String, Boolean>() }
+
     val currentTab: TabState = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
 
-    // ═══════════════════════════════════════════════════════════════
-    // SAVE TABS WHEN THEY CHANGE
-    // ═══════════════════════════════════════════════════════════════
-    // Save tabs whenever tabs list or pinned domains change
     LaunchedEffect(tabs.toList(), pinnedDomains.toList()) {
         saveTabsData(context, tabs, pinnedDomains)
     }
     
-    // Also save when tab properties change (title, url)
     val tabsSnapshot = tabs.map { "${it.url}|${it.title}" }.joinToString()
     LaunchedEffect(tabsSnapshot) {
         saveTabsData(context, tabs, pinnedDomains)
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // TAB LIMIT ENFORCEMENT: Max 10 pre-loaded tabs
-    // ═══════════════════════════════════════════════════════════════
     fun enforceTabLimit() {
         val loadedTabs = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
         if (loadedTabs.size > MAX_LOADED_TABS) {
@@ -368,7 +481,6 @@ fun GreyBrowser() {
         }
     }
 
-    // Restore a discarded tab when visited
     fun restoreTab(tab: TabState) {
         if (tab.isDiscarded && tab.session == null) {
             val newSession = GeckoSession().apply {
@@ -385,29 +497,22 @@ fun GreyBrowser() {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // SESSION MANAGEMENT: Only ONE session active at a time
-    // ═══════════════════════════════════════════════════════════════
     LaunchedEffect(showTabManager, currentTabIndex) {
         if (showTabManager) {
             homeSession.setActive(false)
             tabs.forEach { it.session?.setActive(false) }
         } else {
             homeSession.setActive(currentTabIndex == -1)
-            
             tabs.forEachIndexed { index, tabState ->
                 val isActive = index == currentTabIndex
-                
                 if (isActive && tabState.isDiscarded) {
                     restoreTab(tabState)
                 }
-                
                 tabState.session?.setActive(isActive)
             }
         }
     }
 
-    // Create background tab: load URL, create session, then enforce limit
     fun createBackgroundTab(url: String) {
         val session = GeckoSession().apply {
             applySettingsToSession(this)
@@ -427,7 +532,6 @@ fun GreyBrowser() {
         enforceTabLimit()
     }
     
-    // Create foreground tab: load URL, create session, switch to it
     fun createForegroundTab(url: String) {
         val session = GeckoSession().apply {
             applySettingsToSession(this)
@@ -601,6 +705,20 @@ fun GreyBrowser() {
                                 val isPinned = pinnedDomains.contains(domain)
                                 val tabCount = domainGroups[domain]?.size ?: 0
 
+                                LaunchedEffect(domain) {
+                                    if (!faviconBitmaps.containsKey(domain) && faviconLoading[domain] != true) {
+                                        faviconLoading[domain] = true
+                                        val cached = FaviconCache.getFaviconBitmap(context, domain)
+                                        if (cached != null) {
+                                            faviconBitmaps[domain] = cached
+                                        } else {
+                                            val downloaded = FaviconCache.downloadAndCacheFavicon(context, domain)
+                                            faviconBitmaps[domain] = downloaded
+                                        }
+                                        faviconLoading[domain] = false
+                                    }
+                                }
+
                                 Surface(
                                     modifier = Modifier
                                         .padding(end = 8.dp)
@@ -616,9 +734,45 @@ fun GreyBrowser() {
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        if (isPinned) Text("📌 ", fontSize = 12.sp)
-                                        Text(domain, color = Color.White, fontSize = 14.sp)
+                                        if (isPinned) {
+                                            Icon(
+                                                Icons.Default.PushPin,
+                                                contentDescription = "Pinned",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                        }
+                                        
+                                        val bitmap = faviconBitmaps[domain]
+                                        if (bitmap != null) {
+                                            androidx.compose.foundation.Image(
+                                                bitmap = bitmap.asImageBitmap(),
+                                                contentDescription = domain,
+                                                modifier = Modifier
+                                                    .size(20.dp)
+                                                    .clip(CircleShape),
+                                                contentScale = ContentScale.Fit
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(20.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color.DarkGray),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = domain.take(1).uppercase(),
+                                                    color = Color.White,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                        
                                         Spacer(modifier = Modifier.width(6.dp))
+                                        
                                         Box(
                                             modifier = Modifier
                                                 .background(Color.DarkGray)
