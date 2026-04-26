@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.1 (Fix: current tab highlight, + button, adjust version on every change)
+// Grey Browser - V1.2 (Fix: Tab manager always defaults to "All" on open.
+// Fix: Current tab highlight, + button, adjust version on every change)
 // ═══════════════════════════════════════════════════════════════════
 
 package com.grey.browser
@@ -37,6 +38,8 @@ package com.grey.browser
 // V1.1 - Fix: Current tab always highlighted in tab manager (persists across
 //        sessions). Added + button in top bar for quick new tab.
 //        On app start: always home page, last session's tab highlighted.
+// V1.2 - Fix: Tab manager always defaults to "All" on open regardless of
+//        previously selected group.
 // ═══════════════════════════════════════════════════════════════════
 // DESIGN SYSTEM: Consistent Thickness Values
 // Use these as basis for all borders, dividers, and strokes:
@@ -373,10 +376,13 @@ fun GreyBrowser() {
         val sortedDomains = domainGroups.keys.sortedWith(compareByDescending<String> { pinnedDomains.contains(it) }.thenBy { d: String -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE })
         val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }
         val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
-        val currentTabDomain = if (currentTab.isBlankTab) "" else getDomainName(currentTab.url)
-        val highlightDomain = if (currentTab.isBlankTab && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url) else currentTabDomain
+        val highlightDomain = if (currentTab.isBlankTab && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url) else if (!currentTab.isBlankTab) getDomainName(currentTab.url) else ""
 
-        LaunchedEffect(Unit) { selectedDomain = if (currentTab.isBlankTab) "" else currentTabDomain; if (highlightDomain.isNotBlank()) { blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" } }
+        // ALWAYS reset to "All" when tab manager opens
+        LaunchedEffect(Unit) {
+            selectedDomain = ""
+            if (highlightDomain.isNotBlank()) { blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" }
+        }
 
         Popup(alignment = Alignment.TopStart, onDismissRequest = { showTabManager = false }, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
             Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
@@ -504,7 +510,7 @@ fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick
 @Composable
 fun ContextMenuItem(text: String, onClick: () -> Unit) { Box(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) { Text(text, color = Color.White, fontSize = 16.sp) } }
 
-// ── Dialogs (expanded for proper compilation) ────────────────────
+// ── Dialogs ──────────────────────────────────────────────────────
 @Composable
 fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: (String) -> Unit) {
     var script by remember { mutableStateOf(initialScript) }
@@ -514,13 +520,7 @@ fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: 
         text = {
             Column {
                 Text("Write or paste JS below.", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.padding(bottom = 8.dp))
-                OutlinedTextField(
-                    value = script, onValueChange = { script = it },
-                    modifier = Modifier.fillMaxWidth().height(200.dp),
-                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
-                    shape = RectangleShape
-                )
+                OutlinedTextField(value = script, onValueChange = { script = it }, modifier = Modifier.fillMaxWidth().height(200.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
             }
         },
         confirmButton = { TextButton({ onSaveAndRun(script) }) { Text("Run", color = Color.White) } },
@@ -531,10 +531,8 @@ fun ScriptingDialog(initialScript: String, onDismiss: () -> Unit, onSaveAndRun: 
 
 @Composable
 fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
-    var js by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
-    var tp by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
-    var cb by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
-    var am by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
+    var js by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }; var tp by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
+    var cb by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }; var am by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
     val apply = { prefs.edit().putBoolean("javascript.enabled", js).putBoolean("privacy.trackingprotection.enabled", tp).putInt("network.cookie.cookieBehavior", cb).putBoolean("media.autoplay.enabled", am).apply(); onSettingsApplied(); onDismiss() }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -569,14 +567,7 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
     val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
     Box {
-        OutlinedTextField(
-            value = st, onValueChange = {}, readOnly = true,
-            trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-            shape = RectangleShape,
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E))
-        )
+        OutlinedTextField(value = st, onValueChange = {}, readOnly = true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)))
         Box(Modifier.matchParentSize().clickable { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
             options.forEach { (label, value) -> DropdownMenuItem(text = { Text(text = label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
