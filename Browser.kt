@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.3 (Feature: Script Manager for persistent scripts)
+// Grey Browser - V1.4 (Scripts auto-inject on page load, simplified UI)
 // ═══════════════════════════════════════════════════════════════════
 
 package com.grey.browser
@@ -37,6 +37,8 @@ package com.grey.browser
 // V1.1 - Current tab highlight, + button in top bar
 // V1.2 - Tab manager always defaults to "All" on open
 // V1.3 - Script Manager: persistent scripts with enable/disable toggle
+// V1.4 - Scripts auto-inject on page load via onPageStart. Removed Quick Script,
+//        play button, Select All, Copy buttons. Added delete confirmation for scripts.
 // ═══════════════════════════════════════════════════════════════════
 
 import android.content.Context
@@ -69,7 +71,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
@@ -90,7 +91,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
@@ -335,13 +335,16 @@ fun resolveUrl(input: String): String {
 fun GreyBrowser() {
     val context = LocalContext.current
     val activity = context as? ComponentActivity
-    val clipboardManager = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
     val runtime = remember { GeckoRuntime.create(context) }
     val prefs = remember {
         context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE)
     }
     val scope = rememberCoroutineScope()
+
+    val scripts = remember {
+        mutableStateListOf<ScriptItem>().apply { addAll(loadScripts(context)) }
+    }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -357,6 +360,14 @@ fun GreyBrowser() {
     var confirmMessage by remember { mutableStateOf("") }
     var showScriptManager by remember { mutableStateOf(false) }
 
+    val injectScripts: (GeckoSession) -> Unit = { s ->
+        for (script in scripts) { 
+            if (script.enabled && script.code.isNotBlank()) {
+                s.loadUri("javascript:" + Uri.encode("(function(){\n${script.code}\n})();")) 
+            }
+        }
+    }
+
     val setupDelegates = fun(tabState: TabState) {
         val session = tabState.session ?: return
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
@@ -364,6 +375,7 @@ fun GreyBrowser() {
                 tabState.url = url; tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
                 if (url != "about:blank") tabState.isBlankTab = false
+                injectScripts(s)
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
@@ -433,7 +445,6 @@ fun GreyBrowser() {
     var showTabManager by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
-    var showScripting by remember { mutableStateOf(false) }
     val pinnedDomains = remember {
         mutableStateListOf<String>().apply { addAll(savedPinned) }
     }
@@ -448,10 +459,6 @@ fun GreyBrowser() {
     val pendingDeletions = remember { mutableStateMapOf<Int, Long>() }
     var showBlink by remember { mutableStateOf(false) }
     val blinkTargetDomain = remember { mutableStateOf("") }
-
-    val scripts = remember {
-        mutableStateListOf<ScriptItem>().apply { addAll(loadScripts(context)) }
-    }
 
     LaunchedEffect(tabs.toList(), pinnedDomains.toList(), lastActiveUrl) {
         saveTabsData(context, tabs, pinnedDomains, lastActiveUrl)
@@ -634,26 +641,10 @@ fun GreyBrowser() {
         }
     }
 
-    if (showScripting) {
-        ScriptingDialog(
-            prefs.getString("user_script", "alert('Hello from Grey Browser!');") ?: "",
-            { showScripting = false }
-        ) { script ->
-            prefs.edit().putString("user_script", script).apply()
-            currentTab.session?.loadUri("javascript:" + Uri.encode("(function(){\n$script\n})();"))
-            showScripting = false
-        }
-    }
-
     if (showScriptManager) {
         ScriptManager(
             scripts = scripts,
-            onDismiss = { showScriptManager = false },
-            onRun = { code ->
-                currentTab.session?.loadUri(
-                    "javascript:" + Uri.encode("(function(){\n$code\n})();")
-                )
-            }
+            onDismiss = { showScriptManager = false }
         )
     }
 
@@ -673,17 +664,10 @@ fun GreyBrowser() {
                 ContextMenuItem("Open in Background") {
                     createBackgroundTab(contextMenuUri!!); showContextMenu = false
                 }
-                ContextMenuItem("Copy link") {
-                    clipboardManager.setText(AnnotatedString(contextMenuUri!!))
-                    showContextMenu = false
-                }
             }
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // ── TAB MANAGER ───────────────────────────────────────────────
-    // ═══════════════════════════════════════════════════════════════
     if (showTabManager) {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
         val sortedDomains = domainGroups.keys.sortedWith(
@@ -720,7 +704,6 @@ fun GreyBrowser() {
                 color = Color(0xFF1E1E1E)
             ) {
                 Column(Modifier.fillMaxSize()) {
-                    // Header
                     Row(
                         Modifier.fillMaxWidth()
                             .padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
@@ -737,17 +720,11 @@ fun GreyBrowser() {
                         }
                     }
 
-                    // Body
                     Row(Modifier.weight(1f).fillMaxWidth().padding(top = 4.dp)) {
-                        // Sidebar
                         val groupListState = rememberLazyListState()
-                        val allSidebarItems =
-                            listOf("__ALL__") + pinnedSorted + unpinnedSorted
+                        val allSidebarItems = listOf("__ALL__") + pinnedSorted + unpinnedSorted
                         LaunchedEffect(allSidebarItems, selectedDomain) {
-                            val idx =
-                                if (selectedDomain.isBlank()) 0 else allSidebarItems.indexOf(
-                                    selectedDomain
-                                )
+                            val idx = if (selectedDomain.isBlank()) 0 else allSidebarItems.indexOf(selectedDomain)
                             if (idx >= 0) groupListState.scrollToItem(idx)
                         }
 
@@ -782,63 +759,32 @@ fun GreyBrowser() {
                             }
                         }
 
-                        VerticalDivider(
-                            color = Color.DarkGray,
-                            modifier = Modifier.fillMaxHeight().width(1.dp)
-                        )
+                        VerticalDivider(color = Color.DarkGray, modifier = Modifier.fillMaxHeight().width(1.dp))
 
-                        // Tab list
-                        val tabsToShow =
-                            if (selectedDomain.isBlank()) tabs.toList()
-                            else domainGroups[selectedDomain] ?: emptyList()
+                        val tabsToShow = if (selectedDomain.isBlank()) tabs.toList() else domainGroups[selectedDomain] ?: emptyList()
                         val tabListState = rememberLazyListState()
-                        val scrollTarget =
-                            if (currentTabIndex >= 0) currentTab
-                            else if (highlightedTabIndex >= 0) tabs.getOrNull(highlightedTabIndex)
-                            else null
+                        val scrollTarget = if (currentTabIndex >= 0) currentTab else if (highlightedTabIndex >= 0) tabs.getOrNull(highlightedTabIndex) else null
                         LaunchedEffect(selectedDomain) {
                             val idx = tabsToShow.indexOf(scrollTarget)
                             if (idx >= 0) tabListState.scrollToItem(idx)
                         }
 
                         if (tabs.isEmpty()) {
-                            Box(
-                                Modifier.weight(1f).fillMaxHeight(),
-                                contentAlignment = Alignment.Center
-                            ) {
+                            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text("No open tabs", color = Color.Gray, fontSize = 16.sp)
                                     Spacer(Modifier.height(8.dp))
-                                    Text(
-                                        "Tap 'New Tab' to start browsing",
-                                        color = Color.Gray.copy(alpha = 0.7f),
-                                        fontSize = 14.sp
-                                    )
+                                    Text("Tap 'New Tab' to start browsing", color = Color.Gray.copy(alpha = 0.7f), fontSize = 14.sp)
                                 }
                             }
                         } else {
-                            LazyColumn(
-                                state = tabListState,
-                                modifier = Modifier.weight(1f).fillMaxHeight()
-                            ) {
+                            LazyColumn(state = tabListState, modifier = Modifier.weight(1f).fillMaxHeight()) {
                                 if (tabsToShow.isEmpty()) {
-                                    item {
-                                        Box(
-                                            Modifier.fillMaxWidth().padding(32.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                "No tabs in this group",
-                                                color = Color.Gray,
-                                                fontSize = 14.sp
-                                            )
-                                        }
-                                    }
+                                    item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No tabs in this group", color = Color.Gray, fontSize = 14.sp) } }
                                 } else {
                                     items(tabsToShow) { tab: TabState ->
                                         val tabIndex = tabs.indexOf(tab)
-                                        val isHighlighted =
-                                            tabIndex == currentTabIndex || (currentTabIndex == -1 && tabIndex == highlightedTabIndex)
+                                        val isHighlighted = tabIndex == currentTabIndex || (currentTabIndex == -1 && tabIndex == highlightedTabIndex)
                                         val isPending = pendingDeletions.containsKey(tabIndex)
                                         val tabDomain = getDomainName(tab.url)
                                         LaunchedEffect(tab.url) { loadTabFavicon(tabDomain) }
@@ -846,61 +792,19 @@ fun GreyBrowser() {
 
                                         Surface(
                                             Modifier.fillMaxWidth()
-                                                .clickable(enabled = !isPending) {
-                                                    currentTabIndex = tabIndex; showTabManager = false
-                                                }
+                                                .clickable(enabled = !isPending) { currentTabIndex = tabIndex; showTabManager = false }
                                                 .border(0.5.dp, Color.DarkGray, RectangleShape),
-                                            color = if (isPending) Color.Red.copy(alpha = 0.3f)
-                                            else if (isHighlighted) Color.White
-                                            else Color.Transparent
+                                            color = if (isPending) Color.Red.copy(alpha = 0.3f) else if (isHighlighted) Color.White else Color.Transparent
                                         ) {
-                                            Row(
-                                                Modifier.fillMaxWidth()
-                                                    .padding(horizontal = 10.dp, vertical = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                if (tabFav != null) Image(
-                                                    tabFav.asImageBitmap(),
-                                                    tabDomain,
-                                                    Modifier.size(16.dp).clip(CircleShape),
-                                                    contentScale = ContentScale.Fit
-                                                )
-                                                else Box(
-                                                    Modifier.size(16.dp).clip(CircleShape)
-                                                        .background(Color.DarkGray),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(
-                                                        tabDomain.take(1).uppercase(),
-                                                        color = Color.White,
-                                                        fontSize = 8.sp,
-                                                        fontWeight = FontWeight.Bold
-                                                    )
+                                            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                if (tabFav != null) Image(tabFav.asImageBitmap(), tabDomain, Modifier.size(16.dp).clip(CircleShape), contentScale = ContentScale.Fit)
+                                                else Box(Modifier.size(16.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) {
+                                                    Text(tabDomain.take(1).uppercase(), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
                                                 }
                                                 Spacer(Modifier.width(8.dp))
-                                                Text(
-                                                    if (tab.title == "New Tab" || tab.title.isBlank()) tab.url else tab.title,
-                                                    color = if (isPending) Color.White
-                                                    else if (isHighlighted) Color.Black
-                                                    else Color.White,
-                                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                                    fontSize = 14.sp,
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                if (isPending) IconButton({ undoDeleteTab(tabIndex) }) {
-                                                    Icon(
-                                                        Icons.Default.Undo, "Undo",
-                                                        tint = Color.White,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                                else IconButton({ requestDeleteTab(tabIndex) }) {
-                                                    Icon(
-                                                        Icons.Default.Close, "Close",
-                                                        tint = if (isHighlighted) Color.Black else Color.White,
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
+                                                Text(if (tab.title == "New Tab" || tab.title.isBlank()) tab.url else tab.title, color = if (isPending) Color.White else if (isHighlighted) Color.Black else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                                                if (isPending) IconButton({ undoDeleteTab(tabIndex) }) { Icon(Icons.Default.Undo, "Undo", tint = Color.White, modifier = Modifier.size(18.dp)) }
+                                                else IconButton({ requestDeleteTab(tabIndex) }) { Icon(Icons.Default.Close, "Close", tint = if (isHighlighted) Color.Black else Color.White, modifier = Modifier.size(18.dp)) }
                                             }
                                         }
                                     }
@@ -909,87 +813,21 @@ fun GreyBrowser() {
                         }
                     }
 
-                    // Bottom
-                    Column(
-                        Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()
-                    ) {
-                        OutlinedButton(
-                            onClick = { currentTabIndex = -1; showTabManager = false },
-                            modifier = Modifier.fillMaxWidth(), shape = RectangleShape,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            border = BorderStroke(1.dp, Color.White)
-                        ) {
-                            Icon(Icons.Default.Add, null, tint = Color.White)
-                            Spacer(Modifier.width(8.dp))
-                            Text("New Tab", color = Color.White)
+                    Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                        OutlinedButton(onClick = { currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                            Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White)
                         }
                         Spacer(Modifier.height(8.dp))
                         Row(Modifier.fillMaxWidth()) {
                             val hasSelection = selectedDomain.isNotBlank()
                             val isPinned = pinnedDomains.contains(selectedDomain)
-                            val faintColor = Color.White.copy(alpha = 0.3f)
-                            val activeColor = Color.White
-                            OutlinedButton(
-                                onClick = {
-                                    if (hasSelection) {
-                                        confirmTitle =
-                                            if (isPinned) "Unpin Group?" else "Pin Group?"
-                                        confirmMessage = "Are you sure?"
-                                        confirmAction = {
-                                            if (isPinned) pinnedDomains.remove(selectedDomain)
-                                            else pinnedDomains.add(selectedDomain)
-                                        }
-                                        showConfirmDialog = true
-                                    }
-                                },
-                                modifier = Modifier.weight(1f), shape = RectangleShape,
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (hasSelection) activeColor else faintColor
-                                ),
-                                border = BorderStroke(
-                                    1.dp, if (hasSelection) activeColor else faintColor
-                                )
-                            ) {
-                                Text(
-                                    if (isPinned) "Unpin Group" else "Pin Group",
-                                    fontSize = 13.sp,
-                                    color = if (hasSelection) activeColor else faintColor
-                                )
+                            val faintColor = Color.White.copy(alpha = 0.3f); val activeColor = Color.White
+                            OutlinedButton(onClick = { if (hasSelection) { confirmTitle = if (isPinned) "Unpin Group?" else "Pin Group?"; confirmMessage = "Are you sure?"; confirmAction = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) }; showConfirmDialog = true } }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor), border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)) {
+                                Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
                             }
                             Spacer(Modifier.width(8.dp))
-                            OutlinedButton(
-                                onClick = {
-                                    if (hasSelection) {
-                                        confirmTitle = "Delete Group?"
-                                        confirmMessage = "All tabs in this group will be lost."
-                                        confirmAction = {
-                                            val toRemove =
-                                                domainGroups[selectedDomain] ?: emptyList()
-                                            toRemove.forEach {
-                                                it.session?.setActive(false)
-                                                it.session?.close()
-                                            }
-                                            tabs.removeAll(toRemove)
-                                            if (tabs.isEmpty()) currentTabIndex = -1
-                                            else currentTabIndex =
-                                                minOf(currentTabIndex, tabs.lastIndex)
-                                            selectedDomain = ""
-                                        }
-                                        showConfirmDialog = true
-                                    }
-                                },
-                                modifier = Modifier.weight(1f), shape = RectangleShape,
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = if (hasSelection) activeColor else faintColor
-                                ),
-                                border = BorderStroke(
-                                    1.dp, if (hasSelection) activeColor else faintColor
-                                )
-                            ) {
-                                Text(
-                                    "Delete Group", fontSize = 13.sp,
-                                    color = if (hasSelection) activeColor else faintColor
-                                )
+                            OutlinedButton(onClick = { if (hasSelection) { confirmTitle = "Delete Group?"; confirmMessage = "All tabs in this group will be lost."; confirmAction = { val toRemove = domainGroups[selectedDomain] ?: emptyList(); toRemove.forEach { it.session?.setActive(false); it.session?.close() }; tabs.removeAll(toRemove); if (tabs.isEmpty()) currentTabIndex = -1 else currentTabIndex = minOf(currentTabIndex, tabs.lastIndex); selectedDomain = "" }; showConfirmDialog = true } }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor), border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)) {
+                                Text("Delete Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
                             }
                         }
                     }
@@ -998,105 +836,33 @@ fun GreyBrowser() {
         }
     }
 
-    var urlInput by remember {
-        mutableStateOf(
-            TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url)
-        )
-    }
+    var urlInput by remember { mutableStateOf(TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url)) }
     var isUrlFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(currentTab, currentTab.url) {
-        if (!isUrlFocused) {
-            urlInput = TextFieldValue(
-                if (currentTab.url == "about:blank") "" else currentTab.url
-            )
-        }
-    }
+    LaunchedEffect(currentTab, currentTab.url) { if (!isUrlFocused) { urlInput = TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url) } }
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
         Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton({ showTabManager = true }) {
-                    Icon(Icons.Default.Tab, "Tabs", tint = Color.White)
-                }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton({ showTabManager = true }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
                 val isLoading = currentTab.progress in 1..99
                 OutlinedTextField(
                     value = urlInput, onValueChange = { urlInput = it }, singleLine = true,
-                    placeholder = {
-                        Text(
-                            if (currentTab.isBlankTab) "Search or enter URL"
-                            else currentTab.url.take(50),
-                            color = Color.White.copy(alpha = 0.5f),
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
-                    },
-                    modifier = Modifier.weight(1f).padding(vertical = 8.dp)
-                        .background(Color(0xFF1E1E1E))
-                        .focusRequester(focusRequester)
-                        .onFocusChanged { isUrlFocused = it.isFocused }
-                        .drawBehind {
-                            if (isLoading) drawRect(
-                                Color.White,
-                                size = size.copy(width = size.width * currentTab.progress / 100f)
-                            )
-                        },
-                    textStyle = TextStyle(
-                        if (isLoading) Color.Gray else Color.White, 16.sp
-                    ),
-                    shape = RectangleShape,
+                    placeholder = { Text(if (currentTab.isBlankTab) "Search or enter URL" else currentTab.url.take(50), color = Color.White.copy(alpha = 0.5f), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    modifier = Modifier.weight(1f).padding(vertical = 8.dp).background(Color(0xFF1E1E1E)).focusRequester(focusRequester).onFocusChanged { isUrlFocused = it.isFocused }.drawBehind { if (isLoading) drawRect(Color.White, size = size.copy(width = size.width * currentTab.progress / 100f)) },
+                    textStyle = TextStyle(if (isLoading) Color.Gray else Color.White, 16.sp), shape = RectangleShape,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = {
-                        val input = urlInput.text
-                        if (input.isNotBlank()) {
-                            focusManager.clearFocus()
-                            val uri = resolveUrl(input)
-                            if (currentTab.isBlankTab) createForegroundTab(uri)
-                            else currentTab.session?.loadUri(uri)
-                        }
-                    }),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedBorderColor = Color.White,
-                        unfocusedBorderColor = Color.White,
-                        cursorColor = if (isLoading) Color.Gray else Color.White
-                    ),
-                    trailingIcon = {
-                        if (isLoading) IconButton({ currentTab.session?.stop() }) {
-                            Icon(Icons.Default.Close, "Stop", tint = Color.White)
-                        } else IconButton({
-                            urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length))
-                            focusRequester.requestFocus()
-                        }) {
-                            Icon(Icons.Default.SelectAll, "Select all", tint = Color.White)
-                        }
-                    }
+                    keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri) } }),
+                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
+                    trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                 )
-                IconButton({ currentTabIndex = -1 }) {
-                    Icon(Icons.Default.Add, "New Tab", tint = Color.White)
-                }
+                IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
                 Box {
-                    IconButton({ showMenu = true }) {
-                        Icon(Icons.Default.MoreVert, "Menu", tint = Color.White)
-                    }
-                    DropdownMenu(
-                        expanded = showMenu, onDismissRequest = { showMenu = false },
-                        modifier = Modifier.border(1.dp, Color.White, RectangleShape),
-                        containerColor = Color(0xFF1E1E1E), shape = RectangleShape
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Script Manager", color = Color.White) },
-                            onClick = { showMenu = false; showScriptManager = true })
-                        DropdownMenuItem(
-                            text = { Text("Quick Script", color = Color.White) },
-                            onClick = { showMenu = false; showScripting = true })
-                        DropdownMenuItem(
-                            text = { Text("Settings", color = Color.White) },
-                            onClick = { showMenu = false; showSettings = true })
+                    IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+                        DropdownMenuItem(text = { Text("Script Manager", color = Color.White) }, onClick = { showMenu = false; showScriptManager = true })
+                        DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                     }
                 }
             }
@@ -1110,11 +876,22 @@ fun GreyBrowser() {
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-fun ScriptManager(
-    scripts: MutableList<ScriptItem>, onDismiss: () -> Unit, onRun: (String) -> Unit
-) {
+fun ScriptManager(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
     var editingScript by remember { mutableStateOf<ScriptItem?>(null) }
     var isCreating by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var scriptToDelete by remember { mutableStateOf<ScriptItem?>(null) }
+
+    if (showDeleteConfirm && scriptToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false; scriptToDelete = null },
+            title = { Text("Delete Script?", color = Color.White, fontSize = 18.sp) },
+            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
+            confirmButton = { TextButton({ scripts.remove(scriptToDelete!!); showDeleteConfirm = false; scriptToDelete = null }) { Text("Delete", color = Color.White) } },
+            dismissButton = { TextButton({ showDeleteConfirm = false; scriptToDelete = null }) { Text("Cancel", color = Color.White) } },
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
+        )
+    }
 
     if (editingScript != null || isCreating) {
         ScriptEditor(
@@ -1124,12 +901,7 @@ fun ScriptManager(
                     val idx = scripts.indexOfFirst { it.id == editingScript!!.id }
                     if (idx >= 0) scripts[idx] = editingScript!!.copy(name = name, code = code)
                 } else {
-                    scripts.add(
-                        ScriptItem(
-                            id = UUID.randomUUID().toString(), name = name, code = code,
-                            enabled = true
-                        )
-                    )
+                    scripts.add(ScriptItem(id = UUID.randomUUID().toString(), name = name, code = code, enabled = true))
                 }
                 editingScript = null; isCreating = false
             },
@@ -1138,12 +910,12 @@ fun ScriptManager(
     } else {
         ScriptList(
             scripts = scripts, onDismiss = onDismiss, onAdd = { isCreating = true },
-            onEdit = { editingScript = it }, onDelete = { scripts.remove(it) },
+            onEdit = { editingScript = it },
+            onDelete = { scriptToDelete = it; showDeleteConfirm = true },
             onToggle = { script ->
                 val idx = scripts.indexOf(script)
                 if (idx >= 0) scripts[idx] = script.copy(enabled = !script.enabled)
-            },
-            onRun = onRun
+            }
         )
     }
 }
@@ -1152,114 +924,40 @@ fun ScriptManager(
 fun ScriptList(
     scripts: List<ScriptItem>, onDismiss: () -> Unit, onAdd: () -> Unit,
     onEdit: (ScriptItem) -> Unit, onDelete: (ScriptItem) -> Unit,
-    onToggle: (ScriptItem) -> Unit, onRun: (String) -> Unit
+    onToggle: (ScriptItem) -> Unit
 ) {
-    Popup(
-        alignment = Alignment.TopStart, onDismissRequest = onDismiss,
-        properties = PopupProperties(
-            focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false
-        )
-    ) {
-        Surface(
-            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)),
-            color = Color(0xFF1E1E1E)
-        ) {
+    Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth()
-                        .padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.Close, "Close", tint = Color.White)
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    Text("Scripts", color = Color.White, fontSize = 18.sp)
-                    if (scripts.isNotEmpty()) {
-                        Spacer(Modifier.width(8.dp))
-                        Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp)
-                    }
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp)); Text("Scripts", color = Color.White, fontSize = 18.sp)
+                    if (scripts.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp) }
                 }
 
                 if (scripts.isEmpty()) {
-                    Box(
-                        Modifier.weight(1f).fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No scripts saved", color = Color.Gray, fontSize = 16.sp)
-                    }
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No scripts saved", color = Color.Gray, fontSize = 16.sp) }
                 } else {
-                    LazyColumn(
-                        Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)
-                    ) {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                         items(scripts) { script ->
-                            Surface(
-                                Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                                    .border(0.5.dp, Color.DarkGray, RectangleShape),
-                                color = Color.Transparent
-                            ) {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
-                                        Text(
-                                            script.name,
-                                            color = if (script.enabled) Color.White else Color.Gray,
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                        Text(
-                                            script.code.take(80),
-                                            color = Color.Gray.copy(alpha = 0.7f),
-                                            fontSize = 12.sp, maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        Text(script.name, color = if (script.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                                        Text(script.code.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
-                                    Switch(
-                                        checked = script.enabled,
-                                        onCheckedChange = { onToggle(script) },
-                                        colors = SwitchDefaults.colors(
-                                            checkedThumbColor = Color.White,
-                                            checkedTrackColor = Color(0xFF444444),
-                                            uncheckedThumbColor = Color.White,
-                                            uncheckedTrackColor = Color(0xFF444444)
-                                        ),
-                                        modifier = Modifier.padding(end = 4.dp)
-                                    )
-                                    IconButton({ onRun(script.code) }) {
-                                        Text("▶", color = Color.White, fontSize = 14.sp)
-                                    }
-                                    IconButton({ onEdit(script) }) {
-                                        Icon(
-                                            Icons.Default.Edit, "Edit", tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                    IconButton({ onDelete(script) }) {
-                                        Icon(
-                                            Icons.Default.Delete, "Delete", tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
+                                    Switch(checked = script.enabled, onCheckedChange = { onToggle(script) }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)), modifier = Modifier.padding(end = 4.dp))
+                                    IconButton({ onEdit(script) }) { Icon(Icons.Default.Edit, "Edit", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                    IconButton({ onDelete(script) }) { Icon(Icons.Default.Delete, "Delete", tint = Color.White, modifier = Modifier.size(20.dp)) }
                                 }
                             }
                         }
                     }
                 }
 
-                Column(
-                    Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()
-                ) {
-                    OutlinedButton(
-                        onClick = onAdd, modifier = Modifier.fillMaxWidth(),
-                        shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) {
-                        Icon(Icons.Default.Add, null, tint = Color.White)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Add Script", color = Color.White)
+                Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                    OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                        Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("Add Script", color = Color.White)
                     }
                 }
             }
@@ -1268,120 +966,31 @@ fun ScriptList(
 }
 
 @Composable
-fun ScriptEditor(
-    script: ScriptItem?, onSave: (String, String) -> Unit, onCancel: () -> Unit
-) {
+fun ScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel: () -> Unit) {
     var name by remember { mutableStateOf(script?.name ?: "") }
     var code by remember { mutableStateOf(script?.code ?: "") }
-    val clipboardManager = LocalClipboardManager.current
 
-    Popup(
-        alignment = Alignment.TopStart, onDismissRequest = onCancel,
-        properties = PopupProperties(
-            focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false
-        )
-    ) {
-        Surface(
-            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)),
-            color = Color(0xFF1E1E1E)
-        ) {
+    Popup(alignment = Alignment.TopStart, onDismissRequest = onCancel, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth()
-                        .padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton({ onCancel() }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        if (script != null) "Edit Script" else "New Script",
-                        color = Color.White, fontSize = 18.sp
-                    )
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onCancel() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp)); Text(if (script != null) "Edit Script" else "New Script", color = Color.White, fontSize = 18.sp)
                 }
 
-                Column(
-                    Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)
-                ) {
-                    Text(
-                        "Name:", color = Color.White, fontSize = 14.sp,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    OutlinedTextField(
-                        value = name, onValueChange = { name = it }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.White,
-                            unfocusedBorderColor = Color.White,
-                            cursorColor = Color.White,
-                            focusedContainerColor = Color(0xFF1E1E1E),
-                            unfocusedContainerColor = Color(0xFF1E1E1E)
-                        ),
-                        shape = RectangleShape
-                    )
-
-                    Text(
-                        "Script:", color = Color.White, fontSize = 14.sp,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    OutlinedTextField(
-                        value = code, onValueChange = { code = it },
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.White,
-                            unfocusedBorderColor = Color.White,
-                            cursorColor = Color.White,
-                            focusedContainerColor = Color(0xFF1E1E1E),
-                            unfocusedContainerColor = Color(0xFF1E1E1E)
-                        ),
-                        shape = RectangleShape
-                    )
-
-                    Spacer(Modifier.height(8.dp))
-                    Row(Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { }, modifier = Modifier.weight(1f),
-                            shape = RectangleShape,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            border = BorderStroke(1.dp, Color.White)
-                        ) {
-                            Icon(Icons.Default.SelectAll, null, tint = Color.White)
-                            Spacer(Modifier.width(4.dp))
-                            Text("Select All", color = Color.White, fontSize = 13.sp)
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(
-                            onClick = { clipboardManager.setText(AnnotatedString(code)) },
-                            modifier = Modifier.weight(1f), shape = RectangleShape,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            border = BorderStroke(1.dp, Color.White)
-                        ) {
-                            Icon(Icons.Default.ContentCopy, null, tint = Color.White)
-                            Spacer(Modifier.width(4.dp))
-                            Text("Copy", color = Color.White, fontSize = 13.sp)
-                        }
-                    }
+                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
+                    Text("Name:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
+                    Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    OutlinedTextField(value = code, onValueChange = { code = it }, modifier = Modifier.fillMaxWidth().weight(1f), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
+                    
+                    // Select All and Copy buttons removed
                 }
 
-                Row(
-                    Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()
-                ) {
-                    OutlinedButton(
-                        onClick = onCancel, modifier = Modifier.weight(1f),
-                        shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) { Text("Cancel", color = Color.White) }
+                Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                    OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Cancel", color = Color.White) }
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = { if (name.isNotBlank()) onSave(name, code) },
-                        modifier = Modifier.weight(1f), shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) { Text("Save Script", color = Color.White) }
+                    OutlinedButton(onClick = { if (name.isNotBlank()) onSave(name, code) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Save Script", color = Color.White) }
                 }
             }
         }
@@ -1397,189 +1006,54 @@ fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
     val bg = if (isSelected) Color.White else Color.Transparent
     val fg = if (isSelected) Color.Black else Color.White
     val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(
-        Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }
-            .border(0.5.dp, borderColor, RectangleShape), color = bg
-    ) {
-        Column(
-            Modifier.padding(6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
+        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(2.dp))
-            Box(
-                Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray)
-                    .padding(horizontal = 4.dp, vertical = 1.dp)
-            ) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
+            Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
         }
     }
 }
 
 @Composable
-fun SidebarGroupChip(
-    domain: String, isSelected: Boolean, tabCount: Int, onClick: () -> Unit,
-    favicon: Bitmap?, onAppear: () -> Unit, isBlinking: Boolean, isPinned: Boolean
-) {
+fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick: () -> Unit, favicon: Bitmap?, onAppear: () -> Unit, isBlinking: Boolean, isPinned: Boolean) {
     LaunchedEffect(domain) { onAppear() }
-    val blinkAlpha = if (isBlinking) {
-        val t = rememberInfiniteTransition(label = "blink_$domain")
-        t.animateFloat(
-            0.2f, 0.5f,
-            infiniteRepeatable(tween(400), RepeatMode.Reverse),
-            label = "blinkV"
-        )
-    } else null
-    val bgAlpha =
-        if (isBlinking && blinkAlpha != null) blinkAlpha.value else if (isSelected) 1f else 0f
-    val bg = Color.White.copy(alpha = bgAlpha)
-    val fg = if (isSelected) Color.Black else Color.White
-    val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(
-        Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }
-            .border(0.5.dp, borderColor, RectangleShape), color = bg
-    ) {
+    val blinkAlpha = if (isBlinking) { val t = rememberInfiniteTransition(label = "blink_$domain"); t.animateFloat(0.2f, 0.5f, infiniteRepeatable(tween(400), RepeatMode.Reverse), label = "blinkV") } else null
+    val bgAlpha = if (isBlinking && blinkAlpha != null) blinkAlpha.value else if (isSelected) 1f else 0f
+    val bg = Color.White.copy(alpha = bgAlpha); val fg = if (isSelected) Color.Black else Color.White; val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
+    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
         Box(Modifier.padding(6.dp)) {
-            if (isPinned) Icon(
-                Icons.Default.PushPin, "Pinned", tint = fg,
-                modifier = Modifier.size(12.dp).align(Alignment.TopStart)
-            )
-            Column(
-                Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            if (isPinned) Icon(Icons.Default.PushPin, "Pinned", tint = fg, modifier = Modifier.size(12.dp).align(Alignment.TopStart))
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(Modifier.height(4.dp))
-                if (favicon != null) Image(
-                    favicon.asImageBitmap(), domain, Modifier.size(24.dp).clip(CircleShape),
-                    contentScale = ContentScale.Fit
-                )
-                else Box(
-                    Modifier.size(24.dp).clip(CircleShape)
-                        .background(if (isSelected) Color.LightGray else Color.DarkGray),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        domain.take(1).uppercase(), color = fg, fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                if (favicon != null) Image(favicon.asImageBitmap(), domain, Modifier.size(24.dp).clip(CircleShape), contentScale = ContentScale.Fit)
+                else Box(Modifier.size(24.dp).clip(CircleShape).background(if (isSelected) Color.LightGray else Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
             }
-            Box(
-                Modifier.align(Alignment.BottomEnd)
-                    .background(if (isSelected) Color.LightGray else Color.DarkGray)
-                    .padding(horizontal = 4.dp, vertical = 1.dp)
-            ) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
+            Box(Modifier.align(Alignment.BottomEnd).background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
         }
     }
 }
 
 @Composable
 fun ContextMenuItem(text: String, onClick: () -> Unit) {
-    Box(
-        Modifier.fillMaxWidth().clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) { Text(text, color = Color.White, fontSize = 16.sp) }
-}
-
-// ── Dialogs ──────────────────────────────────────────────────────
-
-@Composable
-fun ScriptingDialog(
-    initialScript: String, onDismiss: () -> Unit, onSaveAndRun: (String) -> Unit
-) {
-    var script by remember { mutableStateOf(initialScript) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Quick Script", color = Color.White, fontSize = 20.sp) },
-        text = {
-            Column {
-                Text(
-                    "Write or paste JS below.", color = Color.Gray, fontSize = 14.sp,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                OutlinedTextField(
-                    value = script, onValueChange = { script = it },
-                    modifier = Modifier.fillMaxWidth().height(200.dp),
-                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.White,
-                        unfocusedBorderColor = Color.White,
-                        cursorColor = Color.White,
-                        focusedContainerColor = Color(0xFF1E1E1E),
-                        unfocusedContainerColor = Color(0xFF1E1E1E)
-                    ),
-                    shape = RectangleShape
-                )
-            }
-        },
-        confirmButton = {
-            TextButton({ onSaveAndRun(script) }) { Text("Run", color = Color.White) }
-        },
-        dismissButton = {
-            TextButton(onDismiss) { Text("Close", color = Color.White) }
-        },
-        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White,
-        textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-    )
+    Box(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) { Text(text, color = Color.White, fontSize = 16.sp) }
 }
 
 @Composable
-fun SettingsDialog(
-    prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit
-) {
+fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
     var js by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
-    var tp by remember {
-        mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false))
-    }
+    var tp by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
     var cb by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
     var am by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
-    val apply = {
-        prefs.edit()
-            .putBoolean("javascript.enabled", js)
-            .putBoolean("privacy.trackingprotection.enabled", tp)
-            .putInt("network.cookie.cookieBehavior", cb)
-            .putBoolean("media.autoplay.enabled", am)
-            .apply()
-        onSettingsApplied(); onDismiss()
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
-        text = {
-            Column {
-                SettingSwitch("JavaScript", js) { js = it }
-                SettingSwitch("Tracking Protection", tp) { tp = it }
-                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp)
-                CookieBehaviorSelector(cb) { cb = it }
-                SettingSwitch("Autoplay Media", am) { am = it }
-            }
-        },
-        confirmButton = {
-            TextButton(apply) { Text("OK", color = Color.White) }
-        },
-        dismissButton = {
-            TextButton(onDismiss) { Text("Cancel", color = Color.White) }
-        },
-        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White,
-        textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-    )
+    val apply = { prefs.edit().putBoolean("javascript.enabled", js).putBoolean("privacy.trackingprotection.enabled", tp).putInt("network.cookie.cookieBehavior", cb).putBoolean("media.autoplay.enabled", am).apply(); onSettingsApplied(); onDismiss() }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Settings", color = Color.White, fontSize = 20.sp) }, text = { Column { SettingSwitch("JavaScript", js) { js = it }; SettingSwitch("Tracking Protection", tp) { tp = it }; Text("Cookie Behavior", color = Color.White, fontSize = 14.sp); CookieBehaviorSelector(cb) { cb = it }; SettingSwitch("Autoplay Media", am) { am = it } } }, confirmButton = { TextButton(apply) { Text("OK", color = Color.White) } }, dismissButton = { TextButton(onDismiss) { Text("Cancel", color = Color.White) } }, containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp)
 }
 
 @Composable
 fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        Arrangement.SpaceBetween, Alignment.CenterVertically
-    ) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
         Text(text = label, color = Color.White, fontSize = 14.sp)
-        Switch(
-            checked = checked, onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = Color(0xFF444444),
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color(0xFF444444)
-            )
-        )
+        Switch(checked = checked, onCheckedChange = onChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
     }
 }
 
@@ -1590,30 +1064,10 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
     val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
     Box {
-        OutlinedTextField(
-            value = st, onValueChange = {}, readOnly = true,
-            trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-            shape = RectangleShape,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color.White,
-                unfocusedBorderColor = Color.White,
-                focusedContainerColor = Color(0xFF1E1E1E),
-                unfocusedContainerColor = Color(0xFF1E1E1E)
-            )
-        )
+        OutlinedTextField(value = st, onValueChange = {}, readOnly = true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)))
         Box(Modifier.matchParentSize().clickable { expanded = true })
-        DropdownMenu(
-            expanded = expanded, onDismissRequest = { expanded = false },
-            modifier = Modifier.border(1.dp, Color.White, RectangleShape),
-            containerColor = Color(0xFF1E1E1E), shape = RectangleShape
-        ) {
-            options.forEach { (label, value) ->
-                DropdownMenuItem(
-                    text = { Text(text = label, color = Color.White) },
-                    onClick = { onChange(value); expanded = false })
-            }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+            options.forEach { (label, value) -> DropdownMenuItem(text = { Text(text = label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
         }
     }
 }
