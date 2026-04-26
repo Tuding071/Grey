@@ -1,44 +1,20 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.4 (Scripts auto-inject on page load, simplified UI)
+// Grey Browser - V1.5 (Tab lifecycle: 1 active + 9 warm + unlimited cold)
 // ═══════════════════════════════════════════════════════════════════
 
 package com.grey.browser
 
 // ═══════════════════════════════════════════════════════════════════
-// GECKOVIEW API NOTE FOR AI:
-// This browser uses Mozilla GeckoView (org.mozilla.geckoview) as the 
-// rendering engine, NOT Android WebView. GeckoView has different APIs:
-//
-// - GeckoSession (not WebView) for browsing sessions
-// - GeckoRuntime for shared browser runtime
-// - GeckoView for rendering web content
-// - ProgressDelegate for page load progress (0-100)
-// - onPageStart is called when page starts loading, gives URL
-// - ContentDelegate for title changes, context menus
-// - NavigationDelegate for URL/location changes
-// - session.loadUri() to load URLs
-// - session.goBack() / session.goForward() for navigation
-// - session.stop() to cancel loading
-// - session.setActive(false) to freeze session completely (no network/JS/rendering)
-// - session.setActive(true) to resume session
-// - session.settings for browser settings
-// - session.close() to destroy session and free memory
-// - No "currentUrl" property, use NavigationDelegate.onLocationChange
-// - GeckoSession must be opened with runtime before use
-// - GeckoSession.open() requires GeckoRuntime
-// - suspendMediaWhenInactive = true pauses media when session inactive
-//
-// API Reference: https://mozilla.github.io/geckoview/javadoc/mozilla-central/
-//
+// GECKOVIEW API NOTE:
+// - ACTIVE: session.setActive(true). Fully rendered, network active.
+// - WARM:   session.setActive(false). Paused in RAM, instant resume.
+// - COLD:   session = null. Discarded from RAM, restores on click.
 // ═══════════════════════════════════════════════════════════════════
 // VERSION HISTORY:
-// V1   - Initial release: Tab manager, favicons, grouping, undo delete,
-//        foreground-only sessions, Google search default, confirmation dialogs
-// V1.1 - Current tab highlight, + button in top bar
-// V1.2 - Tab manager always defaults to "All" on open
-// V1.3 - Script Manager: persistent scripts with enable/disable toggle
-// V1.4 - Scripts auto-inject on page load via onPageStart. Removed Quick Script,
-//        play button, Select All, Copy buttons. Added delete confirmation for scripts.
+// V1.4 - Scripts auto-inject on page load. Removed Quick Script, play button,
+//        Select All, Copy buttons. Added delete confirmation for scripts.
+// V1.5 - Tab lifecycle: 1 ACTIVE (setActive=true) + max 9 WARM (setActive=false)
+//        + unlimited COLD (session=null). Smooth switching, predictable RAM.
 // ═══════════════════════════════════════════════════════════════════
 
 import android.content.Context
@@ -319,7 +295,8 @@ fun getDomainName(url: String): String {
     } catch (e: Exception) { "Unknown" }
 }
 
-const val MAX_LOADED_TABS = 10
+const val MAX_LOADED_TABS = 10       // Keep for backwards compatibility
+const val MAX_WARM_TABS = 9          // 1 active + 9 warm = 10 total sessions
 const val UNDO_DELAY_MS = 3000L
 
 fun resolveUrl(input: String): String {
@@ -475,6 +452,57 @@ fun GreyBrowser() {
         }
     }
 
+    // NEW: Tab lifecycle management - ensures 1 active + max 9 warm
+    fun manageTabLifecycle(activeIndex: Int) {
+        // Step 1: Make the active tab active (restore if cold)
+        tabs.forEachIndexed { i, ts ->
+            if (i == activeIndex && ts.session == null && ts.isDiscarded) {
+                val s = GeckoSession().apply {
+                    applySettingsToSession(this); open(runtime); loadUri(ts.url)
+                }
+                ts.session = s; ts.isDiscarded = false; setupDelegates(ts)
+                ts.lastUpdated = System.currentTimeMillis()
+            }
+        }
+        
+        // Step 2: Set active state - only one gets true
+        tabs.forEachIndexed { i, ts ->
+            ts.session?.setActive(i == activeIndex)
+        }
+        
+        // Step 3: Count warm tabs (has session, not active, not blank)
+        val warmTabs = tabs.filter { 
+            val idx = tabs.indexOf(it)
+            !it.isDiscarded && !it.isBlankTab && it.session != null && idx != activeIndex 
+        }
+        
+        // Step 4: If warm tabs exceed MAX_WARM_TABS, make oldest ones COLD
+        if (warmTabs.size > MAX_WARM_TABS) {
+            val toMakeCold = warmTabs
+                .sortedBy { it.lastUpdated }
+                .take(warmTabs.size - MAX_WARM_TABS)
+            
+            for (tab in toMakeCold) {
+                tab.session?.setActive(false)
+                tab.session?.close()
+                tab.session = null
+                tab.isDiscarded = true
+                tab.progress = 100
+                // URL and title are preserved for grouping
+            }
+        }
+    }
+
+    fun restoreTab(tab: TabState) {
+        if (tab.isDiscarded && tab.session == null) {
+            val s = GeckoSession().apply {
+                applySettingsToSession(this); open(runtime); setActive(false); loadUri(tab.url)
+            }
+            tab.session = s; tab.isDiscarded = false; setupDelegates(tab)
+            tab.lastUpdated = System.currentTimeMillis()
+        }
+    }
+
     LaunchedEffect(pendingDeletions.toMap()) {
         while (pendingDeletions.isNotEmpty()) {
             delay(1000)
@@ -496,28 +524,6 @@ fun GreyBrowser() {
                     if (!dg.containsKey(selectedDomain)) selectedDomain = ""
                 }
             }
-        }
-    }
-
-    fun enforceTabLimit() {
-        val loaded = tabs.filter { !it.isDiscarded && !it.isBlankTab && it.session != null }
-        if (loaded.size > MAX_LOADED_TABS) {
-            val toDiscard = loaded.filter { tabs.indexOf(it) != currentTabIndex }
-                .minByOrNull { it.lastUpdated }
-            toDiscard?.let { tab ->
-                tab.session?.setActive(false); tab.session?.close()
-                tab.session = null; tab.isDiscarded = true; tab.progress = 100
-            }
-        }
-    }
-
-    fun restoreTab(tab: TabState) {
-        if (tab.isDiscarded && tab.session == null) {
-            val s = GeckoSession().apply {
-                applySettingsToSession(this); open(runtime); setActive(false); loadUri(tab.url)
-            }
-            tab.session = s; tab.isDiscarded = false; setupDelegates(tab)
-            tab.lastUpdated = System.currentTimeMillis(); enforceTabLimit()
         }
     }
 
@@ -545,13 +551,14 @@ fun GreyBrowser() {
 
     LaunchedEffect(showTabManager, currentTabIndex) {
         if (showTabManager) {
-            homeSession.setActive(false); tabs.forEach { it.session?.setActive(false) }
+            // Tab manager open: ALL tabs become warm (no active tab)
+            homeSession.setActive(false)
+            tabs.forEach { it.session?.setActive(false) }
         } else {
+            // Tab manager closed: manage lifecycle
             homeSession.setActive(currentTabIndex == -1)
-            tabs.forEachIndexed { i, ts ->
-                val active = i == currentTabIndex
-                if (active && ts.isDiscarded) restoreTab(ts)
-                ts.session?.setActive(active)
+            if (currentTabIndex >= 0) {
+                manageTabLifecycle(currentTabIndex)
             }
         }
     }
@@ -566,7 +573,7 @@ fun GreyBrowser() {
                 lastUpdated = System.currentTimeMillis(); setupDelegates(this)
             }
         )
-        enforceTabLimit()
+        manageTabLifecycle(currentTabIndex)  // This handles excess warm tabs
     }
 
     fun createForegroundTab(url: String) {
@@ -579,7 +586,8 @@ fun GreyBrowser() {
                 lastUpdated = System.currentTimeMillis(); setupDelegates(this)
             }
         )
-        currentTabIndex = tabs.lastIndex; enforceTabLimit()
+        currentTabIndex = tabs.lastIndex
+        manageTabLifecycle(currentTabIndex)  // Make this active, handle warm tabs
     }
 
     fun requestDeleteTab(index: Int) {
@@ -983,8 +991,6 @@ fun ScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel
                     OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
                     Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
                     OutlinedTextField(value = code, onValueChange = { code = it }, modifier = Modifier.fillMaxWidth().weight(1f), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
-                    
-                    // Select All and Copy buttons removed
                 }
 
                 Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
