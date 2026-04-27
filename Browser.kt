@@ -549,17 +549,10 @@ fun GreyBrowser() {
                 val url = response.uri
                 if (url != null) {
                     val fileName = url.substringAfterLast("/").substringBefore("?")
-                    val size = response.contentLength
+                    // WebResponse doesn't expose contentLength - use "Unknown"
                     downloadEditorUrl = url
                     downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
-                    downloadEditorSize = if (size > 0) {
-                        when {
-                            size > 1_000_000_000 -> "%.1f GB".format(size / 1_000_000_000f)
-                            size > 1_000_000 -> "%.1f MB".format(size / 1_000_000f)
-                            size > 1_000 -> "%.0f KB".format(size / 1_000f)
-                            else -> "$size B"
-                        }
-                    } else "Unknown"
+                    downloadEditorSize = "Unknown"
                     downloadEditorIsVideo = url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8")
                     showDownloadEditor = true
                 }
