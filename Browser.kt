@@ -94,6 +94,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -355,7 +356,6 @@ fun GreyBrowser() {
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
-    // Network-sniffed video URLs: Pair(url, pageUrl)
     val detectedVideoUrls = remember { mutableStateListOf<Pair<String, String>>() }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
@@ -393,7 +393,6 @@ fun GreyBrowser() {
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                // Video detection now uses onLoadRequest (no JS injection = no URL blink)
             }
             override fun onProgressChange(s: GeckoSession, progress: Int) {
                 tabState.progress = progress
@@ -426,8 +425,8 @@ fun GreyBrowser() {
                         detectedVideoUrls.add(Pair(url, tabState.url))
                     }
                 }
-                val allow = GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW
-                return org.mozilla.geckoview.GeckoResult.fromValue(allow)
+                val allow: GeckoSession.NavigationDelegate.AllowOrDeny = GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW
+                return GeckoResult.fromValue(allow)
             }
             
             override fun onLocationChange(
@@ -507,7 +506,6 @@ fun GreyBrowser() {
         }
     }
 
-    // Clear detected videos when switching tabs
     LaunchedEffect(currentTabIndex) {
         detectedVideoUrls.clear()
     }
@@ -641,7 +639,6 @@ fun GreyBrowser() {
 
     fun addDownload(item: DownloadItem) { activeDownloads.add(item) }
 
-    // M3U8 download: fetch segments, merge to .ts file
     fun downloadM3U8(item: DownloadItem) {
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = item.id
@@ -829,7 +826,6 @@ fun GreyBrowser() {
                 ContextMenuItem("New Tab") { createForegroundTab(ctxUri!!); showContextMenu = false }
                 ContextMenuItem("Open in Background") { createBackgroundTab(ctxUri!!); showContextMenu = false }
                 ContextMenuItem("Copy link") { clipMgr.setText(AnnotatedString(ctxUri!!)); showContextMenu = false }
-                // Check if long-press URL is a video
                 val uri = ctxUri ?: ""
                 if (uri.contains(".mp4") || uri.contains(".webm") || uri.contains(".m3u8") || uri.contains("video") || uri.contains("stream")) {
                     ContextMenuItem("Download Video") {
@@ -838,7 +834,6 @@ fun GreyBrowser() {
                         showContextMenu = false
                     }
                 }
-                // Show sniffed videos from current page
                 val pageVideos = detectedVideoUrls.filter { it.second == currentTab.url }
                 for ((videoUrl, _) in pageVideos.take(3)) {
                     val shortName = videoUrl.substringAfterLast("/").substringBefore("?").take(40)
@@ -984,7 +979,6 @@ fun GreyBrowser() {
 }
 
 // END OF PART 1/2
-
 
 
 // ═══════════════════════════════════════════════════════════════════
