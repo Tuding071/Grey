@@ -346,7 +346,7 @@ fun resolveUrl(input: String): String {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.2/5 ===
+// === PART 1.2/5 (FIXED) ===
 // ═══════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -370,7 +370,7 @@ fun GreyBrowser() {
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
-    // Detected videos from page sniffing
+    // Detected videos from URL pattern matching (no JS injection)
     val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
     var showVideoDropdown by remember { mutableStateOf(false) }
     // Download Editor state
@@ -379,8 +379,6 @@ fun GreyBrowser() {
     var downloadEditorName by remember { mutableStateOf("") }
     var downloadEditorSize by remember { mutableStateOf("Unknown") }
     var downloadEditorIsVideo by remember { mutableStateOf(false) }
-    // Track which pages have been sniffed
-    val sniffedPages = remember { mutableSetOf<String>() }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -404,27 +402,15 @@ fun GreyBrowser() {
         }
     }
 
-    // Video sniffer - injects JavaScript to find video elements
-    fun sniffVideos(s: GeckoSession, pageUrl: String) {
-        if (sniffedPages.contains(pageUrl)) return
-        sniffedPages.add(pageUrl)
-        val js = """
-            (function() {
-                var videos = [];
-                document.querySelectorAll('video, video source').forEach(function(v) {
-                    var src = v.src || v.getAttribute('src') || v.currentSrc;
-                    if (src && src.startsWith('http')) videos.push(src);
-                });
-                document.querySelectorAll('[src]').forEach(function(el) {
-                    var src = el.getAttribute('src');
-                    if (src && (src.includes('.mp4') || src.includes('.webm') || src.includes('.m3u8'))) {
-                        if (!videos.includes(src)) videos.push(src);
-                    }
-                });
-                return JSON.stringify(videos);
-            })();
-        """.trimIndent()
-        s.loadUri("javascript:" + Uri.encode(js))
+    // Simple video detector - checks URL patterns (NO JavaScript injection)
+    fun detectVideoUrl(url: String, pageUrl: String) {
+        val lowerUrl = url.lowercase()
+        val isVideo = lowerUrl.contains(".mp4") || lowerUrl.contains(".webm") || 
+                      lowerUrl.contains(".m3u8") || lowerUrl.contains(".ts") ||
+                      lowerUrl.contains("video") || lowerUrl.contains("stream")
+        if (isVideo && url.startsWith("http") && !detectedVideos.any { it.first == url }) {
+            detectedVideos.add(Pair(url, pageUrl))
+        }
     }
 
     val homeSession = remember {
@@ -505,7 +491,7 @@ fun GreyBrowser() {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.3/5 ===
+// === PART 1.3/5 (FIXED) ===
 // ═══════════════════════════════════════════════════════════════════
 
     val setupDelegates = fun(tabState: TabState) {
@@ -521,9 +507,7 @@ fun GreyBrowser() {
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                if (success && tabState.url != "about:blank") {
-                    sniffVideos(s, tabState.url)
-                }
+                // Video detection now uses onLocationChange (no JS injection)
             }
             override fun onProgressChange(s: GeckoSession, progress: Int) {
                 tabState.progress = progress
@@ -539,9 +523,11 @@ fun GreyBrowser() {
             ) {
                 if (element.linkUri != null) {
                     contextMenuUri = element.linkUri; showContextMenu = true
+                    // Also check long-press URL for video
+                    detectVideoUrl(element.linkUri!!, tabState.url)
                 }
             }
-            // FIXED: Download interception with proper GeckoView API
+            // Download interception
             override fun onExternalResponse(
                 session: GeckoSession,
                 response: WebResponse
@@ -549,7 +535,6 @@ fun GreyBrowser() {
                 val url = response.uri
                 if (url != null) {
                     val fileName = url.substringAfterLast("/").substringBefore("?")
-                    // WebResponse doesn't expose contentLength - use "Unknown"
                     downloadEditorUrl = url
                     downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
                     downloadEditorSize = "Unknown"
@@ -566,7 +551,11 @@ fun GreyBrowser() {
             ) {
                 url?.let { newUrl ->
                     tabState.url = newUrl
-                    if (newUrl != "about:blank") tabState.isBlankTab = false
+                    if (newUrl != "about:blank") {
+                        tabState.isBlankTab = false
+                        // Video detection via URL pattern matching
+                        detectVideoUrl(newUrl, tabState.url)
+                    }
                 }
             }
         }
@@ -609,7 +598,7 @@ fun GreyBrowser() {
         }
     }
 
-    // FIXED: Crash fix - clear pending deletions when tabs are removed
+    // CRASH FIX: Clear pending deletions when tabs are removed
     LaunchedEffect(pendingDeletions.toMap()) {
         while (pendingDeletions.isNotEmpty()) {
             delay(1000)
@@ -866,7 +855,7 @@ fun GreyBrowser() {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.5/5 ===
+// === PART 1.5/5 (FIXED) ===
 // ═══════════════════════════════════════════════════════════════════
 
     // Download Editor Popup
@@ -1006,16 +995,26 @@ fun GreyBrowser() {
                                 Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
                             }
                             Spacer(Modifier.width(8.dp))
+                            // CRASH FIX: Safe group delete - clear pending deletions, reset state properly
                             OutlinedButton(onClick = { if (hasSelection) { confirmTitle = "Delete Group?"; confirmMessage = "All tabs in this group will be lost."; confirmAction = { 
                                 val toRemove = (domainGroups[selectedDomain] ?: emptyList()).toList()
-                                toRemove.forEach { 
-                                    val idx = tabs.indexOf(it)
-                                    if (idx >= 0) pendingDeletions.remove(idx)  // Clear pending deletions for removed tabs
-                                    it.session?.setActive(false); it.session?.close() 
+                                // Clear pending deletions for tabs being removed
+                                toRemove.forEach { tab ->
+                                    val idx = tabs.indexOf(tab)
+                                    if (idx >= 0) pendingDeletions.remove(idx)
+                                    tab.session?.setActive(false)
+                                    tab.session?.close()
                                 }
                                 tabs.removeAll(toRemove)
-                                if (tabs.isEmpty()) { currentTabIndex = -1; selectedDomain = "" }
-                                else { currentTabIndex = currentTabIndex.coerceIn(0, tabs.lastIndex); selectedDomain = "" }
+                                // Reset state safely
+                                if (tabs.isEmpty()) {
+                                    currentTabIndex = -1
+                                    highlightedTabIndex = -1
+                                    selectedDomain = ""
+                                } else {
+                                    currentTabIndex = currentTabIndex.coerceIn(0, tabs.lastIndex)
+                                    selectedDomain = ""
+                                }
                             }; showConfirmDialog = true } }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor), border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)) {
                                 Text("Delete Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
                             }
@@ -1048,7 +1047,7 @@ fun GreyBrowser() {
                     trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                 )
                 IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
-                // Video sniffer button
+                // Video sniffer button - shows when videos detected via URL patterns
                 if (detectedVideos.isNotEmpty()) {
                     Box {
                         IconButton({ showVideoDropdown = !showVideoDropdown }) { Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White) }
