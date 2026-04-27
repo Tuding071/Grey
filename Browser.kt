@@ -94,7 +94,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -427,7 +426,8 @@ fun GreyBrowser() {
                         detectedVideoUrls.add(Pair(url, tabState.url))
                     }
                 }
-                return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW)
+                val allow = GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW
+                return org.mozilla.geckoview.GeckoResult.fromValue(allow)
             }
             
             override fun onLocationChange(
@@ -984,6 +984,8 @@ fun GreyBrowser() {
 }
 
 // END OF PART 1/2
+
+
 
 // ═══════════════════════════════════════════════════════════════════
 // Grey Browser - V1.6 (Downloader + Video Downloader)
