@@ -1267,7 +1267,6 @@ fun GreyBrowser() {
 // END OF PART 1/2
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 2.1/5 (V1.9 - updateTrigger for live UI) ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1286,16 +1285,12 @@ fun DownloadManagerUI(
     onDelete: (String) -> Unit,
     speedLimit: Long,
     onSpeedLimitChange: (Long) -> Unit,
-    updateTrigger: Int  // Forces recomposition when downloads update
+    updateTrigger: Int
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var downloadToDelete by remember { mutableStateOf<String?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
 
-    // Read updateTrigger to force recomposition
-    val trigger = updateTrigger
-    if (trigger >= 0) { /* forces recomposition */ }
-    
     if (showDeleteConfirm && downloadToDelete != null) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false; downloadToDelete = null },
@@ -1371,6 +1366,11 @@ fun DownloadManagerUI(
                 } else {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                         items(downloads) { item ->
+                            // Read fresh values from the item using updateTrigger
+                            val currentState = remember(updateTrigger) { item.state }
+                            val currentProgress = remember(updateTrigger) { item.progress }
+                            val currentSpeed = remember(updateTrigger) { item.speed }
+                            
                             Surface(
                                 Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
                                 color = Color.Transparent
@@ -1379,21 +1379,21 @@ fun DownloadManagerUI(
                                     Text(item.fileName, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Spacer(Modifier.height(4.dp))
 
-                                    when (item.state) {
+                                    when (currentState) {
                                         DownloadState.QUEUED -> Text("Queued", color = Color.Gray, fontSize = 12.sp)
                                         DownloadState.DOWNLOADING -> {
-                                            LinearProgressIndicator(progress = { item.progress / 100f }, modifier = Modifier.fillMaxWidth(), color = Color.White, trackColor = Color.DarkGray)
+                                            LinearProgressIndicator(progress = { currentProgress / 100f }, modifier = Modifier.fillMaxWidth(), color = Color.White, trackColor = Color.DarkGray)
                                             Spacer(Modifier.height(4.dp))
-                                            Text("${item.progress}% · ${item.speed}", color = Color.White, fontSize = 12.sp)
+                                            Text("${currentProgress}% · ${currentSpeed}", color = Color.White, fontSize = 12.sp)
                                         }
-                                        DownloadState.PAUSED -> Text("Paused · ${item.progress}%", color = Color(0xFFFFA500), fontSize = 12.sp)
+                                        DownloadState.PAUSED -> Text("Paused · ${currentProgress}%", color = Color(0xFFFFA500), fontSize = 12.sp)
                                         DownloadState.COMPLETED -> Text("Completed", color = Color(0xFF4CAF50), fontSize = 12.sp)
                                         DownloadState.FAILED -> Text("Failed", color = Color.Red, fontSize = 12.sp)
                                     }
 
                                     Spacer(Modifier.height(4.dp))
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                        when (item.state) {
+                                        when (currentState) {
                                             DownloadState.QUEUED -> TextButton({ onStart(item.id) }) { Text("Start", color = Color.White, fontSize = 13.sp) }
                                             DownloadState.DOWNLOADING -> TextButton({ onPause(item.id) }) { Text("Pause", color = Color.White, fontSize = 13.sp) }
                                             DownloadState.PAUSED -> TextButton({ onResume(item.id) }) { Text("Resume", color = Color.White, fontSize = 13.sp) }
