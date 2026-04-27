@@ -10,13 +10,14 @@ package com.grey.browser
 // - ACTIVE: session.setActive(true). Fully rendered, network active.
 // - WARM:   session.setActive(false). Paused in RAM, instant resume.
 // - COLD:   session = null. Discarded from RAM, restores on click.
+// - Network sniffing via onLoadRequest for video detection (no JS injection).
 // ═══════════════════════════════════════════════════════════════════
 // VERSION HISTORY:
 // V1.4 - Scripts auto-inject on page load. Removed Quick Script, play button,
 //        Select All, Copy buttons. Added delete confirmation for scripts.
 // V1.5 - Tab lifecycle: 1 ACTIVE + max 9 WARM + unlimited COLD
 // V1.6 - Downloader core: queue with manual start, one-at-a-time.
-//        Video detector: finds MP4/WebM/M3U8 on pages.
+//        Video detection via network sniffing (onLoadRequest), no URL blink.
 //        M3U8: download segments, merge to .ts file.
 //        Copy link restored. Group delete fix.
 // ═══════════════════════════════════════════════════════════════════
@@ -354,6 +355,8 @@ fun GreyBrowser() {
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
+    // Network-sniffed video URLs: Pair(url, pageUrl)
+    val detectedVideoUrls = remember { mutableStateListOf<Pair<String, String>>() }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -377,23 +380,6 @@ fun GreyBrowser() {
         }
     }
 
-    // Video detection - scans page for video resources
-    val detectVideos: (GeckoSession, String) -> Unit = { s, pageUrl ->
-        val js = """
-            (function() {
-                var videos = [];
-                document.querySelectorAll('video source, video').forEach(function(v) {
-                    var src = v.src || v.getAttribute('src');
-                    if (src && (src.includes('.mp4') || src.includes('.webm') || src.includes('.m3u8'))) {
-                        videos.push({url: src, title: document.title || src.split('/').pop()});
-                    }
-                });
-                return JSON.stringify(videos);
-            })();
-        """.trimIndent()
-        s.loadUri("javascript:" + Uri.encode(js))
-    }
-
     val setupDelegates = fun(tabState: TabState) {
         val session = tabState.session ?: return
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
@@ -407,9 +393,7 @@ fun GreyBrowser() {
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                if (tabState.url != "about:blank") {
-                    detectVideos(s, tabState.url)
-                }
+                // Video detection now uses onLoadRequest (no JS injection = no URL blink)
             }
             override fun onProgressChange(s: GeckoSession, progress: Int) {
                 tabState.progress = progress
@@ -429,6 +413,22 @@ fun GreyBrowser() {
             }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLoadRequest(
+                session: GeckoSession,
+                request: GeckoSession.NavigationDelegate.LoadRequest
+            ): GeckoResult<GeckoSession.NavigationDelegate.AllowOrDeny>? {
+                val url = request.uri
+                if (url != null && (url.contains(".mp4") || url.contains(".webm") || 
+                    url.contains(".m3u8") || url.contains(".ts") || url.contains("video") || 
+                    url.contains("stream"))) {
+                    val fileName = url.substringAfterLast("/").substringBefore("?")
+                    if (fileName.isNotBlank() && !detectedVideoUrls.any { it.first == url }) {
+                        detectedVideoUrls.add(Pair(url, tabState.url))
+                    }
+                }
+                return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW)
+            }
+            
             override fun onLocationChange(
                 session: GeckoSession, url: String?,
                 perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
@@ -504,6 +504,11 @@ fun GreyBrowser() {
             lastActiveUrl = tabs[currentTabIndex].url
             highlightedTabIndex = currentTabIndex
         }
+    }
+
+    // Clear detected videos when switching tabs
+    LaunchedEffect(currentTabIndex) {
+        detectedVideoUrls.clear()
     }
 
     fun manageTabLifecycle(activeIndex: Int) {
@@ -635,7 +640,7 @@ fun GreyBrowser() {
 
     fun addDownload(item: DownloadItem) { activeDownloads.add(item) }
 
-    // M3U8 download: fetch segments, merge to .ts file (defined before startDownload)
+    // M3U8 download: fetch segments, merge to .ts file
     fun downloadM3U8(item: DownloadItem) {
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = item.id
@@ -649,7 +654,6 @@ fun GreyBrowser() {
                 val playlist = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
                 
-                // Extract segment URLs (non-comment lines)
                 val baseUrl = item.url.substringBeforeLast("/")
                 val segments = playlist.lines()
                     .filter { it.isNotBlank() && !it.startsWith("#") }
@@ -660,7 +664,6 @@ fun GreyBrowser() {
                     return@thread
                 }
                 
-                // Download segments to temp directory
                 val tempDir = File(context.cacheDir, "m3u8_${item.id}")
                 tempDir.mkdirs()
                 val segmentFiles = mutableListOf<File>()
@@ -679,9 +682,7 @@ fun GreyBrowser() {
                         }
                         segmentFiles.add(segFile)
                         item.progress = ((i + 1) * 100) / segments.size
-                    } catch (e: Exception) {
-                        // Skip failed segments
-                    }
+                    } catch (e: Exception) { }
                 }
                 
                 if (segmentFiles.isEmpty()) {
@@ -690,7 +691,6 @@ fun GreyBrowser() {
                     return@thread
                 }
                 
-                // Merge segments into single .ts file
                 val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
                 FileOutputStream(outputFile).use { out ->
                     for (seg in segmentFiles) {
@@ -701,8 +701,6 @@ fun GreyBrowser() {
                 item.tempFile = outputFile
                 item.state = DownloadState.COMPLETED
                 item.progress = 100
-                
-                // Cleanup temp
                 tempDir.deleteRecursively()
             } catch (e: Exception) {
                 if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
@@ -716,7 +714,6 @@ fun GreyBrowser() {
         val item = activeDownloads.find { it.id == id } ?: return
         if (currentDownloadId != null && currentDownloadId != id) return
         
-        // Check if it's an M3U8 stream
         if (item.url.contains(".m3u8")) {
             downloadM3U8(item)
             return
@@ -831,11 +828,21 @@ fun GreyBrowser() {
                 ContextMenuItem("New Tab") { createForegroundTab(ctxUri!!); showContextMenu = false }
                 ContextMenuItem("Open in Background") { createBackgroundTab(ctxUri!!); showContextMenu = false }
                 ContextMenuItem("Copy link") { clipMgr.setText(AnnotatedString(ctxUri!!)); showContextMenu = false }
+                // Check if long-press URL is a video
                 val uri = ctxUri ?: ""
                 if (uri.contains(".mp4") || uri.contains(".webm") || uri.contains(".m3u8") || uri.contains("video") || uri.contains("stream")) {
                     ContextMenuItem("Download Video") {
                         val fileName = uri.substringAfterLast("/").substringBefore("?")
                         addDownload(DownloadItem(url = uri, fileName = if (fileName.contains(".")) fileName else "video_${System.currentTimeMillis()}.mp4", isVideo = true, referer = currentTab.url))
+                        showContextMenu = false
+                    }
+                }
+                // Show sniffed videos from current page
+                val pageVideos = detectedVideoUrls.filter { it.second == currentTab.url }
+                for ((videoUrl, _) in pageVideos.take(3)) {
+                    val shortName = videoUrl.substringAfterLast("/").substringBefore("?").take(40)
+                    ContextMenuItem("Sniffed: $shortName") {
+                        addDownload(DownloadItem(url = videoUrl, fileName = shortName.ifBlank { "video_${System.currentTimeMillis()}.mp4" }, isVideo = true, referer = currentTab.url))
                         showContextMenu = false
                     }
                 }
