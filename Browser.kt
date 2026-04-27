@@ -557,9 +557,8 @@ fun GreyBrowser() {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.3/5 (FIXED) ===
+// === PART 1.3/5 (V1.8 FIXED) ===
 // ═══════════════════════════════════════════════════════════════════
 
     val setupDelegates = fun(tabState: TabState) {
@@ -575,7 +574,6 @@ fun GreyBrowser() {
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                // Video detection now uses onLocationChange (no JS injection)
             }
             override fun onProgressChange(s: GeckoSession, progress: Int) {
                 tabState.progress = progress
@@ -591,11 +589,9 @@ fun GreyBrowser() {
             ) {
                 if (element.linkUri != null) {
                     contextMenuUri = element.linkUri; showContextMenu = true
-                    // Also check long-press URL for video
                     detectVideoUrl(element.linkUri!!, tabState.url)
                 }
             }
-            // Download interception
             override fun onExternalResponse(
                 session: GeckoSession,
                 response: WebResponse
@@ -621,7 +617,6 @@ fun GreyBrowser() {
                     tabState.url = newUrl
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
-                        // Video detection via URL pattern matching
                         detectVideoUrl(newUrl, tabState.url)
                     }
                 }
@@ -629,7 +624,6 @@ fun GreyBrowser() {
         }
     }
 
-    // Set up delegates for home tab after initialization
     homeTab.session?.let { setupDelegates(homeTab) }
 
     fun manageTabLifecycle(activeIndex: Int) {
@@ -666,7 +660,22 @@ fun GreyBrowser() {
         }
     }
 
-    // CRASH FIX: Clear pending deletions when tabs are removed
+    // ── Download Service Helpers (must be before download functions) ──
+    fun startDownloadService(ctx: Context) {
+        val intent = Intent(ctx, DownloadService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(intent)
+        } else {
+            ctx.startService(intent)
+        }
+    }
+
+    fun stopDownloadService(ctx: Context) {
+        if (activeDownloads.none { it.state == DownloadState.DOWNLOADING }) {
+            ctx.stopService(Intent(ctx, DownloadService::class.java))
+        }
+    }
+
     LaunchedEffect(pendingDeletions.toMap()) {
         while (pendingDeletions.isNotEmpty()) {
             delay(1000)
@@ -678,7 +687,6 @@ fun GreyBrowser() {
                 if (tab == null) continue
                 tab.session?.setActive(false); tab.session?.close()
                 tabs.removeAt(index)
-                // Update pendingDeletions indices after removal
                 val updated = mutableMapOf<Int, Long>()
                 for ((oldIdx, time) in pendingDeletions) {
                     updated[if (oldIdx > index) oldIdx - 1 else oldIdx] = time
@@ -764,6 +772,7 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 1.3/5
+
 
 
 
@@ -890,7 +899,6 @@ fun GreyBrowser() {
                         if (elapsed >= 1000) {
                             val currentSpeed = bytesSinceThrottle * 1000 / elapsed
                             if (currentSpeed > speedLimit) {
-                                val targetTime = bytesSinceThrottle * 1000 / speedLimit
                                 val sleepTime = targetTime - elapsed
                                 if (sleepTime > 0) Thread.sleep(sleepTime)
                             }
