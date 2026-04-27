@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.1/5 (V1.8) ===
+// Grey Browser - V1.8 (Background Download + Speed Limit + Live UI)
 // ═══════════════════════════════════════════════════════════════════
+// === PART 1.1/5 ===
 
 package com.grey.browser
 
@@ -140,38 +141,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ── Foreground Service for Background Downloads ──────────────────────
 class DownloadService : Service() {
-    companion object {
-        var activeDownload: DownloadItem? = null
-        var isRunning = false
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val pendingIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-
         val notification = NotificationCompat.Builder(this, "grey_downloads")
             .setContentTitle("Grey is downloading")
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
             .build()
-
         startForeground(1001, notification)
-        isRunning = true
         return START_STICKY
     }
-
     override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onDestroy() {
-        isRunning = false
-        super.onDestroy()
-    }
 }
 
 object FaviconCache {
@@ -321,7 +307,6 @@ fun loadTabsData(context: Context): Triple<List<Pair<String, String>>, List<Stri
 
 data class ScriptItem(val id: String, val name: String, val code: String, val enabled: Boolean)
 
-// ── Download System ───────────────────────────────────────────────────
 enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED }
 
 data class DownloadItem(
@@ -394,7 +379,6 @@ fun resolveUrl(input: String): String {
     return "https://www.google.com/search?q=${Uri.encode(input)}"
 }
 
-// Speed limit options
 val SPEED_LIMITS = listOf(0L, 50L * 1024, 100L * 1024, 250L * 1024, 500L * 1024, 1024L * 1024)
 fun formatSpeedLimit(limit: Long): String = when (limit) {
     0L -> "No Limit"
@@ -414,7 +398,7 @@ fun formatSpeedLimit(limit: Long): String = when (limit) {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.2/5 (FIXED) ===
+// === PART 1.2/5 ===
 // ═══════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -434,19 +418,17 @@ fun GreyBrowser() {
         mutableStateListOf<ScriptItem>().apply { addAll(loadScripts(context)) }
     }
 
-    // ── Download State ────────────────────────────────────────────────
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
-    // Detected videos from URL pattern matching (no JS injection)
     val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
     var showVideoDropdown by remember { mutableStateOf(false) }
-    // Download Editor state
     var showDownloadEditor by remember { mutableStateOf(false) }
     var downloadEditorUrl by remember { mutableStateOf("") }
     var downloadEditorName by remember { mutableStateOf("") }
     var downloadEditorSize by remember { mutableStateOf("Unknown") }
     var downloadEditorIsVideo by remember { mutableStateOf(false) }
+    var speedLimit by remember { mutableStateOf(0L) }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -470,7 +452,6 @@ fun GreyBrowser() {
         }
     }
 
-    // Simple video detector - checks URL patterns (NO JavaScript injection)
     fun detectVideoUrl(url: String, pageUrl: String) {
         val lowerUrl = url.lowercase()
         val isVideo = lowerUrl.contains(".mp4") || lowerUrl.contains(".webm") || 
@@ -523,8 +504,7 @@ fun GreyBrowser() {
     val faviconLoading = remember { mutableStateMapOf<String, Boolean>() }
     val tabFavicons = remember { mutableStateMapOf<String, Bitmap?>() }
     val tabFaviconLoading = remember { mutableStateMapOf<String, Boolean>() }
-    val currentTab =
-        if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
+    val currentTab = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
 
     val pendingDeletions = remember { mutableStateMapOf<Int, Long>() }
     var showBlink by remember { mutableStateOf(false) }
@@ -545,7 +525,6 @@ fun GreyBrowser() {
         }
     }
 
-    // Clear detected videos when switching tabs
     LaunchedEffect(currentTabIndex) {
         detectedVideos.clear()
         showVideoDropdown = false
@@ -557,8 +536,9 @@ fun GreyBrowser() {
 
 
 
+
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.3/5 (V1.8 FIXED) ===
+// === PART 1.3/5 ===
 // ═══════════════════════════════════════════════════════════════════
 
     val setupDelegates = fun(tabState: TabState) {
@@ -660,7 +640,6 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Download Service Helpers (must be before download functions) ──
     fun startDownloadService(ctx: Context) {
         val intent = Intent(ctx, DownloadService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -778,9 +757,8 @@ fun GreyBrowser() {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.4/5 (V1.8) ===
+// === PART 1.4/5 (FIXED - duplicates removed, speedLimit captured) ===
 // ═══════════════════════════════════════════════════════════════════
 
     fun getDownloadDir(): File {
@@ -861,6 +839,7 @@ fun GreyBrowser() {
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = id
         startDownloadService(context)
+        val currentSpeedLimit = speedLimit  // Capture for thread
         
         thread(name = "download-$id") {
             try {
@@ -892,13 +871,13 @@ fun GreyBrowser() {
                     totalRead += bytesRead
                     bytesSinceThrottle += bytesRead
                     
-                    // Speed throttling
-                    if (speedLimit > 0) {
+                    if (currentSpeedLimit > 0L) {
                         val now = System.currentTimeMillis()
                         val elapsed = now - lastThrottleTime
                         if (elapsed >= 1000) {
-                            val currentSpeed = bytesSinceThrottle * 1000 / elapsed
-                            if (currentSpeed > speedLimit) {
+                            val currentSpeed = (bytesSinceThrottle * 1000) / elapsed
+                            if (currentSpeed > currentSpeedLimit) {
+                                val targetTime = (bytesSinceThrottle * 1000) / currentSpeedLimit
                                 val sleepTime = targetTime - elapsed
                                 if (sleepTime > 0) Thread.sleep(sleepTime)
                             }
@@ -949,21 +928,6 @@ fun GreyBrowser() {
         }
     }
 
-    fun startDownloadService(ctx: Context) {
-        val intent = Intent(ctx, DownloadService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            ctx.startForegroundService(intent)
-        } else {
-            ctx.startService(intent)
-        }
-    }
-
-    fun stopDownloadService(ctx: Context) {
-        if (activeDownloads.none { it.state == DownloadState.DOWNLOADING }) {
-            ctx.stopService(Intent(ctx, DownloadService::class.java))
-        }
-    }
-
     BackHandler {
         if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() }
         else currentTab.session?.goBack()
@@ -985,11 +949,11 @@ fun GreyBrowser() {
 
 
 
+
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.5/5 (V1.8) ===
+// === PART 1.5/5 ===
 // ═══════════════════════════════════════════════════════════════════
 
-    // Download Editor Popup
     if (showDownloadEditor) {
         var editName by remember { mutableStateOf(downloadEditorName) }
         AlertDialog(
@@ -1210,7 +1174,6 @@ fun GreyBrowser() {
 
 // END OF PART 1.5/5
 // END OF PART 1/2
-
 
 
 
