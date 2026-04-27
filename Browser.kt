@@ -10,14 +10,12 @@ package com.grey.browser
 // - ACTIVE: session.setActive(true). Fully rendered, network active.
 // - WARM:   session.setActive(false). Paused in RAM, instant resume.
 // - COLD:   session = null. Discarded from RAM, restores on click.
-// - Network sniffing via onLoadRequest for video detection (no JS injection).
 // ═══════════════════════════════════════════════════════════════════
 // VERSION HISTORY:
 // V1.4 - Scripts auto-inject on page load. Removed Quick Script, play button,
 //        Select All, Copy buttons. Added delete confirmation for scripts.
 // V1.5 - Tab lifecycle: 1 ACTIVE + max 9 WARM + unlimited COLD
 // V1.6 - Downloader core: queue with manual start, one-at-a-time.
-//        Video detection via network sniffing (onLoadRequest), no URL blink.
 //        M3U8: download segments, merge to .ts file.
 //        Copy link restored. Group delete fix.
 // ═══════════════════════════════════════════════════════════════════
@@ -94,7 +92,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -356,7 +353,6 @@ fun GreyBrowser() {
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
-    val detectedVideoUrls = remember { mutableStateListOf<Pair<String, String>>() }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -412,23 +408,6 @@ fun GreyBrowser() {
             }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
-            override fun onLoadRequest(
-                session: GeckoSession,
-                request: GeckoSession.NavigationDelegate.LoadRequest
-            ): GeckoResult<GeckoSession.NavigationDelegate.AllowOrDeny>? {
-                val url = request.uri
-                if (url != null && (url.contains(".mp4") || url.contains(".webm") || 
-                    url.contains(".m3u8") || url.contains(".ts") || url.contains("video") || 
-                    url.contains("stream"))) {
-                    val fileName = url.substringAfterLast("/").substringBefore("?")
-                    if (fileName.isNotBlank() && !detectedVideoUrls.any { it.first == url }) {
-                        detectedVideoUrls.add(Pair(url, tabState.url))
-                    }
-                }
-                val allow: GeckoSession.NavigationDelegate.AllowOrDeny = GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW
-                return GeckoResult.fromValue(allow)
-            }
-            
             override fun onLocationChange(
                 session: GeckoSession, url: String?,
                 perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
@@ -504,10 +483,6 @@ fun GreyBrowser() {
             lastActiveUrl = tabs[currentTabIndex].url
             highlightedTabIndex = currentTabIndex
         }
-    }
-
-    LaunchedEffect(currentTabIndex) {
-        detectedVideoUrls.clear()
     }
 
     fun manageTabLifecycle(activeIndex: Int) {
@@ -834,14 +809,6 @@ fun GreyBrowser() {
                         showContextMenu = false
                     }
                 }
-                val pageVideos = detectedVideoUrls.filter { it.second == currentTab.url }
-                for ((videoUrl, _) in pageVideos.take(3)) {
-                    val shortName = videoUrl.substringAfterLast("/").substringBefore("?").take(40)
-                    ContextMenuItem("Sniffed: $shortName") {
-                        addDownload(DownloadItem(url = videoUrl, fileName = shortName.ifBlank { "video_${System.currentTimeMillis()}.mp4" }, isVideo = true, referer = currentTab.url))
-                        showContextMenu = false
-                    }
-                }
             }
         }
     }
@@ -979,7 +946,6 @@ fun GreyBrowser() {
 }
 
 // END OF PART 1/2
-
 
 // ═══════════════════════════════════════════════════════════════════
 // Grey Browser - V1.6 (Downloader + Video Downloader)
