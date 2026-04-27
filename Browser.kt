@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // Grey Browser - V1.7 (Download Interception + Video Sniffer + Crash Fix)
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1/2 ===
+// === PART 1.1/5 ===
 
 package com.grey.browser
 
@@ -11,6 +11,7 @@ package com.grey.browser
 // - WARM:   session.setActive(false). Paused in RAM, instant resume.
 // - COLD:   session = null. Discarded from RAM, restores on click.
 // - Video sniffing via JavaScript injection on onPageStop (runs once per page)
+// - Download interception via ContentDelegate.onExternalResponse
 // ═══════════════════════════════════════════════════════════════════
 // VERSION HISTORY:
 // V1.4 - Scripts auto-inject on page load. Removed Quick Script, play button,
@@ -99,6 +100,7 @@ import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebResponse
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -336,6 +338,17 @@ fun resolveUrl(input: String): String {
     return "https://www.google.com/search?q=${Uri.encode(input)}"
 }
 
+// END OF PART 1.1/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 1.2/5 ===
+// ═══════════════════════════════════════════════════════════════════
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GreyBrowser() {
@@ -366,7 +379,7 @@ fun GreyBrowser() {
     var downloadEditorName by remember { mutableStateOf("") }
     var downloadEditorSize by remember { mutableStateOf("Unknown") }
     var downloadEditorIsVideo by remember { mutableStateOf(false) }
-    // Track which pages have been sniffed to avoid re-sniffing
+    // Track which pages have been sniffed
     val sniffedPages = remember { mutableSetOf<String>() }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
@@ -414,54 +427,6 @@ fun GreyBrowser() {
         s.loadUri("javascript:" + Uri.encode(js))
     }
 
-    val setupDelegates = fun(tabState: TabState) {
-        val session = tabState.session ?: return
-        session.progressDelegate = object : GeckoSession.ProgressDelegate {
-            override fun onPageStart(s: GeckoSession, url: String) {
-                tabState.url = url; tabState.progress = 5
-                tabState.lastUpdated = System.currentTimeMillis()
-                if (url != "about:blank") {
-                    tabState.isBlankTab = false
-                    injectScripts(s)
-                }
-            }
-            override fun onPageStop(s: GeckoSession, success: Boolean) {
-                tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                if (success && tabState.url != "about:blank") {
-                    sniffVideos(s, tabState.url)
-                }
-            }
-            override fun onProgressChange(s: GeckoSession, progress: Int) {
-                tabState.progress = progress
-            }
-        }
-        session.contentDelegate = object : GeckoSession.ContentDelegate {
-            override fun onTitleChange(s: GeckoSession, title: String?) {
-                if (!tabState.isBlankTab) tabState.title = title ?: tabState.url
-            }
-            override fun onContextMenu(
-                session: GeckoSession, screenX: Int, screenY: Int,
-                element: GeckoSession.ContentDelegate.ContextElement
-            ) {
-                if (element.linkUri != null) {
-                    contextMenuUri = element.linkUri; showContextMenu = true
-                }
-            }
-        }
-        session.navigationDelegate = object : GeckoSession.NavigationDelegate {
-            override fun onLocationChange(
-                session: GeckoSession, url: String?,
-                perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
-                hasUserGesture: Boolean
-            ) {
-                url?.let { newUrl ->
-                    tabState.url = newUrl
-                    if (newUrl != "about:blank") tabState.isBlankTab = false
-                }
-            }
-        }
-    }
-
     val homeSession = remember {
         GeckoSession().apply {
             applySettingsToSession(this); open(runtime); loadUri("about:blank")
@@ -469,7 +434,7 @@ fun GreyBrowser() {
     }
     val homeTab = remember {
         TabState().apply {
-            session = homeSession; isBlankTab = true; title = "Home"; setupDelegates(this)
+            session = homeSession; isBlankTab = true; title = "Home"
         }
     }
 
@@ -532,6 +497,91 @@ fun GreyBrowser() {
         showVideoDropdown = false
     }
 
+// END OF PART 1.2/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 1.3/5 ===
+// ═══════════════════════════════════════════════════════════════════
+
+    val setupDelegates = fun(tabState: TabState) {
+        val session = tabState.session ?: return
+        session.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(s: GeckoSession, url: String) {
+                tabState.url = url; tabState.progress = 5
+                tabState.lastUpdated = System.currentTimeMillis()
+                if (url != "about:blank") {
+                    tabState.isBlankTab = false
+                    injectScripts(s)
+                }
+            }
+            override fun onPageStop(s: GeckoSession, success: Boolean) {
+                tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
+                if (success && tabState.url != "about:blank") {
+                    sniffVideos(s, tabState.url)
+                }
+            }
+            override fun onProgressChange(s: GeckoSession, progress: Int) {
+                tabState.progress = progress
+            }
+        }
+        session.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onTitleChange(s: GeckoSession, title: String?) {
+                if (!tabState.isBlankTab) tabState.title = title ?: tabState.url
+            }
+            override fun onContextMenu(
+                session: GeckoSession, screenX: Int, screenY: Int,
+                element: GeckoSession.ContentDelegate.ContextElement
+            ) {
+                if (element.linkUri != null) {
+                    contextMenuUri = element.linkUri; showContextMenu = true
+                }
+            }
+            // FIXED: Download interception with proper GeckoView API
+            override fun onExternalResponse(
+                session: GeckoSession,
+                response: WebResponse
+            ) {
+                val url = response.uri
+                if (url != null) {
+                    val fileName = url.substringAfterLast("/").substringBefore("?")
+                    val size = response.contentLength
+                    downloadEditorUrl = url
+                    downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
+                    downloadEditorSize = if (size > 0) {
+                        when {
+                            size > 1_000_000_000 -> "%.1f GB".format(size / 1_000_000_000f)
+                            size > 1_000_000 -> "%.1f MB".format(size / 1_000_000f)
+                            size > 1_000 -> "%.0f KB".format(size / 1_000f)
+                            else -> "$size B"
+                        }
+                    } else "Unknown"
+                    downloadEditorIsVideo = url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8")
+                    showDownloadEditor = true
+                }
+            }
+        }
+        session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLocationChange(
+                session: GeckoSession, url: String?,
+                perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
+                hasUserGesture: Boolean
+            ) {
+                url?.let { newUrl ->
+                    tabState.url = newUrl
+                    if (newUrl != "about:blank") tabState.isBlankTab = false
+                }
+            }
+        }
+    }
+
+    // Set up delegates for home tab after initialization
+    homeTab.session?.let { setupDelegates(homeTab) }
+
     fun manageTabLifecycle(activeIndex: Int) {
         tabs.forEachIndexed { i, ts ->
             if (i == activeIndex && ts.session == null && ts.isDiscarded) {
@@ -566,6 +616,7 @@ fun GreyBrowser() {
         }
     }
 
+    // FIXED: Crash fix - clear pending deletions when tabs are removed
     LaunchedEffect(pendingDeletions.toMap()) {
         while (pendingDeletions.isNotEmpty()) {
             delay(1000)
@@ -573,11 +624,18 @@ fun GreyBrowser() {
             val toRemove = pendingDeletions.filter { now - it.value >= UNDO_DELAY_MS }.keys.toList()
             for (index in toRemove.sortedDescending()) {
                 pendingDeletions.remove(index)
-                // CRASH FIX: Check if tab still exists
                 val tab = tabs.getOrNull(index)
                 if (tab == null) continue
                 tab.session?.setActive(false); tab.session?.close()
                 tabs.removeAt(index)
+                // Update pendingDeletions indices after removal
+                val updated = mutableMapOf<Int, Long>()
+                for ((oldIdx, time) in pendingDeletions) {
+                    updated[if (oldIdx > index) oldIdx - 1 else oldIdx] = time
+                }
+                pendingDeletions.clear()
+                pendingDeletions.putAll(updated)
+                
                 if (tabs.isEmpty()) {
                     currentTabIndex = -1
                     selectedDomain = ""
@@ -655,9 +713,16 @@ fun GreyBrowser() {
 
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
-    // ═══════════════════════════════════════════════════════════════
-    // ── DOWNLOAD HELPER FUNCTIONS ─────────────────────────────────
-    // ═══════════════════════════════════════════════════════════════
+// END OF PART 1.3/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 1.4/5 ===
+// ═══════════════════════════════════════════════════════════════════
 
     fun getDownloadDir(): File {
         val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Grey")
@@ -685,10 +750,7 @@ fun GreyBrowser() {
                     .filter { it.isNotBlank() && !it.startsWith("#") }
                     .map { seg -> if (seg.startsWith("http")) seg.trim() else "$baseUrl/${seg.trim()}" }
                 
-                if (segments.isEmpty()) {
-                    item.state = DownloadState.FAILED
-                    return@thread
-                }
+                if (segments.isEmpty()) { item.state = DownloadState.FAILED; return@thread }
                 
                 val tempDir = File(context.cacheDir, "m3u8_${item.id}")
                 tempDir.mkdirs()
@@ -703,30 +765,21 @@ fun GreyBrowser() {
                         val segConn = URL(segUrl).openConnection() as HttpURLConnection
                         segConn.connectTimeout = 10000; segConn.readTimeout = 10000
                         if (item.referer.isNotBlank()) segConn.setRequestProperty("Referer", item.referer)
-                        segConn.inputStream.use { input ->
-                            segFile.outputStream().use { output -> input.copyTo(output) }
-                        }
+                        segConn.inputStream.use { input -> segFile.outputStream().use { output -> input.copyTo(output) } }
                         segmentFiles.add(segFile)
                         item.progress = ((i + 1) * 100) / segments.size
                     } catch (e: Exception) { }
                 }
                 
-                if (segmentFiles.isEmpty()) {
-                    item.state = DownloadState.FAILED
-                    tempDir.deleteRecursively()
-                    return@thread
-                }
+                if (segmentFiles.isEmpty()) { item.state = DownloadState.FAILED; tempDir.deleteRecursively(); return@thread }
                 
                 val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
                 FileOutputStream(outputFile).use { out ->
-                    for (seg in segmentFiles) {
-                        seg.inputStream().use { it.copyTo(out) }
-                    }
+                    for (seg in segmentFiles) { seg.inputStream().use { it.copyTo(out) } }
                 }
                 
                 item.tempFile = outputFile
-                item.state = DownloadState.COMPLETED
-                item.progress = 100
+                item.state = DownloadState.COMPLETED; item.progress = 100
                 tempDir.deleteRecursively()
             } catch (e: Exception) {
                 if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
@@ -740,10 +793,7 @@ fun GreyBrowser() {
         val item = activeDownloads.find { it.id == id } ?: return
         if (currentDownloadId != null && currentDownloadId != id) return
         
-        if (item.url.contains(".m3u8")) {
-            downloadM3U8(item)
-            return
-        }
+        if (item.url.contains(".m3u8")) { downloadM3U8(item); return }
         
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = id
@@ -764,8 +814,7 @@ fun GreyBrowser() {
                 val output = FileOutputStream(outputFile)
                 
                 val buffer = ByteArray(8192)
-                var bytesRead: Int
-                var totalRead = 0L
+                var bytesRead: Int; var totalRead = 0L
                 val startTime = System.currentTimeMillis()
                 
                 while (input.read(buffer).also { bytesRead = it } != -1) {
@@ -787,20 +836,14 @@ fun GreyBrowser() {
                 }
                 input.close(); output.close(); conn.disconnect()
                 if (item.state != DownloadState.PAUSED) { item.state = DownloadState.COMPLETED; item.progress = 100 }
-            } catch (e: Exception) { if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
+            } catch (e: Exception) {
+                if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
             } finally { if (currentDownloadId == id) currentDownloadId = null }
         }
     }
 
-    fun pauseDownload(id: String) {
-        activeDownloads.find { it.id == id }?.state = DownloadState.PAUSED
-    }
-
-    fun resumeDownload(id: String) {
-        val item = activeDownloads.find { it.id == id } ?: return
-        item.state = DownloadState.DOWNLOADING
-    }
-
+    fun pauseDownload(id: String) { activeDownloads.find { it.id == id }?.state = DownloadState.PAUSED }
+    fun resumeDownload(id: String) { activeDownloads.find { it.id == id }?.let { it.state = DownloadState.DOWNLOADING } }
     fun deleteDownload(id: String) {
         val item = activeDownloads.find { it.id == id } ?: return
         item.tempFile?.delete(); activeDownloads.remove(item)
@@ -808,7 +851,8 @@ fun GreyBrowser() {
     }
 
     BackHandler {
-        if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() } else currentTab.session?.goBack()
+        if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() }
+        else currentTab.session?.goBack()
     }
 
     @Composable
@@ -821,6 +865,17 @@ fun GreyBrowser() {
         }
     }
 
+// END OF PART 1.4/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 1.5/5 ===
+// ═══════════════════════════════════════════════════════════════════
+
     // Download Editor Popup
     if (showDownloadEditor) {
         var editName by remember { mutableStateOf(downloadEditorName) }
@@ -830,20 +885,11 @@ fun GreyBrowser() {
             text = {
                 Column {
                     OutlinedTextField(
-                        value = editName,
-                        onValueChange = { editName = it },
-                        singleLine = true,
+                        value = editName, onValueChange = { editName = it }, singleLine = true,
                         label = { Text("Name", color = Color.Gray) },
                         textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.White,
-                            unfocusedBorderColor = Color.White,
-                            cursorColor = Color.White,
-                            focusedContainerColor = Color(0xFF1E1E1E),
-                            unfocusedContainerColor = Color(0xFF1E1E1E)
-                        ),
-                        shape = RectangleShape,
-                        modifier = Modifier.fillMaxWidth()
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
+                        shape = RectangleShape, modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
                     Text("Size: $downloadEditorSize", color = Color.Gray, fontSize = 14.sp)
@@ -854,38 +900,19 @@ fun GreyBrowser() {
             confirmButton = {
                 Row {
                     TextButton({
-                        val item = DownloadItem(
-                            url = downloadEditorUrl,
-                            fileName = editName.ifBlank { downloadEditorName },
-                            isVideo = downloadEditorIsVideo,
-                            referer = currentTab.url,
-                            state = DownloadState.PAUSED
-                        )
-                        addDownload(item)
+                        addDownload(DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url, state = DownloadState.PAUSED))
                         showDownloadEditor = false
                     }) { Text("Add", color = Color.White) }
                     Spacer(Modifier.width(8.dp))
                     TextButton({
-                        val item = DownloadItem(
-                            url = downloadEditorUrl,
-                            fileName = editName.ifBlank { downloadEditorName },
-                            isVideo = downloadEditorIsVideo,
-                            referer = currentTab.url
-                        )
-                        addDownload(item)
-                        startDownload(item.id)
+                        val item = DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url)
+                        addDownload(item); startDownload(item.id)
                         showDownloadEditor = false
                     }) { Text("Start", color = Color.White) }
                 }
             },
-            dismissButton = {
-                TextButton({ showDownloadEditor = false }) { Text("Cancel", color = Color.White) }
-            },
-            containerColor = Color(0xFF1E1E1E),
-            titleContentColor = Color.White,
-            textContentColor = Color.White,
-            shape = RectangleShape,
-            tonalElevation = 0.dp
+            dismissButton = { TextButton({ showDownloadEditor = false }) { Text("Cancel", color = Color.White) } },
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
         )
     }
 
@@ -893,30 +920,15 @@ fun GreyBrowser() {
         AlertDialog(onDismissRequest = { showConfirmDialog = false; confirmAction = null }, title = { Text(confirmTitle, color = Color.White, fontSize = 18.sp) }, text = { Text(confirmMessage, color = Color.Gray, fontSize = 14.sp) }, confirmButton = { TextButton({ val a = confirmAction; showConfirmDialog = false; confirmAction = null; a?.invoke() }) { Text("Confirm", color = Color.White) } }, dismissButton = { TextButton({ showConfirmDialog = false; confirmAction = null }) { Text("Cancel", color = Color.White) } }, containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp)
     }
 
-    if (showSettings) {
-        SettingsDialog(prefs, { showSettings = false }) {
-            applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } }
-        }
-    }
-
-    if (showScriptManager) {
-        ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false })
-    }
+    if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
+    if (showScriptManager) { ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false }) }
 
     if (showDownloadManager) {
-        DownloadManagerUI(
-            downloads = activeDownloads,
-            onDismiss = { showDownloadManager = false },
-            onStart = { startDownload(it) },
-            onPause = { pauseDownload(it) },
-            onResume = { resumeDownload(it) },
-            onDelete = { deleteDownload(it) }
-        )
+        DownloadManagerUI(downloads = activeDownloads, onDismiss = { showDownloadManager = false }, onStart = { startDownload(it) }, onPause = { pauseDownload(it) }, onResume = { resumeDownload(it) }, onDelete = { deleteDownload(it) })
     }
 
     if (showContextMenu && contextMenuUri != null) {
-        val clipMgr = clipboardManager
-        val ctxUri = contextMenuUri
+        val clipMgr = clipboardManager; val ctxUri = contextMenuUri
         Popup(alignment = Alignment.Center, onDismissRequest = { showContextMenu = false }, properties = PopupProperties(focusable = true)) {
             Column(Modifier.border(1.dp, Color.White, RectangleShape).background(Color(0xFF1E1E1E)).width(IntrinsicSize.Max)) {
                 ContextMenuItem("New Tab") { createForegroundTab(ctxUri!!); showContextMenu = false }
@@ -929,14 +941,10 @@ fun GreyBrowser() {
     if (showTabManager) {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
         val sortedDomains = domainGroups.keys.sortedWith(compareByDescending<String> { pinnedDomains.contains(it) }.thenBy { d: String -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE })
-        val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }
-        val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
+        val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }; val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
         val highlightDomain = if (currentTab.isBlankTab && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url) else if (!currentTab.isBlankTab) getDomainName(currentTab.url) else ""
 
-        LaunchedEffect(Unit) {
-            selectedDomain = ""
-            if (highlightDomain.isNotBlank()) { blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" }
-        }
+        LaunchedEffect(Unit) { selectedDomain = ""; if (highlightDomain.isNotBlank()) { blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" } }
 
         Popup(alignment = Alignment.TopStart, onDismissRequest = { showTabManager = false }, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
             Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
@@ -999,8 +1007,7 @@ fun GreyBrowser() {
                         OutlinedButton(onClick = { currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White) }
                         Spacer(Modifier.height(8.dp))
                         Row(Modifier.fillMaxWidth()) {
-                            val hasSelection = selectedDomain.isNotBlank()
-                            val isPinned = pinnedDomains.contains(selectedDomain)
+                            val hasSelection = selectedDomain.isNotBlank(); val isPinned = pinnedDomains.contains(selectedDomain)
                             val faintColor = Color.White.copy(alpha = 0.3f); val activeColor = Color.White
                             OutlinedButton(onClick = { if (hasSelection) { confirmTitle = if (isPinned) "Unpin Group?" else "Pin Group?"; confirmMessage = "Are you sure?"; confirmAction = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) }; showConfirmDialog = true } }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor), border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)) {
                                 Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
@@ -1008,7 +1015,11 @@ fun GreyBrowser() {
                             Spacer(Modifier.width(8.dp))
                             OutlinedButton(onClick = { if (hasSelection) { confirmTitle = "Delete Group?"; confirmMessage = "All tabs in this group will be lost."; confirmAction = { 
                                 val toRemove = (domainGroups[selectedDomain] ?: emptyList()).toList()
-                                toRemove.forEach { it.session?.setActive(false); it.session?.close() }
+                                toRemove.forEach { 
+                                    val idx = tabs.indexOf(it)
+                                    if (idx >= 0) pendingDeletions.remove(idx)  // Clear pending deletions for removed tabs
+                                    it.session?.setActive(false); it.session?.close() 
+                                }
                                 tabs.removeAll(toRemove)
                                 if (tabs.isEmpty()) { currentTabIndex = -1; selectedDomain = "" }
                                 else { currentTabIndex = currentTabIndex.coerceIn(0, tabs.lastIndex); selectedDomain = "" }
@@ -1047,30 +1058,16 @@ fun GreyBrowser() {
                 // Video sniffer button
                 if (detectedVideos.isNotEmpty()) {
                     Box {
-                        IconButton({ showVideoDropdown = !showVideoDropdown }) {
-                            Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White)
-                        }
+                        IconButton({ showVideoDropdown = !showVideoDropdown }) { Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White) }
                         if (showVideoDropdown) {
-                            DropdownMenu(
-                                expanded = showVideoDropdown,
-                                onDismissRequest = { showVideoDropdown = false },
-                                modifier = Modifier.border(1.dp, Color.White, RectangleShape),
-                                containerColor = Color(0xFF1E1E1E),
-                                shape = RectangleShape
-                            ) {
+                            DropdownMenu(expanded = showVideoDropdown, onDismissRequest = { showVideoDropdown = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
                                 detectedVideos.take(10).forEach { (url, _) ->
                                     val shortName = url.substringAfterLast("/").substringBefore("?").take(50)
-                                    DropdownMenuItem(
-                                        text = { Text(shortName, color = Color.White, fontSize = 13.sp) },
-                                        onClick = {
-                                            showVideoDropdown = false
-                                            downloadEditorUrl = url
-                                            downloadEditorName = currentTab.title
-                                            downloadEditorSize = "Unknown"
-                                            downloadEditorIsVideo = true
-                                            showDownloadEditor = true
-                                        }
-                                    )
+                                    DropdownMenuItem(text = { Text(shortName, color = Color.White, fontSize = 13.sp) }, onClick = {
+                                        showVideoDropdown = false; downloadEditorUrl = url
+                                        downloadEditorName = currentTab.title; downloadEditorSize = "Unknown"
+                                        downloadEditorIsVideo = true; showDownloadEditor = true
+                                    })
                                 }
                             }
                         }
@@ -1090,15 +1087,22 @@ fun GreyBrowser() {
     }
 }
 
+// END OF PART 1.5/5
 // END OF PART 1/2
 
 
 
 
+
+
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.6 (Downloader + Video Downloader)
+// === PART 2 FOLLOWS (DownloadManagerUI, ScriptManager, etc.) ===
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2/2 ===
+
+// ═══════════════════════════════════════════════════════════════════
+// Grey Browser - V1.7
+// ═══════════════════════════════════════════════════════════════════
+// === PART 2.1/5 ===
 
 // ═══════════════════════════════════════════════════════════════════
 // ── DOWNLOAD MANAGER UI ──────────────────────────────────────────
@@ -1245,6 +1249,17 @@ fun DownloadManagerUI(
         }
     }
 }
+
+// END OF PART 2.1/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 2.2/5 ===
+// ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
 // ── SCRIPT MANAGER ────────────────────────────────────────────────
@@ -1436,6 +1451,17 @@ fun ScriptList(
     }
 }
 
+// END OF PART 2.2/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 2.3/5 ===
+// ═══════════════════════════════════════════════════════════════════
+
 @Composable
 fun ScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel: () -> Unit) {
     var name by remember { mutableStateOf(script?.name ?: "") }
@@ -1531,6 +1557,17 @@ fun ScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel
         }
     }
 }
+
+// END OF PART 2.3/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 2.4/5 ===
+// ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
 // ── Composable Helpers ────────────────────────────────────────────
@@ -1629,6 +1666,17 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp)
     ) { Text(text, color = Color.White, fontSize = 16.sp) }
 }
+
+// END OF PART 2.4/5
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 2.5/5 ===
+// ═══════════════════════════════════════════════════════════════════
 
 @Composable
 fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
@@ -1731,7 +1779,8 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     }
 }
 
-// END OF PART 2/2
+// END OF PART 2.5/5
 // ═══════════════════════════════════════════════════════════════════
-// END OF FILE - Grey Browser V1.6
+// END OF PART 2/2
+// END OF FILE - Grey Browser V1.7
 // ═══════════════════════════════════════════════════════════════════
