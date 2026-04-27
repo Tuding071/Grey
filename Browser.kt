@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.6 (Downloader + Video Downloader)
+// Grey Browser - V1.7 (Download Interception + Video Sniffer + Crash Fix)
 // ═══════════════════════════════════════════════════════════════════
 // === PART 1/2 ===
 
@@ -10,6 +10,8 @@ package com.grey.browser
 // - ACTIVE: session.setActive(true). Fully rendered, network active.
 // - WARM:   session.setActive(false). Paused in RAM, instant resume.
 // - COLD:   session = null. Discarded from RAM, restores on click.
+// - Download interception via GeckoSession.ContentDelegate.onExternalResponse
+// - Video sniffing via JavaScript injection on onPageStop (runs once per page)
 // ═══════════════════════════════════════════════════════════════════
 // VERSION HISTORY:
 // V1.4 - Scripts auto-inject on page load. Removed Quick Script, play button,
@@ -18,6 +20,8 @@ package com.grey.browser
 // V1.6 - Downloader core: queue with manual start, one-at-a-time.
 //        M3U8: download segments, merge to .ts file.
 //        Copy link restored. Group delete fix.
+// V1.7 - Download interception for all file types. Video sniffer with UI button.
+//        Download Editor popup. Crash fix for last tab/group delete.
 // ═══════════════════════════════════════════════════════════════════
 
 import android.content.Context
@@ -58,6 +62,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -353,6 +358,17 @@ fun GreyBrowser() {
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
+    // Detected videos from page sniffing
+    val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
+    var showVideoDropdown by remember { mutableStateOf(false) }
+    // Download Editor state
+    var showDownloadEditor by remember { mutableStateOf(false) }
+    var downloadEditorUrl by remember { mutableStateOf("") }
+    var downloadEditorName by remember { mutableStateOf("") }
+    var downloadEditorSize by remember { mutableStateOf("Unknown") }
+    var downloadEditorIsVideo by remember { mutableStateOf(false) }
+    // Track which pages have been sniffed to avoid re-sniffing
+    val sniffedPages = remember { mutableSetOf<String>() }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -376,6 +392,30 @@ fun GreyBrowser() {
         }
     }
 
+    // Video sniffer - injects JavaScript to find video elements
+    val sniffVideos: (GeckoSession, String) -> Unit = { s, pageUrl ->
+        if (sniffedPages.contains(pageUrl)) return
+        sniffedPages.add(pageUrl)
+        val js = """
+            (function() {
+                var videos = [];
+                document.querySelectorAll('video, video source').forEach(function(v) {
+                    var src = v.src || v.getAttribute('src') || v.currentSrc;
+                    if (src && src.startsWith('http')) videos.push(src);
+                });
+                // Also check for common video player elements
+                document.querySelectorAll('[src]').forEach(function(el) {
+                    var src = el.getAttribute('src');
+                    if (src && (src.includes('.mp4') || src.includes('.webm') || src.includes('.m3u8'))) {
+                        if (!videos.includes(src)) videos.push(src);
+                    }
+                });
+                return JSON.stringify(videos);
+            })();
+        """.trimIndent()
+        s.loadUri("javascript:" + Uri.encode(js))
+    }
+
     val setupDelegates = fun(tabState: TabState) {
         val session = tabState.session ?: return
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
@@ -389,6 +429,9 @@ fun GreyBrowser() {
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
+                if (success && tabState.url != "about:blank") {
+                    sniffVideos(s, tabState.url)
+                }
             }
             override fun onProgressChange(s: GeckoSession, progress: Int) {
                 tabState.progress = progress
@@ -406,6 +449,25 @@ fun GreyBrowser() {
                     contextMenuUri = element.linkUri; showContextMenu = true
                 }
             }
+            // Intercept download requests from pages
+            override fun onExternalResponse(
+                session: GeckoSession,
+                response: GeckoSession.ContentDelegate.ExternalResponse
+            ) {
+                val url = response.uri ?: return
+                val fileName = url.substringAfterLast("/").substringBefore("?")
+                val size = response.contentLength
+                // Show Download Editor
+                detectedVideoUrls.clear()
+                detectedVideoUrls.add(Pair(url, tabState.url))
+                showVideoDropdown = false
+                // Open download editor
+                downloadEditorUrl = url
+                downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
+                downloadEditorSize = if (size > 0) formatSize(size) else "Unknown"
+                downloadEditorIsVideo = url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8")
+                showDownloadEditor = true
+            }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
@@ -418,6 +480,15 @@ fun GreyBrowser() {
                     if (newUrl != "about:blank") tabState.isBlankTab = false
                 }
             }
+        }
+    }
+
+    fun formatSize(bytes: Long): String {
+        return when {
+            bytes > 1_000_000_000 -> "%.1f GB".format(bytes / 1_000_000_000f)
+            bytes > 1_000_000 -> "%.1f MB".format(bytes / 1_000_000f)
+            bytes > 1_000 -> "%.0f KB".format(bytes / 1_000f)
+            else -> "$bytes B"
         }
     }
 
@@ -485,6 +556,12 @@ fun GreyBrowser() {
         }
     }
 
+    // Clear detected videos when switching tabs
+    LaunchedEffect(currentTabIndex) {
+        detectedVideos.clear()
+        showVideoDropdown = false
+    }
+
     fun manageTabLifecycle(activeIndex: Int) {
         tabs.forEachIndexed { i, ts ->
             if (i == activeIndex && ts.session == null && ts.isDiscarded) {
@@ -526,13 +603,19 @@ fun GreyBrowser() {
             val toRemove = pendingDeletions.filter { now - it.value >= UNDO_DELAY_MS }.keys.toList()
             for (index in toRemove.sortedDescending()) {
                 pendingDeletions.remove(index)
-                val tab = tabs.getOrNull(index) ?: continue
+                // CRASH FIX: Check if tab still exists (might have been removed by group delete)
+                val tab = tabs.getOrNull(index)
+                if (tab == null) continue
                 tab.session?.setActive(false); tab.session?.close()
                 tabs.removeAt(index)
-                if (tabs.isEmpty()) currentTabIndex = -1
-                else if (currentTabIndex > index) currentTabIndex--
-                else if (currentTabIndex == index && tabs.isNotEmpty())
+                if (tabs.isEmpty()) {
+                    currentTabIndex = -1
+                    selectedDomain = ""
+                } else if (currentTabIndex > index) {
+                    currentTabIndex--
+                } else if (currentTabIndex == index && tabs.isNotEmpty()) {
                     currentTabIndex = minOf(currentTabIndex, tabs.lastIndex)
+                }
                 if (highlightedTabIndex == index) highlightedTabIndex = -1
                 else if (highlightedTabIndex > index) highlightedTabIndex--
                 if (selectedDomain.isNotBlank()) {
@@ -768,6 +851,74 @@ fun GreyBrowser() {
         }
     }
 
+    // Download Editor Popup
+    if (showDownloadEditor) {
+        var editName by remember { mutableStateOf(downloadEditorName) }
+        AlertDialog(
+            onDismissRequest = { showDownloadEditor = false },
+            title = { Text("Download", color = Color.White, fontSize = 18.sp) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = editName,
+                        onValueChange = { editName = it },
+                        singleLine = true,
+                        label = { Text("Name", color = Color.Gray) },
+                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color.White,
+                            unfocusedBorderColor = Color.White,
+                            cursorColor = Color.White,
+                            focusedContainerColor = Color(0xFF1E1E1E),
+                            unfocusedContainerColor = Color(0xFF1E1E1E)
+                        ),
+                        shape = RectangleShape,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("Size: $downloadEditorSize", color = Color.Gray, fontSize = 14.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Location: /Download/Grey/", color = Color.Gray, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                Row {
+                    TextButton({
+                        val item = DownloadItem(
+                            url = downloadEditorUrl,
+                            fileName = editName.ifBlank { downloadEditorName },
+                            isVideo = downloadEditorIsVideo,
+                            referer = currentTab.url,
+                            state = DownloadState.PAUSED
+                        )
+                        addDownload(item)
+                        showDownloadEditor = false
+                    }) { Text("Add", color = Color.White) }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton({
+                        val item = DownloadItem(
+                            url = downloadEditorUrl,
+                            fileName = editName.ifBlank { downloadEditorName },
+                            isVideo = downloadEditorIsVideo,
+                            referer = currentTab.url
+                        )
+                        addDownload(item)
+                        startDownload(item.id)
+                        showDownloadEditor = false
+                    }) { Text("Start", color = Color.White) }
+                }
+            },
+            dismissButton = {
+                TextButton({ showDownloadEditor = false }) { Text("Cancel", color = Color.White) }
+            },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            shape = RectangleShape,
+            tonalElevation = 0.dp
+        )
+    }
+
     if (showConfirmDialog) {
         AlertDialog(onDismissRequest = { showConfirmDialog = false; confirmAction = null }, title = { Text(confirmTitle, color = Color.White, fontSize = 18.sp) }, text = { Text(confirmMessage, color = Color.Gray, fontSize = 14.sp) }, confirmButton = { TextButton({ val a = confirmAction; showConfirmDialog = false; confirmAction = null; a?.invoke() }) { Text("Confirm", color = Color.White) } }, dismissButton = { TextButton({ showConfirmDialog = false; confirmAction = null }) { Text("Cancel", color = Color.White) } }, containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp)
     }
@@ -801,14 +952,6 @@ fun GreyBrowser() {
                 ContextMenuItem("New Tab") { createForegroundTab(ctxUri!!); showContextMenu = false }
                 ContextMenuItem("Open in Background") { createBackgroundTab(ctxUri!!); showContextMenu = false }
                 ContextMenuItem("Copy link") { clipMgr.setText(AnnotatedString(ctxUri!!)); showContextMenu = false }
-                val uri = ctxUri ?: ""
-                if (uri.contains(".mp4") || uri.contains(".webm") || uri.contains(".m3u8") || uri.contains("video") || uri.contains("stream")) {
-                    ContextMenuItem("Download Video") {
-                        val fileName = uri.substringAfterLast("/").substringBefore("?")
-                        addDownload(DownloadItem(url = uri, fileName = if (fileName.contains(".")) fileName else "video_${System.currentTimeMillis()}.mp4", isVideo = true, referer = currentTab.url))
-                        showContextMenu = false
-                    }
-                }
             }
         }
     }
@@ -931,6 +1074,38 @@ fun GreyBrowser() {
                     trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                 )
                 IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
+                // Video sniffer button
+                if (detectedVideos.isNotEmpty()) {
+                    Box {
+                        IconButton({ showVideoDropdown = !showVideoDropdown }) {
+                            Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White)
+                        }
+                        if (showVideoDropdown) {
+                            DropdownMenu(
+                                expanded = showVideoDropdown,
+                                onDismissRequest = { showVideoDropdown = false },
+                                modifier = Modifier.border(1.dp, Color.White, RectangleShape),
+                                containerColor = Color(0xFF1E1E1E),
+                                shape = RectangleShape
+                            ) {
+                                detectedVideos.take(10).forEach { (url, _) ->
+                                    val shortName = url.substringAfterLast("/").substringBefore("?").take(50)
+                                    DropdownMenuItem(
+                                        text = { Text(shortName, color = Color.White, fontSize = 13.sp) },
+                                        onClick = {
+                                            showVideoDropdown = false
+                                            downloadEditorUrl = url
+                                            downloadEditorName = currentTab.title
+                                            downloadEditorSize = "Unknown"
+                                            downloadEditorIsVideo = true
+                                            showDownloadEditor = true
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 Box {
                     IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
