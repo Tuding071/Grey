@@ -147,6 +147,10 @@ jobs:
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
               <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <application
                   android:allowBackup="false"
                   android:label="@string/app_name"
@@ -173,6 +177,10 @@ jobs:
                           <data android:scheme="https" />
                       </intent-filter>
                   </activity>
+                  <service
+                      android:name=".DownloadService"
+                      android:foregroundServiceType="dataSync"
+                      android:exported="false" />
               </application>
           </manifest>
           EOF
@@ -191,56 +199,3 @@ jobs:
               </style>
           </resources>
           EOF
-
-      - name: Generate launcher icons
-        run: |
-          pip install Pillow --quiet
-          python3 << 'PYEOF'
-          from PIL import Image, ImageDraw
-          import os
-          def make_icon(size):
-              img = Image.new('RGBA', (size, size), (18,18,18,255))
-              d = ImageDraw.Draw(img)
-              m = size//6; sw = max(3, size//20); cx = size//2
-              mid_y = size//2 + size//12; sb = size - m
-              d.rounded_rectangle([m,m,size-m,mid_y], radius=size//8, outline=(255,255,255,255), width=sw)
-              d.polygon([(m,mid_y),(cx,sb),(size-m,mid_y)], fill=(255,255,255,255))
-              return img
-          for density, s in {'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}.items():
-              path = f'app/src/main/res/mipmap-{density}'
-              os.makedirs(path, exist_ok=True)
-              icon = make_icon(s)
-              icon.save(f'{path}/ic_launcher.png')
-              icon.save(f'{path}/ic_launcher_round.png')
-          print("Icons done.")
-          PYEOF
-
-      - name: Create Gradle Wrapper
-        run: |
-          sudo apt-get update -q && sudo apt-get install -y gradle
-          gradle wrapper --gradle-version=8.11.1 --distribution-type=bin
-          chmod +x gradlew
-
-      - name: Set Android SDK path
-        run: echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
-
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
-
-      - name: Bundle release
-        run: |
-          mkdir -p Grey-release/.github/workflows
-          cp app/build/outputs/apk/debug/app-arm64-v8a-debug.apk Grey-release/Grey.apk
-          cp Browser.kt Grey-release/
-          cp .github/workflows/build.yml Grey-release/.github/workflows/ 2>/dev/null || true
-          echo "Build:      #${{ github.run_number }}"          > Grey-release/BUILD_INFO.txt
-          echo "GeckoView:  ${{ steps.gecko.outputs.version }}" >> Grey-release/BUILD_INFO.txt
-          echo "Commit:     ${{ github.sha }}"                  >> Grey-release/BUILD_INFO.txt
-          echo "Timestamp:  $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> Grey-release/BUILD_INFO.txt
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Grey-${{ github.run_number }}
-          path: Grey-release/
-          retention-days: 30
