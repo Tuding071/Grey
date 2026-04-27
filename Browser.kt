@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.1/5 (V1.9 - History + Download Fixes + Highlight Fix) ===
+// Grey Browser - V1.9 (History + Download Fixes + Highlight Fix + Headers + Notif Fix)
 // ═══════════════════════════════════════════════════════════════════
+// === PART 1.1/5 ===
 
 package com.grey.browser
 
@@ -23,12 +24,12 @@ package com.grey.browser
 // V1.8 - Background download via Foreground Service. Speed limit selector.
 //        Delete confirmation for downloads. Resume fix.
 // V1.9 - History feature. Download UI live updates. Real pause fix.
-//        Current tab highlight fix (save on onPageStart).
+//        Current tab highlight fix. Browser headers for downloads.
+//        Notification tap does nothing.
 // ═══════════════════════════════════════════════════════════════════
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -144,16 +145,10 @@ class MainActivity : ComponentActivity() {
 
 class DownloadService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
         val notification = NotificationCompat.Builder(this, "grey_downloads")
             .setContentTitle("Grey is downloading")
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
-            .setContentIntent(pendingIntent)
             .build()
         startForeground(1001, notification)
         return START_STICKY
