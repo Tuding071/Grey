@@ -392,8 +392,8 @@ fun GreyBrowser() {
     }
 
     // Video sniffer - injects JavaScript to find video elements
-    fun sniffVideos: (GeckoSession, String) -> Unit = { s, pageUrl ->
-        if (sniffedPages.contains(pageUrl)) return@sniffVideos
+    fun sniffVideos(s: GeckoSession, pageUrl: String) {
+        if (sniffedPages.contains(pageUrl)) return
         sniffedPages.add(pageUrl)
         val js = """
             (function() {
@@ -1091,6 +1091,8 @@ fun GreyBrowser() {
 }
 
 // END OF PART 1/2
+
+
 
 
 // ═══════════════════════════════════════════════════════════════════
