@@ -43,10 +43,8 @@ jobs:
           mkdir -p app/src/main/res/values
           mkdir -p gradle/wrapper
 
-          # Copy the single source file (Browser.kt must be in the repo root)
           cp Browser.kt $PKG/
 
-          # settings.gradle.kts
           cat > settings.gradle.kts << 'EOF'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -59,7 +57,6 @@ jobs:
           include(":app")
           EOF
 
-          # Root build.gradle.kts
           cat > build.gradle.kts << 'EOF'
           plugins {
               id("com.android.application")                    version "8.9.1" apply false
@@ -69,7 +66,6 @@ jobs:
           }
           EOF
 
-          # app/build.gradle.kts
           cat > app/build.gradle.kts << EOF
           plugins {
               id("com.android.application")
@@ -113,6 +109,8 @@ jobs:
 
           dependencies {
               implementation("org.mozilla.geckoview:geckoview:${GECKO_VERSION}")
+              implementation("org.jcodec:jcodec:0.2.5")
+              implementation("org.jcodec:jcodec-android:0.2.5")
               implementation("androidx.core:core-ktx:1.15.0")
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.0")
               implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
@@ -130,7 +128,6 @@ jobs:
           }
           EOF
 
-          # gradle.properties
           cat > gradle.properties << 'EOF'
           android.useAndroidX=true
           android.enableJetifier=true
@@ -139,7 +136,6 @@ jobs:
           android.suppressUnsupportedCompileSdk=36
           EOF
 
-          # AndroidManifest.xml
           cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
