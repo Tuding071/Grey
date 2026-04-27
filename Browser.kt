@@ -1,7 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.8 (Background Download + Speed Limit + Live UI)
+// === PART 1.1/5 (V1.9 - History + Download Fixes + Highlight Fix) ===
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.1/5 ===
 
 package com.grey.browser
 
@@ -21,8 +20,10 @@ package com.grey.browser
 //        Copy link restored. Group delete fix.
 // V1.7 - Video sniffer with UI button. Download Editor popup.
 //        Crash fix for last tab/group delete.
-// V1.8 - Background download via Foreground Service. Live UI updates.
-//        Delete confirmation. Speed limit selector. Resume fix.
+// V1.8 - Background download via Foreground Service. Speed limit selector.
+//        Delete confirmation for downloads. Resume fix.
+// V1.9 - History feature. Download UI live updates. Real pause fix.
+//        Current tab highlight fix (save on onPageStart).
 // ═══════════════════════════════════════════════════════════════════
 
 import android.app.NotificationChannel
@@ -260,6 +261,7 @@ private const val KEY_TABS = "saved_tabs"
 private const val KEY_PINNED = "pinned_domains"
 private const val KEY_LAST_ACTIVE_URL = "last_active_url"
 private const val KEY_SCRIPTS = "saved_scripts"
+private const val KEY_HISTORY = "saved_history"
 
 fun saveTabs(context: Context) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().apply()
@@ -306,6 +308,36 @@ fun loadTabsData(context: Context): Triple<List<Pair<String, String>>, List<Stri
 }
 
 data class ScriptItem(val id: String, val name: String, val code: String, val enabled: Boolean)
+
+// ── History System ────────────────────────────────────────────────────
+data class HistoryItem(
+    val url: String,
+    val title: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+fun saveHistory(context: Context, history: List<HistoryItem>) {
+    val arr = JSONArray()
+    for (h in history) {
+        val obj = JSONObject()
+        obj.put("url", h.url); obj.put("title", h.title); obj.put("timestamp", h.timestamp)
+        arr.put(obj)
+    }
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_HISTORY, arr.toString()).apply()
+}
+
+fun loadHistory(context: Context): List<HistoryItem> {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_HISTORY, null) ?: return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        mutableListOf<HistoryItem>().apply {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(HistoryItem(o.getString("url"), o.getString("title"), o.getLong("timestamp")))
+            }
+        }
+    } catch (e: Exception) { emptyList() }
+}
 
 enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED }
 
@@ -370,6 +402,7 @@ fun getDomainName(url: String): String {
 const val MAX_LOADED_TABS = 10
 const val MAX_WARM_TABS = 9
 const val UNDO_DELAY_MS = 3000L
+const val MAX_HISTORY_ITEMS = 500
 
 fun resolveUrl(input: String): String {
     if (input.isBlank()) return "about:blank"
@@ -394,11 +427,8 @@ fun formatSpeedLimit(limit: Long): String = when (limit) {
 
 
 
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.2/5 ===
+// === PART 1.2/5 (V1.9) ===
 // ═══════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -418,17 +448,25 @@ fun GreyBrowser() {
         mutableStateListOf<ScriptItem>().apply { addAll(loadScripts(context)) }
     }
 
+    // ── Download State ────────────────────────────────────────────────
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
+    var downloadUpdateTrigger by remember { mutableIntStateOf(0) }  // Forces UI recomposition
+    // Detected videos
     val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
     var showVideoDropdown by remember { mutableStateOf(false) }
+    // Download Editor state
     var showDownloadEditor by remember { mutableStateOf(false) }
     var downloadEditorUrl by remember { mutableStateOf("") }
     var downloadEditorName by remember { mutableStateOf("") }
     var downloadEditorSize by remember { mutableStateOf("Unknown") }
     var downloadEditorIsVideo by remember { mutableStateOf(false) }
+    // Speed limit
     var speedLimit by remember { mutableStateOf(0L) }
+    // ── History State ──────────────────────────────────────────────────
+    val history = remember { mutableStateListOf<HistoryItem>().apply { addAll(loadHistory(context)) } }
+    var showHistory by remember { mutableStateOf(false) }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -460,6 +498,19 @@ fun GreyBrowser() {
         if (isVideo && url.startsWith("http") && !detectedVideos.any { it.first == url }) {
             detectedVideos.add(Pair(url, pageUrl))
         }
+    }
+
+    fun addToHistory(url: String, title: String) {
+        if (url == "about:blank" || url.isBlank()) return
+        // Remove existing entry with same URL
+        history.removeAll { it.url == url }
+        // Add to end (newest)
+        history.add(HistoryItem(url = url, title = title.ifBlank { url }, timestamp = System.currentTimeMillis()))
+        // Trim if too many
+        if (history.size > MAX_HISTORY_ITEMS) {
+            history.removeAt(0)
+        }
+        saveHistory(context, history)
     }
 
     val homeSession = remember {
@@ -534,11 +585,8 @@ fun GreyBrowser() {
 
 
 
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.3/5 ===
+// === PART 1.3/5 (V1.9 - Highlight fix + History save + Service helpers) ===
 // ═══════════════════════════════════════════════════════════════════
 
     val setupDelegates = fun(tabState: TabState) {
@@ -549,11 +597,20 @@ fun GreyBrowser() {
                 tabState.lastUpdated = System.currentTimeMillis()
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
+                    // FIX: Save lastActiveUrl immediately on navigation start
+                    lastActiveUrl = url
+                    if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
+                        highlightedTabIndex = currentTabIndex
+                    }
                     injectScripts(s)
                 }
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
+                // Save to history when page finishes loading
+                if (success && tabState.url != "about:blank") {
+                    addToHistory(tabState.url, tabState.title)
+                }
             }
             override fun onProgressChange(s: GeckoSession, progress: Int) {
                 tabState.progress = progress
@@ -753,12 +810,8 @@ fun GreyBrowser() {
 // END OF PART 1.3/5
 
 
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.4/5 (FIXED - duplicates removed, speedLimit captured) ===
+// === PART 1.4/5 (V1.9 - Real pause + UI trigger) ===
 // ═══════════════════════════════════════════════════════════════════
 
     fun getDownloadDir(): File {
@@ -795,9 +848,10 @@ fun GreyBrowser() {
                 val segmentFiles = mutableListOf<File>()
                 
                 for ((i, segUrl) in segments.withIndex()) {
-                    if (item.state == DownloadState.PAUSED) {
-                        while (item.state == DownloadState.PAUSED) { Thread.sleep(500) }
-                    }
+                    // REAL PAUSE: Check before downloading segment
+                    while (item.state == DownloadState.PAUSED) { Thread.sleep(500) }
+                    if (item.state == DownloadState.FAILED) break
+                    
                     val segFile = File(tempDir, "seg_${i.toString().padStart(5, '0')}.ts")
                     try {
                         val segConn = URL(segUrl).openConnection() as HttpURLConnection
@@ -806,6 +860,7 @@ fun GreyBrowser() {
                         segConn.inputStream.use { input -> segFile.outputStream().use { output -> input.copyTo(output) } }
                         segmentFiles.add(segFile)
                         item.progress = ((i + 1) * 100) / segments.size
+                        if (showDownloadManager) downloadUpdateTrigger++
                     } catch (e: Exception) { }
                 }
                 
@@ -818,9 +873,11 @@ fun GreyBrowser() {
                 
                 item.tempFile = outputFile
                 item.state = DownloadState.COMPLETED; item.progress = 100
+                if (showDownloadManager) downloadUpdateTrigger++
                 tempDir.deleteRecursively()
             } catch (e: Exception) {
                 if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
+                if (showDownloadManager) downloadUpdateTrigger++
             } finally {
                 if (currentDownloadId == item.id) {
                     currentDownloadId = null
@@ -839,7 +896,7 @@ fun GreyBrowser() {
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = id
         startDownloadService(context)
-        val currentSpeedLimit = speedLimit  // Capture for thread
+        val currentSpeedLimit = speedLimit
         
         thread(name = "download-$id") {
             try {
@@ -861,16 +918,32 @@ fun GreyBrowser() {
                 val startTime = System.currentTimeMillis()
                 var lastThrottleTime = startTime
                 var bytesSinceThrottle = 0L
+                var lastUpdateTime = startTime
                 
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    if (item.state == DownloadState.PAUSED) {
-                        while (item.state == DownloadState.PAUSED) { Thread.sleep(500) }
-                        if (item.state == DownloadState.FAILED) break
+                while (true) {
+                    // REAL PAUSE: Check BEFORE reading from network
+                    while (item.state == DownloadState.PAUSED) {
+                        Thread.sleep(500)
+                        if (item.state == DownloadState.FAILED) {
+                            input.close(); output.close(); conn.disconnect()
+                            stopDownloadService(context)
+                            return@thread
+                        }
                     }
+                    if (item.state == DownloadState.FAILED) {
+                        input.close(); output.close(); conn.disconnect()
+                        stopDownloadService(context)
+                        return@thread
+                    }
+                    
+                    bytesRead = input.read(buffer)
+                    if (bytesRead == -1) break
+                    
                     output.write(buffer, 0, bytesRead)
                     totalRead += bytesRead
                     bytesSinceThrottle += bytesRead
                     
+                    // Speed throttling
                     if (currentSpeedLimit > 0L) {
                         val now = System.currentTimeMillis()
                         val elapsed = now - lastThrottleTime
@@ -886,20 +959,32 @@ fun GreyBrowser() {
                         }
                     }
                     
-                    val elapsed = (System.currentTimeMillis() - startTime) / 1000f
-                    val speedBps = if (elapsed > 0) totalRead / elapsed else 0f
-                    item.downloadedBytes = totalRead
-                    item.progress = if (totalSize > 0) ((totalRead * 100) / totalSize).toInt() else 0
-                    item.speed = when {
-                        speedBps > 1_000_000 -> "%.1f MB/s".format(speedBps / 1_000_000)
-                        speedBps > 1_000 -> "%.0f KB/s".format(speedBps / 1_000)
-                        else -> "%.0f B/s".format(speedBps)
+                    // Update progress every 500ms only if Download Manager is visible
+                    val now = System.currentTimeMillis()
+                    if (now - lastUpdateTime >= 500) {
+                        val elapsed = (now - startTime) / 1000f
+                        val speedBps = if (elapsed > 0) totalRead / elapsed else 0f
+                        item.downloadedBytes = totalRead
+                        item.progress = if (totalSize > 0) ((totalRead * 100) / totalSize).toInt() else 0
+                        item.speed = when {
+                            speedBps > 1_000_000 -> "%.1f MB/s".format(speedBps / 1_000_000)
+                            speedBps > 1_000 -> "%.0f KB/s".format(speedBps / 1_000)
+                            else -> "%.0f B/s".format(speedBps)
+                        }
+                        if (showDownloadManager) downloadUpdateTrigger++
+                        lastUpdateTime = now
                     }
                 }
                 input.close(); output.close(); conn.disconnect()
-                if (item.state != DownloadState.PAUSED) { item.state = DownloadState.COMPLETED; item.progress = 100 }
+                if (item.state != DownloadState.PAUSED) { 
+                    item.state = DownloadState.COMPLETED; item.progress = 100
+                    if (showDownloadManager) downloadUpdateTrigger++
+                }
             } catch (e: Exception) {
-                if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
+                if (item.state != DownloadState.PAUSED) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                }
             } finally {
                 if (currentDownloadId == id) {
                     currentDownloadId = null
@@ -909,11 +994,15 @@ fun GreyBrowser() {
         }
     }
 
-    fun pauseDownload(id: String) { activeDownloads.find { it.id == id }?.state = DownloadState.PAUSED }
+    fun pauseDownload(id: String) { 
+        activeDownloads.find { it.id == id }?.state = DownloadState.PAUSED
+        if (showDownloadManager) downloadUpdateTrigger++
+    }
     
     fun resumeDownload(id: String) {
         val item = activeDownloads.find { it.id == id } ?: return
         item.state = DownloadState.DOWNLOADING
+        if (showDownloadManager) downloadUpdateTrigger++
         if (currentDownloadId == null) {
             startDownload(id)
         }
@@ -946,12 +1035,8 @@ fun GreyBrowser() {
 // END OF PART 1.4/5
 
 
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.5/5 ===
+// === PART 1.5/5 (V1.9 - History menu + trigger pass + HistoryUI call) ===
 // ═══════════════════════════════════════════════════════════════════
 
     if (showDownloadEditor) {
@@ -1000,6 +1085,10 @@ fun GreyBrowser() {
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
     if (showScriptManager) { ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false }) }
 
+    if (showHistory) {
+        HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
+    }
+
     if (showDownloadManager) {
         DownloadManagerUI(
             downloads = activeDownloads,
@@ -1009,7 +1098,8 @@ fun GreyBrowser() {
             onResume = { resumeDownload(it) },
             onDelete = { deleteDownload(it) },
             speedLimit = speedLimit,
-            onSpeedLimitChange = { speedLimit = it }
+            onSpeedLimitChange = { speedLimit = it },
+            updateTrigger = downloadUpdateTrigger
         )
     }
 
@@ -1162,6 +1252,7 @@ fun GreyBrowser() {
                     IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
                         DropdownMenuItem(text = { Text("Downloads", color = Color.White) }, onClick = { showMenu = false; showDownloadManager = true })
+                        DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
                         DropdownMenuItem(text = { Text("Script Manager", color = Color.White) }, onClick = { showMenu = false; showScriptManager = true })
                         DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                     }
@@ -1177,10 +1268,8 @@ fun GreyBrowser() {
 
 
 
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2.1/5 (V1.8) ===
+// === PART 2.1/5 (V1.9 - updateTrigger for live UI) ===
 // ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1196,13 +1285,16 @@ fun DownloadManagerUI(
     onResume: (String) -> Unit,
     onDelete: (String) -> Unit,
     speedLimit: Long,
-    onSpeedLimitChange: (Long) -> Unit
+    onSpeedLimitChange: (Long) -> Unit,
+    updateTrigger: Int  // Forces recomposition when downloads update
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var downloadToDelete by remember { mutableStateOf<String?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
+    
+    // Read updateTrigger to force recomposition
+    val _ = updateTrigger
 
-    // Delete confirmation dialog
     if (showDeleteConfirm && downloadToDelete != null) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false; downloadToDelete = null },
@@ -1238,7 +1330,6 @@ fun DownloadManagerUI(
             color = Color(0xFF1E1E1E)
         ) {
             Column(Modifier.fillMaxSize()) {
-                // Header with speed limit selector
                 Row(
                     Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -1253,7 +1344,6 @@ fun DownloadManagerUI(
                         Text("(${downloads.size})", color = Color.Gray, fontSize = 14.sp)
                     }
                     Spacer(Modifier.weight(1f))
-                    // Speed limit selector
                     Box {
                         TextButton({ showSpeedMenu = true }) {
                             Text(formatSpeedLimit(speedLimit), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
@@ -1275,102 +1365,41 @@ fun DownloadManagerUI(
                     }
                 }
 
-                // Content
                 if (downloads.isEmpty()) {
-                    Box(
-                        Modifier.weight(1f).fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No downloads", color = Color.Gray, fontSize = 16.sp)
-                    }
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No downloads", color = Color.Gray, fontSize = 16.sp) }
                 } else {
-                    LazyColumn(
-                        Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)
-                    ) {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                         items(downloads) { item ->
                             Surface(
-                                Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                                    .border(0.5.dp, Color.DarkGray, RectangleShape),
+                                Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
                                 color = Color.Transparent
                             ) {
                                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                    Text(
-                                        item.fileName,
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Text(item.fileName, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Spacer(Modifier.height(4.dp))
 
                                     when (item.state) {
-                                        DownloadState.QUEUED -> {
-                                            Text("Queued", color = Color.Gray, fontSize = 12.sp)
-                                        }
+                                        DownloadState.QUEUED -> Text("Queued", color = Color.Gray, fontSize = 12.sp)
                                         DownloadState.DOWNLOADING -> {
-                                            LinearProgressIndicator(
-                                                progress = { item.progress / 100f },
-                                                modifier = Modifier.fillMaxWidth(),
-                                                color = Color.White,
-                                                trackColor = Color.DarkGray
-                                            )
+                                            LinearProgressIndicator(progress = { item.progress / 100f }, modifier = Modifier.fillMaxWidth(), color = Color.White, trackColor = Color.DarkGray)
                                             Spacer(Modifier.height(4.dp))
-                                            Text(
-                                                "${item.progress}% · ${item.speed}",
-                                                color = Color.White,
-                                                fontSize = 12.sp
-                                            )
+                                            Text("${item.progress}% · ${item.speed}", color = Color.White, fontSize = 12.sp)
                                         }
-                                        DownloadState.PAUSED -> {
-                                            Text(
-                                                "Paused · ${item.progress}%",
-                                                color = Color(0xFFFFA500),
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                        DownloadState.COMPLETED -> {
-                                            Text(
-                                                "Completed",
-                                                color = Color(0xFF4CAF50),
-                                                fontSize = 12.sp
-                                            )
-                                        }
-                                        DownloadState.FAILED -> {
-                                            Text("Failed", color = Color.Red, fontSize = 12.sp)
-                                        }
+                                        DownloadState.PAUSED -> Text("Paused · ${item.progress}%", color = Color(0xFFFFA500), fontSize = 12.sp)
+                                        DownloadState.COMPLETED -> Text("Completed", color = Color(0xFF4CAF50), fontSize = 12.sp)
+                                        DownloadState.FAILED -> Text("Failed", color = Color.Red, fontSize = 12.sp)
                                     }
 
                                     Spacer(Modifier.height(4.dp))
-
-                                    Row(
-                                        Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.End
-                                    ) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                         when (item.state) {
-                                            DownloadState.QUEUED -> {
-                                                TextButton({ onStart(item.id) }) {
-                                                    Text("Start", color = Color.White, fontSize = 13.sp)
-                                                }
-                                            }
-                                            DownloadState.DOWNLOADING -> {
-                                                TextButton({ onPause(item.id) }) {
-                                                    Text("Pause", color = Color.White, fontSize = 13.sp)
-                                                }
-                                            }
-                                            DownloadState.PAUSED -> {
-                                                TextButton({ onResume(item.id) }) {
-                                                    Text("Resume", color = Color.White, fontSize = 13.sp)
-                                                }
-                                            }
+                                            DownloadState.QUEUED -> TextButton({ onStart(item.id) }) { Text("Start", color = Color.White, fontSize = 13.sp) }
+                                            DownloadState.DOWNLOADING -> TextButton({ onPause(item.id) }) { Text("Pause", color = Color.White, fontSize = 13.sp) }
+                                            DownloadState.PAUSED -> TextButton({ onResume(item.id) }) { Text("Resume", color = Color.White, fontSize = 13.sp) }
                                             else -> {}
                                         }
                                         Spacer(Modifier.width(4.dp))
-                                        TextButton({
-                                            downloadToDelete = item.id
-                                            showDeleteConfirm = true
-                                        }) {
-                                            Text("Delete", color = Color.Red, fontSize = 13.sp)
-                                        }
+                                        TextButton({ downloadToDelete = item.id; showDeleteConfirm = true }) { Text("Delete", color = Color.Red, fontSize = 13.sp) }
                                     }
                                 }
                             }
@@ -1383,7 +1412,6 @@ fun DownloadManagerUI(
 }
 
 // END OF PART 2.1/5
-
 
 
 
@@ -1913,6 +1941,89 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
 
 // END OF PART 2.5/5
 // ═══════════════════════════════════════════════════════════════════
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 2.6/5 (NEW - History UI) ===
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+fun HistoryUI(
+    history: List<HistoryItem>,
+    onDismiss: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+    faviconBitmaps: Map<String, Bitmap?>,
+    loadFavicon: (String) -> Unit
+) {
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
+        Surface(
+            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)),
+            color = Color(0xFF1E1E1E)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Close, "Close", tint = Color.White)
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Text("History", color = Color.White, fontSize = 18.sp)
+                    if (history.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                        Text("(${history.size})", color = Color.Gray, fontSize = 14.sp)
+                    }
+                }
+
+                if (history.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("No history", color = Color.Gray, fontSize = 16.sp)
+                    }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                        // Show newest first (reverse order)
+                        items(history.reversed()) { item ->
+                            val domain = getDomainName(item.url)
+                            LaunchedEffect(item.url) { loadFavicon(domain) }
+                            val fav = faviconBitmaps[domain]
+                            
+                            Surface(
+                                Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
+                                color = Color.Transparent
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
+                                    else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) {
+                                        Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(item.url, color = Color.Gray.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// END OF PART 2.6/5
+
 // END OF PART 2/2
 // END OF FILE - Grey Browser V1.7
 // ═══════════════════════════════════════════════════════════════════
