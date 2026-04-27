@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.6 (Downloader + Video Downloader + JCodec)
+// Grey Browser - V1.6 (Downloader + Video Downloader)
 // ═══════════════════════════════════════════════════════════════════
 // === PART 1/2 ===
 
@@ -17,7 +17,8 @@ package com.grey.browser
 // V1.5 - Tab lifecycle: 1 ACTIVE + max 9 WARM + unlimited COLD
 // V1.6 - Downloader core: queue with manual start, one-at-a-time.
 //        Video detector: finds MP4/WebM/M3U8 on pages.
-//        JCodec: TS to MP4 remuxing. Copy link restored. Group delete fix.
+//        M3U8: download segments, merge to .ts file.
+//        Copy link restored. Group delete fix.
 // ═══════════════════════════════════════════════════════════════════
 
 import android.content.Context
@@ -90,11 +91,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.jcodec.common.model.Packet
-import org.jcodec.containers.mp4.MP4Packet
-import org.jcodec.containers.mp4.muxer.MP4Muxer
-import org.jcodec.containers.mp4.muxer.MP4MuxerTrack
-import org.jcodec.containers.mps.MPSDemuxer
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
@@ -103,7 +99,6 @@ import org.mozilla.geckoview.GeckoView
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
@@ -640,6 +635,12 @@ fun GreyBrowser() {
         val item = activeDownloads.find { it.id == id } ?: return
         if (currentDownloadId != null && currentDownloadId != id) return
         
+        // Check if it's an M3U8 stream
+        if (item.url.contains(".m3u8")) {
+            downloadM3U8(item)
+            return
+        }
+        
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = id
         
@@ -702,26 +703,81 @@ fun GreyBrowser() {
         if (currentDownloadId == id) currentDownloadId = null
     }
 
-    fun remuxTsToMp4(tsFile: File, mp4File: File): Boolean {
-        return try {
-            val tsInput = RandomAccessFile(tsFile, "r")
-            val demuxer = MPSDemuxer(tsInput)
-            val muxer = MP4Muxer(mp4File)
-            var videoTrack: MP4MuxerTrack? = null
-            var audioTrack: MP4MuxerTrack? = null
-            for (track in demuxer.tracks) {
-                val mediaInfo = track.mediaInfo
-                if (mediaInfo.type == org.jcodec.common.model.MediaInfo.Type.VIDEO) videoTrack = muxer.addTrack(mediaInfo)
-                else if (mediaInfo.type == org.jcodec.common.model.MediaInfo.Type.AUDIO) audioTrack = muxer.addTrack(mediaInfo)
+    // M3U8 download: fetch segments, merge to .ts file
+    fun downloadM3U8(item: DownloadItem) {
+        item.state = DownloadState.DOWNLOADING
+        currentDownloadId = item.id
+        
+        thread(name = "m3u8-${item.id}") {
+            try {
+                val url = URL(item.url)
+                val conn = url.openConnection() as HttpURLConnection
+                if (item.referer.isNotBlank()) conn.setRequestProperty("Referer", item.referer)
+                conn.connect()
+                val playlist = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                
+                // Extract segment URLs (non-comment lines)
+                val baseUrl = item.url.substringBeforeLast("/")
+                val segments = playlist.lines()
+                    .filter { it.isNotBlank() && !it.startsWith("#") }
+                    .map { seg -> if (seg.startsWith("http")) seg.trim() else "$baseUrl/${seg.trim()}" }
+                
+                if (segments.isEmpty()) {
+                    item.state = DownloadState.FAILED
+                    return@thread
+                }
+                
+                // Download segments to temp directory
+                val tempDir = File(context.cacheDir, "m3u8_${item.id}")
+                tempDir.mkdirs()
+                val segmentFiles = mutableListOf<File>()
+                
+                for ((i, segUrl) in segments.withIndex()) {
+                    if (item.state == DownloadState.PAUSED) {
+                        while (item.state == DownloadState.PAUSED) { Thread.sleep(500) }
+                    }
+                    val segFile = File(tempDir, "seg_${i.toString().padStart(5, '0')}.ts")
+                    try {
+                        val segConn = URL(segUrl).openConnection() as HttpURLConnection
+                        segConn.connectTimeout = 10000; segConn.readTimeout = 10000
+                        if (item.referer.isNotBlank()) segConn.setRequestProperty("Referer", item.referer)
+                        segConn.inputStream.use { input ->
+                            segFile.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        segmentFiles.add(segFile)
+                        item.progress = ((i + 1) * 100) / segments.size
+                    } catch (e: Exception) {
+                        // Skip failed segments
+                    }
+                }
+                
+                if (segmentFiles.isEmpty()) {
+                    item.state = DownloadState.FAILED
+                    tempDir.deleteRecursively()
+                    return@thread
+                }
+                
+                // Merge segments into single .ts file
+                val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
+                FileOutputStream(outputFile).use { out ->
+                    for (seg in segmentFiles) {
+                        seg.inputStream().use { it.copyTo(out) }
+                    }
+                }
+                
+                item.tempFile = outputFile
+                item.state = DownloadState.COMPLETED
+                item.progress = 100
+                
+                // Cleanup temp
+                tempDir.deleteRecursively()
+            } catch (e: Exception) {
+                if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
+            } finally {
+                if (currentDownloadId == item.id) currentDownloadId = null
             }
-            var packet: Packet? = demuxer.nextPacket()
-            while (packet != null) {
-                if (packet.trackId == 0) videoTrack?.addFrame(MP4Packet.createMP4Packet(packet.data, packet.pts, packet.duration, packet.pts, packet.duration, packet.frameType))
-                else if (packet.trackId == 1) audioTrack?.addFrame(MP4Packet.createMP4Packet(packet.data, packet.pts, packet.duration, packet.pts, packet.duration, packet.frameType))
-                packet = demuxer.nextPacket()
-            }
-            muxer.finish(); tsInput.close(); true
-        } catch (e: Exception) { false }
+        }
     }
 
     BackHandler {
@@ -917,7 +973,7 @@ fun GreyBrowser() {
 
 // END OF PART 1/2
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.6 (Downloader + Video Downloader + JCodec)
+// Grey Browser - V1.6 (Downloader + Video Downloader)
 // ═══════════════════════════════════════════════════════════════════
 // === PART 2/2 ===
 
