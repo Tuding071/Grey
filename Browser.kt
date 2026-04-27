@@ -400,12 +400,16 @@ fun GreyBrowser() {
             override fun onPageStart(s: GeckoSession, url: String) {
                 tabState.url = url; tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
-                if (url != "about:blank") tabState.isBlankTab = false
-                injectScripts(s)
+                if (url != "about:blank") {
+                    tabState.isBlankTab = false
+                    injectScripts(s)
+                }
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                detectVideos(s, tabState.url)
+                if (tabState.url != "about:blank") {
+                    detectVideos(s, tabState.url)
+                }
             }
             override fun onProgressChange(s: GeckoSession, progress: Int) {
                 tabState.progress = progress
@@ -972,6 +976,7 @@ fun GreyBrowser() {
 }
 
 // END OF PART 1/2
+
 // ═══════════════════════════════════════════════════════════════════
 // Grey Browser - V1.6 (Downloader + Video Downloader)
 // ═══════════════════════════════════════════════════════════════════
