@@ -1,7 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.7 (Download Interception + Video Sniffer + Crash Fix)
+// === PART 1.1/5 (V1.8) ===
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.1/5 ===
 
 package com.grey.browser
 
@@ -10,8 +9,7 @@ package com.grey.browser
 // - ACTIVE: session.setActive(true). Fully rendered, network active.
 // - WARM:   session.setActive(false). Paused in RAM, instant resume.
 // - COLD:   session = null. Discarded from RAM, restores on click.
-// - Video sniffing via JavaScript injection on onPageStop (runs once per page)
-// - Download interception via ContentDelegate.onExternalResponse
+// - Background download via Foreground Service with minimal notification
 // ═══════════════════════════════════════════════════════════════════
 // VERSION HISTORY:
 // V1.4 - Scripts auto-inject on page load. Removed Quick Script, play button,
@@ -22,15 +20,25 @@ package com.grey.browser
 //        Copy link restored. Group delete fix.
 // V1.7 - Video sniffer with UI button. Download Editor popup.
 //        Crash fix for last tab/group delete.
+// V1.8 - Background download via Foreground Service. Live UI updates.
+//        Delete confirmation. Speed limit selector. Resume fix.
 // ═══════════════════════════════════════════════════════════════════
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.IBinder
+import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -91,6 +99,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -112,10 +121,57 @@ import kotlin.concurrent.thread
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        createNotificationChannel()
         setContent { GreyBrowser() }
     }
     override fun onPause() { super.onPause(); saveTabs(this) }
     override fun onDestroy() { super.onDestroy(); saveTabs(this) }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "grey_downloads",
+                "Downloads",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+}
+
+// ── Foreground Service for Background Downloads ──────────────────────
+class DownloadService : Service() {
+    companion object {
+        var activeDownload: DownloadItem? = null
+        var isRunning = false
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification = NotificationCompat.Builder(this, "grey_downloads")
+            .setContentTitle("Grey is downloading")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOngoing(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        startForeground(1001, notification)
+        isRunning = true
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        isRunning = false
+        super.onDestroy()
+    }
 }
 
 object FaviconCache {
@@ -336,6 +392,18 @@ fun resolveUrl(input: String): String {
         return if (input.contains("://")) input else "https://$input"
     }
     return "https://www.google.com/search?q=${Uri.encode(input)}"
+}
+
+// Speed limit options
+val SPEED_LIMITS = listOf(0L, 50L * 1024, 100L * 1024, 250L * 1024, 500L * 1024, 1024L * 1024)
+fun formatSpeedLimit(limit: Long): String = when (limit) {
+    0L -> "No Limit"
+    50L * 1024 -> "50 KB/s"
+    100L * 1024 -> "100 KB/s"
+    250L * 1024 -> "250 KB/s"
+    500L * 1024 -> "500 KB/s"
+    1024L * 1024 -> "1 MB/s"
+    else -> "No Limit"
 }
 
 // END OF PART 1.1/5
@@ -703,7 +771,7 @@ fun GreyBrowser() {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.4/5 ===
+// === PART 1.4/5 (V1.8) ===
 // ═══════════════════════════════════════════════════════════════════
 
     fun getDownloadDir(): File {
@@ -717,6 +785,7 @@ fun GreyBrowser() {
     fun downloadM3U8(item: DownloadItem) {
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = item.id
+        startDownloadService(context)
         
         thread(name = "m3u8-${item.id}") {
             try {
@@ -732,7 +801,7 @@ fun GreyBrowser() {
                     .filter { it.isNotBlank() && !it.startsWith("#") }
                     .map { seg -> if (seg.startsWith("http")) seg.trim() else "$baseUrl/${seg.trim()}" }
                 
-                if (segments.isEmpty()) { item.state = DownloadState.FAILED; return@thread }
+                if (segments.isEmpty()) { item.state = DownloadState.FAILED; stopDownloadService(context); return@thread }
                 
                 val tempDir = File(context.cacheDir, "m3u8_${item.id}")
                 tempDir.mkdirs()
@@ -753,7 +822,7 @@ fun GreyBrowser() {
                     } catch (e: Exception) { }
                 }
                 
-                if (segmentFiles.isEmpty()) { item.state = DownloadState.FAILED; tempDir.deleteRecursively(); return@thread }
+                if (segmentFiles.isEmpty()) { item.state = DownloadState.FAILED; stopDownloadService(context); tempDir.deleteRecursively(); return@thread }
                 
                 val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
                 FileOutputStream(outputFile).use { out ->
@@ -766,7 +835,10 @@ fun GreyBrowser() {
             } catch (e: Exception) {
                 if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
             } finally {
-                if (currentDownloadId == item.id) currentDownloadId = null
+                if (currentDownloadId == item.id) {
+                    currentDownloadId = null
+                    stopDownloadService(context)
+                }
             }
         }
     }
@@ -779,6 +851,7 @@ fun GreyBrowser() {
         
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = id
+        startDownloadService(context)
         
         thread(name = "download-$id") {
             try {
@@ -798,6 +871,8 @@ fun GreyBrowser() {
                 val buffer = ByteArray(8192)
                 var bytesRead: Int; var totalRead = 0L
                 val startTime = System.currentTimeMillis()
+                var lastThrottleTime = startTime
+                var bytesSinceThrottle = 0L
                 
                 while (input.read(buffer).also { bytesRead = it } != -1) {
                     if (item.state == DownloadState.PAUSED) {
@@ -806,6 +881,24 @@ fun GreyBrowser() {
                     }
                     output.write(buffer, 0, bytesRead)
                     totalRead += bytesRead
+                    bytesSinceThrottle += bytesRead
+                    
+                    // Speed throttling
+                    if (speedLimit > 0) {
+                        val now = System.currentTimeMillis()
+                        val elapsed = now - lastThrottleTime
+                        if (elapsed >= 1000) {
+                            val currentSpeed = bytesSinceThrottle * 1000 / elapsed
+                            if (currentSpeed > speedLimit) {
+                                val targetTime = bytesSinceThrottle * 1000 / speedLimit
+                                val sleepTime = targetTime - elapsed
+                                if (sleepTime > 0) Thread.sleep(sleepTime)
+                            }
+                            lastThrottleTime = System.currentTimeMillis()
+                            bytesSinceThrottle = 0L
+                        }
+                    }
+                    
                     val elapsed = (System.currentTimeMillis() - startTime) / 1000f
                     val speedBps = if (elapsed > 0) totalRead / elapsed else 0f
                     item.downloadedBytes = totalRead
@@ -820,16 +913,47 @@ fun GreyBrowser() {
                 if (item.state != DownloadState.PAUSED) { item.state = DownloadState.COMPLETED; item.progress = 100 }
             } catch (e: Exception) {
                 if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
-            } finally { if (currentDownloadId == id) currentDownloadId = null }
+            } finally {
+                if (currentDownloadId == id) {
+                    currentDownloadId = null
+                    stopDownloadService(context)
+                }
+            }
         }
     }
 
     fun pauseDownload(id: String) { activeDownloads.find { it.id == id }?.state = DownloadState.PAUSED }
-    fun resumeDownload(id: String) { activeDownloads.find { it.id == id }?.let { it.state = DownloadState.DOWNLOADING } }
+    
+    fun resumeDownload(id: String) {
+        val item = activeDownloads.find { it.id == id } ?: return
+        item.state = DownloadState.DOWNLOADING
+        if (currentDownloadId == null) {
+            startDownload(id)
+        }
+    }
+    
     fun deleteDownload(id: String) {
         val item = activeDownloads.find { it.id == id } ?: return
         item.tempFile?.delete(); activeDownloads.remove(item)
-        if (currentDownloadId == id) currentDownloadId = null
+        if (currentDownloadId == id) {
+            currentDownloadId = null
+            stopDownloadService(context)
+        }
+    }
+
+    fun startDownloadService(ctx: Context) {
+        val intent = Intent(ctx, DownloadService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ctx.startForegroundService(intent)
+        } else {
+            ctx.startService(intent)
+        }
+    }
+
+    fun stopDownloadService(ctx: Context) {
+        if (activeDownloads.none { it.state == DownloadState.DOWNLOADING }) {
+            ctx.stopService(Intent(ctx, DownloadService::class.java))
+        }
     }
 
     BackHandler {
@@ -853,9 +977,8 @@ fun GreyBrowser() {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.5/5 (FIXED) ===
+// === PART 1.5/5 (V1.8) ===
 // ═══════════════════════════════════════════════════════════════════
 
     // Download Editor Popup
@@ -906,7 +1029,16 @@ fun GreyBrowser() {
     if (showScriptManager) { ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false }) }
 
     if (showDownloadManager) {
-        DownloadManagerUI(downloads = activeDownloads, onDismiss = { showDownloadManager = false }, onStart = { startDownload(it) }, onPause = { pauseDownload(it) }, onResume = { resumeDownload(it) }, onDelete = { deleteDownload(it) })
+        DownloadManagerUI(
+            downloads = activeDownloads,
+            onDismiss = { showDownloadManager = false },
+            onStart = { startDownload(it) },
+            onPause = { pauseDownload(it) },
+            onResume = { resumeDownload(it) },
+            onDelete = { deleteDownload(it) },
+            speedLimit = speedLimit,
+            onSpeedLimitChange = { speedLimit = it }
+        )
     }
 
     if (showContextMenu && contextMenuUri != null) {
@@ -995,26 +1127,16 @@ fun GreyBrowser() {
                                 Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
                             }
                             Spacer(Modifier.width(8.dp))
-                            // CRASH FIX: Safe group delete - clear pending deletions, reset state properly
                             OutlinedButton(onClick = { if (hasSelection) { confirmTitle = "Delete Group?"; confirmMessage = "All tabs in this group will be lost."; confirmAction = { 
                                 val toRemove = (domainGroups[selectedDomain] ?: emptyList()).toList()
-                                // Clear pending deletions for tabs being removed
                                 toRemove.forEach { tab ->
                                     val idx = tabs.indexOf(tab)
                                     if (idx >= 0) pendingDeletions.remove(idx)
-                                    tab.session?.setActive(false)
-                                    tab.session?.close()
+                                    tab.session?.setActive(false); tab.session?.close()
                                 }
                                 tabs.removeAll(toRemove)
-                                // Reset state safely
-                                if (tabs.isEmpty()) {
-                                    currentTabIndex = -1
-                                    highlightedTabIndex = -1
-                                    selectedDomain = ""
-                                } else {
-                                    currentTabIndex = currentTabIndex.coerceIn(0, tabs.lastIndex)
-                                    selectedDomain = ""
-                                }
+                                if (tabs.isEmpty()) { currentTabIndex = -1; highlightedTabIndex = -1; selectedDomain = "" }
+                                else { currentTabIndex = currentTabIndex.coerceIn(0, tabs.lastIndex); selectedDomain = "" }
                             }; showConfirmDialog = true } }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor), border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)) {
                                 Text("Delete Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
                             }
@@ -1047,7 +1169,6 @@ fun GreyBrowser() {
                     trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                 )
                 IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
-                // Video sniffer button - shows when videos detected via URL patterns
                 if (detectedVideos.isNotEmpty()) {
                     Box {
                         IconButton({ showVideoDropdown = !showVideoDropdown }) { Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White) }
@@ -1088,13 +1209,8 @@ fun GreyBrowser() {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2 FOLLOWS (DownloadManagerUI, ScriptManager, etc.) ===
+// === PART 2.1/5 (V1.8) ===
 // ═══════════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.7
-// ═══════════════════════════════════════════════════════════════════
-// === PART 2.1/5 ===
 
 // ═══════════════════════════════════════════════════════════════════
 // ── DOWNLOAD MANAGER UI ──────────────────────────────────────────
@@ -1107,8 +1223,40 @@ fun DownloadManagerUI(
     onStart: (String) -> Unit,
     onPause: (String) -> Unit,
     onResume: (String) -> Unit,
-    onDelete: (String) -> Unit
+    onDelete: (String) -> Unit,
+    speedLimit: Long,
+    onSpeedLimitChange: (Long) -> Unit
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var downloadToDelete by remember { mutableStateOf<String?>(null) }
+    var showSpeedMenu by remember { mutableStateOf(false) }
+
+    // Delete confirmation dialog
+    if (showDeleteConfirm && downloadToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false; downloadToDelete = null },
+            title = { Text("Delete Download?", color = Color.White, fontSize = 18.sp) },
+            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
+            confirmButton = {
+                TextButton({
+                    onDelete(downloadToDelete!!)
+                    showDeleteConfirm = false
+                    downloadToDelete = null
+                }) { Text("Delete", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton({ showDeleteConfirm = false; downloadToDelete = null }) {
+                    Text("Cancel", color = Color.White)
+                }
+            },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            shape = RectangleShape,
+            tonalElevation = 0.dp
+        )
+    }
+
     Popup(
         alignment = Alignment.TopStart,
         onDismissRequest = onDismiss,
@@ -1119,7 +1267,7 @@ fun DownloadManagerUI(
             color = Color(0xFF1E1E1E)
         ) {
             Column(Modifier.fillMaxSize()) {
-                // Header
+                // Header with speed limit selector
                 Row(
                     Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -1132,6 +1280,27 @@ fun DownloadManagerUI(
                     if (downloads.isNotEmpty()) {
                         Spacer(Modifier.width(8.dp))
                         Text("(${downloads.size})", color = Color.Gray, fontSize = 14.sp)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    // Speed limit selector
+                    Box {
+                        TextButton({ showSpeedMenu = true }) {
+                            Text(formatSpeedLimit(speedLimit), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                        }
+                        DropdownMenu(
+                            expanded = showSpeedMenu,
+                            onDismissRequest = { showSpeedMenu = false },
+                            modifier = Modifier.border(1.dp, Color.White, RectangleShape),
+                            containerColor = Color(0xFF1E1E1E),
+                            shape = RectangleShape
+                        ) {
+                            SPEED_LIMITS.forEach { limit ->
+                                DropdownMenuItem(
+                                    text = { Text(formatSpeedLimit(limit), color = if (limit == speedLimit) Color.White else Color.Gray, fontSize = 13.sp) },
+                                    onClick = { onSpeedLimitChange(limit); showSpeedMenu = false }
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -1154,7 +1323,6 @@ fun DownloadManagerUI(
                                 color = Color.Transparent
                             ) {
                                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                    // File name
                                     Text(
                                         item.fileName,
                                         color = Color.White,
@@ -1164,7 +1332,6 @@ fun DownloadManagerUI(
                                     )
                                     Spacer(Modifier.height(4.dp))
 
-                                    // State-specific UI
                                     when (item.state) {
                                         DownloadState.QUEUED -> {
                                             Text("Queued", color = Color.Gray, fontSize = 12.sp)
@@ -1204,7 +1371,6 @@ fun DownloadManagerUI(
 
                                     Spacer(Modifier.height(4.dp))
 
-                                    // Action buttons
                                     Row(
                                         Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.End
@@ -1228,7 +1394,10 @@ fun DownloadManagerUI(
                                             else -> {}
                                         }
                                         Spacer(Modifier.width(4.dp))
-                                        TextButton({ onDelete(item.id) }) {
+                                        TextButton({
+                                            downloadToDelete = item.id
+                                            showDeleteConfirm = true
+                                        }) {
                                             Text("Delete", color = Color.Red, fontSize = 13.sp)
                                         }
                                     }
