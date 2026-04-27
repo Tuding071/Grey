@@ -1291,10 +1291,11 @@ fun DownloadManagerUI(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var downloadToDelete by remember { mutableStateOf<String?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
-    
-    // Read updateTrigger to force recomposition
-    val _ = updateTrigger
 
+    // Read updateTrigger to force recomposition
+    val trigger = updateTrigger
+    if (trigger >= 0) { /* forces recomposition */ }
+    
     if (showDeleteConfirm && downloadToDelete != null) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false; downloadToDelete = null },
