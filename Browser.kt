@@ -10,7 +10,6 @@ package com.grey.browser
 // - ACTIVE: session.setActive(true). Fully rendered, network active.
 // - WARM:   session.setActive(false). Paused in RAM, instant resume.
 // - COLD:   session = null. Discarded from RAM, restores on click.
-// - Download interception via GeckoSession.ContentDelegate.onExternalResponse
 // - Video sniffing via JavaScript injection on onPageStop (runs once per page)
 // ═══════════════════════════════════════════════════════════════════
 // VERSION HISTORY:
@@ -20,8 +19,8 @@ package com.grey.browser
 // V1.6 - Downloader core: queue with manual start, one-at-a-time.
 //        M3U8: download segments, merge to .ts file.
 //        Copy link restored. Group delete fix.
-// V1.7 - Download interception for all file types. Video sniffer with UI button.
-//        Download Editor popup. Crash fix for last tab/group delete.
+// V1.7 - Video sniffer with UI button. Download Editor popup.
+//        Crash fix for last tab/group delete.
 // ═══════════════════════════════════════════════════════════════════
 
 import android.content.Context
@@ -394,7 +393,7 @@ fun GreyBrowser() {
 
     // Video sniffer - injects JavaScript to find video elements
     val sniffVideos: (GeckoSession, String) -> Unit = { s, pageUrl ->
-        if (sniffedPages.contains(pageUrl)) return
+        if (sniffedPages.contains(pageUrl)) return@sniffVideos
         sniffedPages.add(pageUrl)
         val js = """
             (function() {
@@ -403,7 +402,6 @@ fun GreyBrowser() {
                     var src = v.src || v.getAttribute('src') || v.currentSrc;
                     if (src && src.startsWith('http')) videos.push(src);
                 });
-                // Also check for common video player elements
                 document.querySelectorAll('[src]').forEach(function(el) {
                     var src = el.getAttribute('src');
                     if (src && (src.includes('.mp4') || src.includes('.webm') || src.includes('.m3u8'))) {
@@ -449,25 +447,6 @@ fun GreyBrowser() {
                     contextMenuUri = element.linkUri; showContextMenu = true
                 }
             }
-            // Intercept download requests from pages
-            override fun onExternalResponse(
-                session: GeckoSession,
-                response: GeckoSession.ContentDelegate.ExternalResponse
-            ) {
-                val url = response.uri ?: return
-                val fileName = url.substringAfterLast("/").substringBefore("?")
-                val size = response.contentLength
-                // Show Download Editor
-                detectedVideoUrls.clear()
-                detectedVideoUrls.add(Pair(url, tabState.url))
-                showVideoDropdown = false
-                // Open download editor
-                downloadEditorUrl = url
-                downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
-                downloadEditorSize = if (size > 0) formatSize(size) else "Unknown"
-                downloadEditorIsVideo = url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8")
-                showDownloadEditor = true
-            }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
@@ -480,15 +459,6 @@ fun GreyBrowser() {
                     if (newUrl != "about:blank") tabState.isBlankTab = false
                 }
             }
-        }
-    }
-
-    fun formatSize(bytes: Long): String {
-        return when {
-            bytes > 1_000_000_000 -> "%.1f GB".format(bytes / 1_000_000_000f)
-            bytes > 1_000_000 -> "%.1f MB".format(bytes / 1_000_000f)
-            bytes > 1_000 -> "%.0f KB".format(bytes / 1_000f)
-            else -> "$bytes B"
         }
     }
 
@@ -603,7 +573,7 @@ fun GreyBrowser() {
             val toRemove = pendingDeletions.filter { now - it.value >= UNDO_DELAY_MS }.keys.toList()
             for (index in toRemove.sortedDescending()) {
                 pendingDeletions.remove(index)
-                // CRASH FIX: Check if tab still exists (might have been removed by group delete)
+                // CRASH FIX: Check if tab still exists
                 val tab = tabs.getOrNull(index)
                 if (tab == null) continue
                 tab.session?.setActive(false); tab.session?.close()
@@ -1121,6 +1091,7 @@ fun GreyBrowser() {
 }
 
 // END OF PART 1/2
+
 
 // ═══════════════════════════════════════════════════════════════════
 // Grey Browser - V1.6 (Downloader + Video Downloader)
