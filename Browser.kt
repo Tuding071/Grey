@@ -263,6 +263,10 @@ fun formatSpeedLimit(limit: Long): String = when (limit) {
 }
 
 // END OF PART 2/10
+
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 3/10 — Data Classes, Enums, Save/Load Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -286,7 +290,8 @@ data class ExtensionItem(
     val name: String,
     val description: String = "",
     val iconUrl: String = "",
-    val enabled: Boolean = true,
+    var downloadUrl: String = "",
+    var enabled: Boolean = true,
     val source: String = "store"
 )
 
@@ -416,7 +421,8 @@ fun saveExtensions(context: Context, extensions: List<ExtensionItem>) {
         val obj = JSONObject()
         obj.put("id", e.id); obj.put("name", e.name)
         obj.put("description", e.description); obj.put("iconUrl", e.iconUrl)
-        obj.put("enabled", e.enabled); obj.put("source", e.source)
+        obj.put("downloadUrl", e.downloadUrl); obj.put("enabled", e.enabled)
+        obj.put("source", e.source)
         arr.put(obj)
     }
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_EXTENSIONS, arr.toString()).apply()
@@ -431,13 +437,18 @@ fun loadExtensions(context: Context): List<ExtensionItem> {
                 val o = arr.getJSONObject(i)
                 add(ExtensionItem(o.getString("id"), o.getString("name"),
                     o.optString("description", ""), o.optString("iconUrl", ""),
-                    o.getBoolean("enabled"), o.optString("source", "store")))
+                    o.optString("downloadUrl", ""), o.getBoolean("enabled"),
+                    o.optString("source", "store")))
             }
         }
     } catch (e: Exception) { emptyList() }
 }
 
 // END OF PART 3/10
+
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 4/10 — Utility Functions, NetworkSpeedLimiter, ExtensionManager ===
 // ═══════════════════════════════════════════════════════════════════
@@ -580,14 +591,42 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
                 if (resultsArray != null) {
                     for (i in 0 until resultsArray.length()) {
                         val ext = resultsArray.getJSONObject(i)
+                        val guid = ext.optString("guid", "")
+                        val slug = ext.optString("slug", "")
+                        val name = ext.optJSONObject("name")?.optString("en-US", "") ?: ""
+                        val description = ext.optJSONObject("summary")?.optString("en-US", "") ?: ""
+                        val iconUrl = ext.optString("icon_url", "")
+                        
+                        // Try to get XPI URL from current_version.files
+                        var xpiUrl = ""
+                        val currentVersion = ext.optJSONObject("current_version")
+                        if (currentVersion != null) {
+                            val files = currentVersion.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                for (j in 0 until files.length()) {
+                                    val file = files.getJSONObject(j)
+                                    val fileUrl = file.optString("url", "")
+                                    if (fileUrl.isNotBlank() && fileUrl.endsWith(".xpi")) {
+                                        xpiUrl = fileUrl
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Fallback: construct download URL from slug
+                        if (xpiUrl.isBlank() && slug.isNotBlank()) {
+                            xpiUrl = "https://addons.mozilla.org/firefox/downloads/latest/$slug/addon-$slug-latest.xpi"
+                        }
+                        
                         results.add(ExtensionItem(
-                            id = ext.optString("guid", ""),
-                            name = ext.optJSONObject("name")?.optString("en-US", "") ?: "",
-                            description = ext.optJSONObject("summary")?.optString("en-US", "") ?: "",
-                            iconUrl = ext.optString("icon_url", ""),
+                            id = guid.ifBlank { slug },
+                            name = name,
+                            description = description,
+                            iconUrl = iconUrl,
                             enabled = false,
                             source = "store"
-                        ))
+                        ).also { it.downloadUrl = xpiUrl })
                     }
                 }
                 onResult(results)
@@ -603,6 +642,17 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 }
 
 // END OF PART 4/10
+
+
+
+
+
+
+
+
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1785,40 +1835,17 @@ fun ExtensionsUI(
                                             Text("Installed", color = Color.Gray, fontSize = 12.sp)
                                         } else {
                                             TextButton({
-                                                // Fetch detailed extension info to get correct XPI URL
-                                                thread(name = "ext-detail") {
-                                                    try {
-                                                        val detailUrl = "https://addons.mozilla.org/api/v5/addons/addon/${ext.id}/"
-                                                        val conn = URL(detailUrl).openConnection() as HttpURLConnection
-                                                        conn.connectTimeout = 15000; conn.readTimeout = 15000
-                                                        conn.connect()
-                                                        val json = conn.inputStream.bufferedReader().readText()
-                                                        conn.disconnect()
-                                                        
-                                                        val root = JSONObject(json)
-                                                        val currentVersion = root.optJSONObject("current_version")
-                                                        val files = currentVersion?.optJSONArray("files")
-                                                        if (files != null && files.length() > 0) {
-                                                            val file = files.getJSONObject(0)
-                                                            val xpiUrl = file.optString("url", "")
-                                                            if (xpiUrl.isNotBlank()) {
-                                                                extensionManager.installFromUrl(xpiUrl) { success, msg ->
-                                                                    if (success) {
-                                                                        extensions.add(ext.copy(enabled = true))
-                                                                        installMessage = "${ext.name} installed!"
-                                                                    } else {
-                                                                        installMessage = "Failed: $msg"
-                                                                    }
-                                                                }
-                                                            } else {
-                                                                installMessage = "No download URL found"
-                                                            }
+                                                if (ext.downloadUrl.isNotBlank()) {
+                                                    extensionManager.installFromUrl(ext.downloadUrl) { success, msg ->
+                                                        if (success) {
+                                                            extensions.add(ext.copy(enabled = true))
+                                                            installMessage = "${ext.name} installed!"
                                                         } else {
-                                                            installMessage = "No files available"
+                                                            installMessage = "Failed: $msg"
                                                         }
-                                                    } catch (e: Exception) {
-                                                        installMessage = "Error: ${e.message}"
                                                     }
+                                                } else {
+                                                    installMessage = "No download URL available"
                                                 }
                                             }) { Text("Install", color = Color.White, fontSize = 13.sp) }
                                         }
@@ -2074,3 +2101,4 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
 // END OF PART 10/10
 // END OF FILE - Grey Browser V2.0
 // ═══════════════════════════════════════════════════════════════════
+
