@@ -577,7 +577,6 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 // END OF PART 4/10
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -627,7 +626,6 @@ fun GreyBrowser() {
     // ── Logcat State ───────────────────────────────────────────────────
     val logLines = remember { mutableStateListOf<String>() }
     var showLogcat by remember { mutableStateOf(false) }
-    var isLogcatRunning by remember { mutableStateOf(false) }
     // ── Toast State ────────────────────────────────────────────────────
     var toastMessage by remember { mutableStateOf("") }
     var showToast by remember { mutableStateOf(false) }
@@ -741,32 +739,7 @@ fun GreyBrowser() {
         }
     }
 
-    // Logcat reader
-    LaunchedEffect(isLogcatRunning) {
-        if (isLogcatRunning) {
-            try {
-                val process = Runtime.getRuntime().exec(arrayOf("logcat", "-c"))
-                process.waitFor()
-                val reader = Runtime.getRuntime().exec(arrayOf("logcat", "-s", "GreyBrowser"))
-                val bufferedReader = java.io.BufferedReader(java.io.InputStreamReader(reader.inputStream))
-                var line: String?
-                while (isLogcatRunning) {
-                    line = bufferedReader.readLine()
-                    if (line != null) {
-                        logLines.add(line)
-                        if (logLines.size > 500) {
-                            logLines.removeAt(0)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                log("Logcat error: ${e.message}")
-            }
-        }
-    }
-
 // END OF PART 5/10
-
 
 
 
@@ -1300,6 +1273,7 @@ fun GreyBrowser() {
 // END OF PART 7/10
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1354,7 +1328,7 @@ fun GreyBrowser() {
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
     if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onOpenUrl = { url -> createForegroundTab(url) }, onDismiss = { showExtensions = false }) }
-    if (showLogcat) { LogcatUI(logLines = logLines, isRunning = isLogcatRunning, onToggleRunning = { isLogcatRunning = it }, onClear = { logLines.clear() }, onDismiss = { showLogcat = false }) }
+    if (showLogcat) { LogcatUI(logLines = logLines, onClear = { logLines.clear() }, onDismiss = { showLogcat = false }) }
 
     if (showHistory) {
         HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
@@ -1541,7 +1515,7 @@ fun GreyBrowser() {
                             DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
                             DropdownMenuItem(text = { Text("Extensions", color = Color.White) }, onClick = { showMenu = false; showExtensions = true })
                             DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
-                            DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true; isLogcatRunning = true })
+                            DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true })
                         }
                     }
                 }
@@ -1573,6 +1547,7 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
+
 
 
 
@@ -1848,14 +1823,12 @@ fun ExtensionsUI(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// ── LOGCAT UI ────────────────────────────────────────────────────
+// ── LOGCAT UI ➤ (Simplified — internal buffer only) ──────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
 fun LogcatUI(
     logLines: List<String>,
-    isRunning: Boolean,
-    onToggleRunning: (Boolean) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1869,38 +1842,30 @@ fun LogcatUI(
 
     Popup(
         alignment = Alignment.TopStart,
-        onDismissRequest = {
-            onToggleRunning(false)
-            onDismiss()
-        },
+        onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
     ) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({
-                        onToggleRunning(false)
-                        onDismiss()
-                    }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
                     Spacer(Modifier.width(4.dp))
                     Text("Logcat", color = Color.White, fontSize = 18.sp)
                     Spacer(Modifier.weight(1f))
                     TextButton(onClick = { onClear() }) { Text("Clear", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp) }
-                    TextButton(onClick = { onToggleRunning(!isRunning) }) {
-                        Text(if (isRunning) "⏸ Pause" else "▶ Resume", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
-                    }
                 }
 
                 if (logLines.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("No logs yet. Waiting for events...", color = Color.Gray, fontSize = 14.sp)
+                        Text("No logs yet. Events will appear here.", color = Color.Gray, fontSize = 14.sp)
                     }
                 } else {
                     LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                         items(logLines) { line ->
                             val lineColor = when {
-                                line.contains(" E/") || line.contains("FAILED") || line.contains("Error") -> Color.Red
-                                line.contains(" W/") -> Color(0xFFFFA500)
+                                line.contains("Error") || line.contains("FAILED") || line.contains("error") -> Color.Red
+                                line.contains("install") || line.contains("Install") -> Color(0xFF4CAF50)
+                                line.contains("XPI") || line.contains("Extension") -> Color(0xFFFFA500)
                                 else -> Color.White
                             }
                             Text(
@@ -1917,6 +1882,10 @@ fun LogcatUI(
         }
     }
 }
+
+
+
+
 
 // ═══════════════════════════════════════════════════════════════════
 // ── BOOKMARKS UI ─────────────────────────────────────────────────
