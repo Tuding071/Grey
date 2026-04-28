@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.10 (Ad Blocking + Bookmarks + Toast + Full Features)
+// Grey Browser - V2.0 (Extension Support + Cleaned Features)
 // ═══════════════════════════════════════════════════════════════════
 // === PART 1/10 — Package, Imports, MainActivity, DownloadService ===
 // ═══════════════════════════════════════════════════════════════════
@@ -45,8 +45,10 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tab
@@ -91,6 +93,7 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebResponse
 import java.io.BufferedInputStream
 import java.io.File
@@ -136,9 +139,6 @@ class DownloadService : Service() {
 }
 
 // END OF PART 1/10
-
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 2/10 — FaviconCache, Constants, SPEED_LIMITS ===
 // ═══════════════════════════════════════════════════════════════════
@@ -242,11 +242,9 @@ private const val PREFS_NAME = "browser_tabs"
 private const val KEY_TABS = "saved_tabs"
 private const val KEY_PINNED = "pinned_domains"
 private const val KEY_LAST_ACTIVE_URL = "last_active_url"
-private const val KEY_SCRIPTS = "saved_scripts"
 private const val KEY_HISTORY = "saved_history"
 private const val KEY_BOOKMARKS = "saved_bookmarks"
-private const val KEY_ADBLOCK_RULES = "adblock_rules"
-private const val KEY_ADBLOCK_ENABLED = "adblock_enabled"
+private const val KEY_EXTENSIONS = "saved_extensions"
 
 const val MAX_LOADED_TABS = 10
 const val MAX_WARM_TABS = 9
@@ -265,13 +263,9 @@ fun formatSpeedLimit(limit: Long): String = when (limit) {
 }
 
 // END OF PART 2/10
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 3/10 — Data Classes, Enums, Save/Load Functions ===
 // ═══════════════════════════════════════════════════════════════════
-
-data class ScriptItem(val id: String, val name: String, val code: String, val enabled: Boolean)
 
 data class HistoryItem(
     val url: String,
@@ -285,6 +279,15 @@ data class Bookmark(
     val title: String,
     val folder: String = "",
     val timestamp: Long = System.currentTimeMillis()
+)
+
+data class ExtensionItem(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    val iconUrl: String = "",
+    val enabled: Boolean = true,
+    val source: String = "store"
 )
 
 enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED }
@@ -358,30 +361,6 @@ fun loadTabsData(context: Context): Triple<List<Pair<String, String>>, List<Stri
     return Triple(tabsList, pinnedList, lastActiveUrl)
 }
 
-fun saveScripts(context: Context, scripts: List<ScriptItem>) {
-    val arr = JSONArray()
-    for (s in scripts) {
-        val obj = JSONObject()
-        obj.put("id", s.id); obj.put("name", s.name)
-        obj.put("code", s.code); obj.put("enabled", s.enabled)
-        arr.put(obj)
-    }
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_SCRIPTS, arr.toString()).apply()
-}
-
-fun loadScripts(context: Context): List<ScriptItem> {
-    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_SCRIPTS, null) ?: return emptyList()
-    return try {
-        val arr = JSONArray(json)
-        mutableListOf<ScriptItem>().apply {
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(ScriptItem(o.getString("id"), o.getString("name"), o.getString("code"), o.getBoolean("enabled")))
-            }
-        }
-    } catch (e: Exception) { emptyList() }
-}
-
 fun saveHistory(context: Context, history: List<HistoryItem>) {
     val arr = JSONArray()
     for (h in history) {
@@ -431,13 +410,36 @@ fun loadBookmarks(context: Context): List<Bookmark> {
     } catch (e: Exception) { emptyList() }
 }
 
+fun saveExtensions(context: Context, extensions: List<ExtensionItem>) {
+    val arr = JSONArray()
+    for (e in extensions) {
+        val obj = JSONObject()
+        obj.put("id", e.id); obj.put("name", e.name)
+        obj.put("description", e.description); obj.put("iconUrl", e.iconUrl)
+        obj.put("enabled", e.enabled); obj.put("source", e.source)
+        arr.put(obj)
+    }
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_EXTENSIONS, arr.toString()).apply()
+}
+
+fun loadExtensions(context: Context): List<ExtensionItem> {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_EXTENSIONS, null) ?: return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        mutableListOf<ExtensionItem>().apply {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(ExtensionItem(o.getString("id"), o.getString("name"),
+                    o.optString("description", ""), o.optString("iconUrl", ""),
+                    o.getBoolean("enabled"), o.optString("source", "store")))
+            }
+        }
+    } catch (e: Exception) { emptyList() }
+}
+
 // END OF PART 3/10
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 4/10 — Utility Functions, NetworkSpeedLimiter, AdBlocker ===
+// === PART 4/10 — Utility Functions, NetworkSpeedLimiter, ExtensionManager ===
 // ═══════════════════════════════════════════════════════════════════
 
 fun getDomainName(url: String): String {
@@ -474,19 +476,16 @@ class NetworkSpeedLimiter {
                 val nowNs = System.nanoTime()
                 val elapsedNs = nowNs - windowStartNs
                 
-                // Reset window every second
                 if (elapsedNs >= 1_000_000_000L) {
                     bytesThisSecond = 0L
                     windowStartNs = nowNs
                 }
                 
-                // Check if adding these bytes would exceed limit
                 if (bytesThisSecond + bytes <= limit) {
                     bytesThisSecond += bytes
                     return
                 }
                 
-                // Calculate how long to wait until next window
                 val remainingNs = 1_000_000_000L - elapsedNs
                 if (remainingNs > 0) {
                     val waitMs = remainingNs / 1_000_000L
@@ -504,68 +503,93 @@ class NetworkSpeedLimiter {
     }
 }
 
-// ── Ad Blocker ──────────────────────────────────────────────────────
-class AdBlocker {
-    private val blockRules = mutableListOf<Rule>()
-    private val allowRules = mutableListOf<Rule>()
+// ── Extension Manager ──────────────────────────────────────────────
+class ExtensionManager(private val runtime: GeckoRuntime) {
     
-    data class Rule(val pattern: String, val isRegex: Boolean, val options: Set<String>)
+    fun installFromUrl(url: String, onResult: (Boolean, String) -> Unit) {
+        thread(name = "ext-install") {
+            try {
+                val xpiUrl = URL(url)
+                val conn = xpiUrl.openConnection() as HttpURLConnection
+                conn.connectTimeout = 30000; conn.readTimeout = 30000
+                conn.connect()
+                
+                if (conn.responseCode != 200) {
+                    onResult(false, "Failed to download: HTTP ${conn.responseCode}")
+                    return@thread
+                }
+                
+                val xpiFile = File.createTempFile("extension", ".xpi")
+                FileOutputStream(xpiFile).use { output ->
+                    conn.inputStream.use { input -> input.copyTo(output) }
+                }
+                conn.disconnect()
+                
+                val controller = runtime.webExtensionController
+                val uri = Uri.fromFile(xpiFile)
+                controller.install(uri).accept({ ext ->
+                    onResult(true, ext?.id ?: "installed")
+                }, { error ->
+                    onResult(false, "Install failed: ${error.message}")
+                })
+            } catch (e: Exception) {
+                onResult(false, "Error: ${e.message}")
+            }
+        }
+    }
     
-    fun loadFilterList(txtContent: String) {
-        blockRules.clear()
-        allowRules.clear()
-        for (line in txtContent.lines()) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
-            
-            val isException = trimmed.startsWith("@@")
-            val ruleBody = if (isException) trimmed.removePrefix("@@") else trimmed
-            
-            val parts = ruleBody.split("$")
-            val urlPattern = parts[0]
-            val options = if (parts.size > 1) parts[1].split(",").map { it.trim() }.toSet() else emptySet()
-            
-            val rule = Rule(urlPattern, urlPattern.startsWith("/") && urlPattern.endsWith("/"), options)
-            
-            if (isException) allowRules.add(rule) else blockRules.add(rule)
+    fun uninstall(extId: String) {
+        runtime.webExtensionController.uninstall(extId)
+    }
+    
+    fun setEnabled(extId: String, enabled: Boolean) {
+        if (enabled) {
+            runtime.webExtensionController.enable(extId)
+        } else {
+            runtime.webExtensionController.disable(extId)
         }
     }
     
-    val ruleCount: Int get() = blockRules.size + allowRules.size
-    
-    fun shouldBlock(url: String): Boolean {
-        if (allowRules.any { matches(it, url) }) return false
-        return blockRules.any { matches(it, url) }
-    }
-    
-    private fun matches(rule: Rule, url: String): Boolean {
-        val regex = patternToRegex(rule.pattern)
-        return regex.containsMatchIn(url)
-    }
-    
-    private fun patternToRegex(pattern: String): Regex {
-        return when {
-            pattern.startsWith("||") -> {
-                val domain = pattern.removePrefix("||").removeSuffix("^")
-                Regex("^https?://([a-zA-Z0-9-]+\\.)*${Regex.escape(domain)}/")
-            }
-            pattern.startsWith("|") -> {
-                Regex("^${Regex.escape(pattern.removePrefix("|"))}")
-            }
-            pattern.startsWith("/") && pattern.endsWith("/") -> {
-                Regex(pattern.removeSurrounding("/"))
-            }
-            else -> {
-                Regex(Regex.escape(pattern))
+    fun searchStore(query: String, onResult: (List<ExtensionItem>) -> Unit) {
+        thread(name = "ext-search") {
+            try {
+                val apiUrl = "https://addons.mozilla.org/api/v5/addons/search/?q=${Uri.encode(query)}&type=extension&app=android&sort=rating&page_size=20"
+                val conn = URL(apiUrl).openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000; conn.readTimeout = 15000
+                conn.connect()
+                
+                val json = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                
+                val results = mutableListOf<ExtensionItem>()
+                val root = JSONObject(json)
+                val resultsArray = root.optJSONArray("results")
+                if (resultsArray != null) {
+                    for (i in 0 until resultsArray.length()) {
+                        val ext = resultsArray.getJSONObject(i)
+                        results.add(ExtensionItem(
+                            id = ext.optString("guid", ""),
+                            name = ext.optJSONObject("name")?.optString("en-US", "") ?: "",
+                            description = ext.optJSONObject("summary")?.optString("en-US", "") ?: "",
+                            iconUrl = ext.optString("icon_url", ""),
+                            enabled = false,
+                            source = "store"
+                        ))
+                    }
+                }
+                onResult(results)
+            } catch (e: Exception) {
+                onResult(emptyList())
             }
         }
+    }
+    
+    fun getFeatured(onResult: (List<ExtensionItem>) -> Unit) {
+        searchStore("recommended", onResult)
     }
 }
 
 // END OF PART 4/10
-
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -583,16 +607,19 @@ fun GreyBrowser() {
     }
     val scope = rememberCoroutineScope()
 
-    val scripts = remember {
-        mutableStateListOf<ScriptItem>().apply { addAll(loadScripts(context)) }
+    // ── Extension State ───────────────────────────────────────────────
+    val extensionManager = remember { ExtensionManager(runtime) }
+    val extensions = remember {
+        mutableStateListOf<ExtensionItem>().apply { addAll(loadExtensions(context)) }
     }
+    var showExtensions by remember { mutableStateOf(false) }
 
     // ── Download State ────────────────────────────────────────────────
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
     var downloadUpdateTrigger by remember { mutableIntStateOf(0) }
-    // Detected videos (populated by hardcoded sniffer)
+    // Detected videos (from onExternalResponse + onLocationChange + onContextMenu)
     val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
     var showVideoDropdown by remember { mutableStateOf(false) }
     // Download Editor state
@@ -609,10 +636,6 @@ fun GreyBrowser() {
     // ── Bookmark State ─────────────────────────────────────────────────
     val bookmarks = remember { mutableStateListOf<Bookmark>().apply { addAll(loadBookmarks(context)) } }
     var showBookmarks by remember { mutableStateOf(false) }
-    // ── Ad Blocking State ──────────────────────────────────────────────
-    val adBlocker = remember { AdBlocker() }
-    var adBlockingEnabled by remember { mutableStateOf(prefs.getBoolean(KEY_ADBLOCK_ENABLED, false)) }
-    var showAdBlocking by remember { mutableStateOf(false) }
     // ── Toast State ────────────────────────────────────────────────────
     var toastMessage by remember { mutableStateOf("") }
     var showToast by remember { mutableStateOf(false) }
@@ -629,83 +652,6 @@ fun GreyBrowser() {
     var confirmAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var confirmTitle by remember { mutableStateOf("") }
     var confirmMessage by remember { mutableStateOf("") }
-    var showScriptManager by remember { mutableStateOf(false) }
-
-    val injectScripts: (GeckoSession) -> Unit = { s ->
-        for (script in scripts) { 
-            if (script.enabled && script.code.isNotBlank()) {
-                s.loadUri("javascript:(function(){" + script.code + "})();")
-            }
-        }
-    }
-
-    // ── Hardcoded Video Sniffer ──────────────────────────────────────
-    val videoSnifferScript = """
-(function() {
-    if (window.__greySnifferInstalled) return;
-    window.__greySnifferInstalled = true;
-    var found = [];
-    var seen = {};
-    function add(url, type) {
-        if (!url || seen[url]) return;
-        seen[url] = true;
-        found.push({url: url, type: type});
-    }
-    // Hook fetch (EARLY)
-    var origFetch = window.fetch;
-    window.fetch = function() {
-        var args = arguments;
-        return origFetch.apply(this, args).then(function(res) {
-            try {
-                var url = res.url;
-                if (url.indexOf('.m3u8') > -1 || url.match(/\.(mp4|webm|ts)/i)) add(url, 'fetch');
-            } catch(e) {}
-            return res;
-        });
-    };
-    // Hook XHR (EARLY)
-    var origOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(method, url) {
-        if (typeof url === 'string') {
-            if (url.indexOf('.m3u8') > -1 || url.match(/\.(mp4|webm|ts)/i)) add(url, 'xhr');
-        }
-        return origOpen.apply(this, arguments);
-    };
-    // Run DOM scan when ready
-    function scan() {
-        document.querySelectorAll('video').forEach(function(v) {
-            if (v.src) add(v.src, 'video');
-            if (v.currentSrc) add(v.currentSrc, 'video');
-            v.querySelectorAll('source').forEach(function(s) {
-                if (s.src) add(s.src, 'source');
-            });
-        });
-        document.querySelectorAll('a[href]').forEach(function(a) {
-            var h = a.href.toLowerCase();
-            if (h.indexOf('.mp4') > -1 || h.indexOf('.webm') > -1 ||
-                h.indexOf('.m3u8') > -1 || h.indexOf('.ts') > -1) add(a.href, 'link');
-        });
-        var regex = /(https?:\/\/[^"'\s]+\.(m3u8|mp4|webm|ts)[^"'\s]*)/gi;
-        document.querySelectorAll('script').forEach(function(s) {
-            var m;
-            while ((m = regex.exec(s.textContent)) !== null) add(m[1], 'script');
-        });
-        // Push to Grey browser via location
-        found.forEach(function(v) {
-            window.location = 'grey-video://push?url=' + encodeURIComponent(v.url);
-        });
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', scan);
-    } else {
-        scan();
-    }
-})();
-""".trimIndent()
-
-    val injectVideoSniffer: (GeckoSession) -> Unit = { s ->
-        s.loadUri("javascript:" + videoSnifferScript)
-    }
 
     fun addToHistory(url: String, title: String) {
         if (url == "about:blank" || url.isBlank()) return
@@ -776,8 +722,8 @@ fun GreyBrowser() {
     LaunchedEffect(tabs.map { "${it.url}|${it.title}" }.joinToString()) {
         saveTabsData(context, tabs, pinnedDomains, lastActiveUrl)
     }
-    LaunchedEffect(scripts.toList()) { saveScripts(context, scripts) }
     LaunchedEffect(bookmarks.toList()) { saveBookmarks(context, bookmarks) }
+    LaunchedEffect(extensions.toList()) { saveExtensions(context, extensions) }
 
     LaunchedEffect(currentTabIndex) {
         if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
@@ -795,9 +741,6 @@ fun GreyBrowser() {
     }
 
 // END OF PART 5/10
-
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -832,11 +775,6 @@ fun GreyBrowser() {
             }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
-            override fun onFirstComposite(s: GeckoSession) {
-                // Page content is rendered, DOM should be ready
-                injectScripts(s)
-                injectVideoSniffer(s)
-            }
             override fun onTitleChange(s: GeckoSession, title: String?) {
                 if (!tabState.isBlankTab) tabState.title = title ?: tabState.url
             }
@@ -846,6 +784,15 @@ fun GreyBrowser() {
             ) {
                 if (element.linkUri != null) {
                     contextMenuUri = element.linkUri; showContextMenu = true
+                    // Detect video links from context menu
+                    val lowerUrl = element.linkUri!!.lowercase()
+                    if (lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".webm") || 
+                        lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".ts")) {
+                        if (!detectedVideos.any { it.first == element.linkUri }) {
+                            detectedVideos.add(Pair(element.linkUri!!, tabState.url))
+                            showVideoDropdown = true
+                        }
+                    }
                 }
             }
             override fun onExternalResponse(
@@ -860,6 +807,11 @@ fun GreyBrowser() {
                     downloadEditorSize = "Unknown"
                     downloadEditorIsVideo = url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8")
                     showDownloadEditor = true
+                    // Also add to detected videos
+                    if (downloadEditorIsVideo && !detectedVideos.any { it.first == url }) {
+                        detectedVideos.add(Pair(url, tabState.url))
+                        showVideoDropdown = true
+                    }
                 }
             }
         }
@@ -874,16 +826,6 @@ fun GreyBrowser() {
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
 
-                        // ── Video Sniffer Bridge ──────────────────
-                        if (newUrl.startsWith("grey-video://push?url=")) {
-                            val videoUrl = Uri.decode(newUrl.removePrefix("grey-video://push?url="))
-                            if (videoUrl.startsWith("http") && !detectedVideos.any { it.first == videoUrl }) {
-                                detectedVideos.add(Pair(videoUrl, tabState.url))
-                                showVideoDropdown = true
-                            }
-                            return
-                        }
-
                         // ── Direct Video URL Detection ────────────
                         val lowerUrl = newUrl.lowercase()
                         if (lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".mp4") || 
@@ -893,6 +835,10 @@ fun GreyBrowser() {
                             downloadEditorSize = "Unknown"
                             downloadEditorIsVideo = true
                             showDownloadEditor = true
+                            if (!detectedVideos.any { it.first == newUrl }) {
+                                detectedVideos.add(Pair(newUrl, tabState.url))
+                                showVideoDropdown = true
+                            }
                         }
                     }
                 }
@@ -1047,8 +993,6 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 6/10
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 7/10 — GreyBrowser() Download Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1306,11 +1250,6 @@ fun GreyBrowser() {
     }
 
 // END OF PART 7/10
-
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1364,8 +1303,7 @@ fun GreyBrowser() {
     }
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
-    if (showScriptManager) { ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false }) }
-    if (showAdBlocking) { AdBlockingUI(adBlocker = adBlocker, enabled = adBlockingEnabled, onEnabledChange = { adBlockingEnabled = it; prefs.edit().putBoolean(KEY_ADBLOCK_ENABLED, it).apply() }, onDismiss = { showAdBlocking = false }) }
+    if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onDismiss = { showExtensions = false }) }
 
     if (showHistory) {
         HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
@@ -1550,8 +1488,7 @@ fun GreyBrowser() {
                             DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true })
                             DropdownMenuItem(text = { Text("Downloads", color = Color.White) }, onClick = { showMenu = false; showDownloadManager = true })
                             DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
-                            DropdownMenuItem(text = { Text("Script Manager", color = Color.White) }, onClick = { showMenu = false; showScriptManager = true })
-                            DropdownMenuItem(text = { Text("Ad Blocking", color = Color.White) }, onClick = { showMenu = false; showAdBlocking = true })
+                            DropdownMenuItem(text = { Text("Extensions", color = Color.White) }, onClick = { showMenu = false; showExtensions = true })
                             DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                         }
                     }
@@ -1584,12 +1521,6 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
-
-
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 9/10 — DownloadManagerUI Composable ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1737,50 +1668,25 @@ fun DownloadManagerUI(
 }
 
 // END OF PART 9/10
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 10/10 — ScriptManager (blink-fixed), BookmarksUI, AdBlockingUI, Settings, History, Helpers ===
+// === PART 10/10 — ExtensionsUI, BookmarksUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
-// ── SCRIPT MANAGER (no-blink: single Popup) ──────────────────────
+// ── EXTENSIONS UI ────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-fun ScriptManager(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
-    var editingScript by remember { mutableStateOf<ScriptItem?>(null) }
-    var isCreating by remember { mutableStateOf(false) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-    var scriptToDelete by remember { mutableStateOf<ScriptItem?>(null) }
-    var editName by remember { mutableStateOf("") }
-    var editCode by remember { mutableStateOf("") }
-
-    if (showDeleteConfirm && scriptToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false; scriptToDelete = null },
-            title = { Text("Delete Script?", color = Color.White, fontSize = 18.sp) },
-            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
-            confirmButton = {
-                TextButton({
-                    scripts.remove(scriptToDelete!!)
-                    showDeleteConfirm = false
-                    scriptToDelete = null
-                }) { Text("Delete", color = Color.White) }
-            },
-            dismissButton = {
-                TextButton({ showDeleteConfirm = false; scriptToDelete = null }) {
-                    Text("Cancel", color = Color.White)
-                }
-            },
-            containerColor = Color(0xFF1E1E1E),
-            titleContentColor = Color.White,
-            textContentColor = Color.White,
-            shape = RectangleShape,
-            tonalElevation = 0.dp
-        )
-    }
+fun ExtensionsUI(
+    extensionManager: ExtensionManager,
+    extensions: MutableList<ExtensionItem>,
+    onDismiss: () -> Unit
+) {
+    var selectedTab by remember { mutableIntStateOf(0) }
+    var searchQuery by remember { mutableStateOf("") }
+    var storeResults by remember { mutableStateOf<List<ExtensionItem>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+    var installMessage by remember { mutableStateOf("") }
 
     Popup(
         alignment = Alignment.TopStart,
@@ -1788,82 +1694,134 @@ fun ScriptManager(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
         properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
     ) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
-            if (editingScript != null || isCreating) {
-                // ── Script Editor (inside same Popup — no blink) ──
-                Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton({
-                            editingScript = null
-                            isCreating = false
-                        }, modifier = Modifier.size(48.dp)) {
-                            Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
-                        }
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (editingScript != null) "Edit Script" else "New Script", color = Color.White, fontSize = 18.sp)
-                    }
-                    Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
-                        Text("Name:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
-                        OutlinedTextField(value = editName, onValueChange = { editName = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
-                        Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
-                        OutlinedTextField(value = editCode, onValueChange = { editCode = it }, modifier = Modifier.fillMaxWidth().weight(1f), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
-                    }
-                    Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                        OutlinedButton(onClick = { editingScript = null; isCreating = false }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Cancel", color = Color.White) }
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(onClick = {
-                            if (editName.isNotBlank()) {
-                                if (editingScript != null) {
-                                    val idx = scripts.indexOfFirst { it.id == editingScript!!.id }
-                                    if (idx >= 0) scripts[idx] = editingScript!!.copy(name = editName, code = editCode)
-                                } else {
-                                    scripts.add(ScriptItem(id = UUID.randomUUID().toString(), name = editName, code = editCode, enabled = true))
-                                }
-                                editingScript = null; isCreating = false
-                            }
-                        }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Save Script", color = Color.White) }
-                    }
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp))
+                    Text("Extensions", color = Color.White, fontSize = 18.sp)
                 }
-            } else {
-                // ── Script List ──────────────────────────────
-                Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                        Spacer(Modifier.width(4.dp))
-                        Text("Scripts", color = Color.White, fontSize = 18.sp)
-                        if (scripts.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp) }
+
+                // Tab row
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    OutlinedButton(
+                        onClick = { selectedTab = 0 },
+                        modifier = Modifier.weight(1f),
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = if (selectedTab == 0) Color.White else Color.Gray),
+                        border = BorderStroke(1.dp, if (selectedTab == 0) Color.White else Color.DarkGray)
+                    ) { Text("Discover", fontSize = 13.sp) }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = { selectedTab = 1 },
+                        modifier = Modifier.weight(1f),
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = if (selectedTab == 1) Color.White else Color.Gray),
+                        border = BorderStroke(1.dp, if (selectedTab == 1) Color.White else Color.DarkGray)
+                    ) { Text("Installed", fontSize = 13.sp) }
+                }
+
+                if (selectedTab == 0) {
+                    // ── Discover Tab ──────────────────────────
+                    OutlinedTextField(
+                        value = searchQuery, onValueChange = { searchQuery = it }, singleLine = true,
+                        placeholder = { Text("Search extensions...", color = Color.Gray.copy(alpha = 0.5f)) },
+                        leadingIcon = { Icon(Icons.Default.Search, "Search", tint = Color.Gray) },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
+                        shape = RectangleShape,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            if (searchQuery.isNotBlank()) {
+                                isSearching = true
+                                extensionManager.searchStore(searchQuery) { results ->
+                                    storeResults = results
+                                    isSearching = false
+                                }
+                            }
+                        })
+                    )
+
+                    if (installMessage.isNotBlank()) {
+                        Text(installMessage, color = Color(0xFF4CAF50), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
                     }
 
-                    if (scripts.isEmpty()) {
-                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No scripts saved", color = Color.Gray, fontSize = 16.sp) }
+                    if (isSearching) {
+                        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
                     } else {
                         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                            items(scripts) { script ->
+                            if (storeResults.isEmpty() && searchQuery.isBlank()) {
+                                item {
+                                    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                        Text("Search for extensions to add", color = Color.Gray, fontSize = 14.sp)
+                                    }
+                                }
+                            }
+                            items(storeResults) { ext ->
+                                val alreadyInstalled = extensions.any { it.id == ext.id }
                                 Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
                                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
-                                            Text(script.name, color = if (script.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                            Text(script.code.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(ext.name, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                                            Text(ext.description.take(100), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                         }
-                                        Switch(checked = script.enabled, onCheckedChange = { val idx = scripts.indexOf(script); if (idx >= 0) scripts[idx] = script.copy(enabled = !script.enabled) }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)), modifier = Modifier.padding(end = 4.dp))
-                                        IconButton({
-                                            editingScript = script
-                                            editName = script.name
-                                            editCode = script.code
-                                        }) { Icon(Icons.Default.Edit, "Edit", tint = Color.White, modifier = Modifier.size(20.dp)) }
-                                        IconButton({ scriptToDelete = script; showDeleteConfirm = true }) { Icon(Icons.Default.Delete, "Delete", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                        if (alreadyInstalled) {
+                                            Text("Installed", color = Color.Gray, fontSize = 12.sp)
+                                        } else {
+                                            TextButton({
+                                                extensionManager.searchStore(ext.name) { results ->
+                                                    val fullExt = results.firstOrNull { it.id == ext.id }
+                                                    if (fullExt != null) {
+                                                        val xpiUrl = "https://addons.mozilla.org/firefox/downloads/latest/${fullExt.id}/addon-${fullExt.id}-latest.xpi"
+                                                        extensionManager.installFromUrl(xpiUrl) { success, msg ->
+                                                            if (success) {
+                                                                extensions.add(ext.copy(enabled = true))
+                                                                installMessage = "${ext.name} installed!"
+                                                            } else {
+                                                                installMessage = "Failed: $msg"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }) { Text("Install", color = Color.White, fontSize = 13.sp) }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-
-                    Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                        OutlinedButton(onClick = {
-                            isCreating = true
-                            editName = ""
-                            editCode = ""
-                        }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
-                            Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("Add Script", color = Color.White)
+                } else {
+                    // ── Installed Tab ─────────────────────────
+                    if (extensions.isEmpty()) {
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No extensions installed", color = Color.Gray, fontSize = 14.sp) }
+                    } else {
+                        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                            items(extensions.toList()) { ext ->
+                                Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(ext.name, color = if (ext.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                                            Text(ext.description.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        Switch(
+                                            checked = ext.enabled,
+                                            onCheckedChange = { enabled ->
+                                                val idx = extensions.indexOfFirst { it.id == ext.id }
+                                                if (idx >= 0) {
+                                                    extensions[idx] = ext.copy(enabled = enabled)
+                                                    extensionManager.setEnabled(ext.id, enabled)
+                                                }
+                                            },
+                                            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)),
+                                            modifier = Modifier.padding(end = 4.dp)
+                                        )
+                                        IconButton({
+                                            extensions.removeAll { it.id == ext.id }
+                                            extensionManager.uninstall(ext.id)
+                                        }) { Icon(Icons.Default.Delete, "Uninstall", tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(20.dp)) }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1921,94 +1879,6 @@ fun BookmarksUI(
                                 }
                             }
                         }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ── AD BLOCKING UI ───────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
-@Composable
-fun AdBlockingUI(
-    adBlocker: AdBlocker,
-    enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var showImportDialog by remember { mutableStateOf(false) }
-    var importTextField by remember { mutableStateOf("") }
-
-    if (showImportDialog) {
-        AlertDialog(
-            onDismissRequest = { showImportDialog = false },
-            title = { Text("Import Filter List", color = Color.White, fontSize = 18.sp) },
-            text = {
-                Column {
-                    Text("Paste URL to .txt filter list:", color = Color.Gray, fontSize = 14.sp)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = importTextField, onValueChange = { importTextField = it }, singleLine = true,
-                        placeholder = { Text("https://easylist.to/easylist/easylist.txt", color = Color.Gray.copy(alpha = 0.5f)) },
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
-                        shape = RectangleShape, modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton({
-                    if (importTextField.isNotBlank()) {
-                        thread(name = "import-filter") {
-                            try {
-                                val url = URL(importTextField)
-                                val content = url.openConnection().apply { connectTimeout = 15000; readTimeout = 15000 }.getInputStream().bufferedReader().readText()
-                                adBlocker.loadFilterList(content)
-                            } catch (e: Exception) { }
-                        }
-                    }
-                    showImportDialog = false
-                }) { Text("Import", color = Color.White) }
-            },
-            dismissButton = { TextButton({ showImportDialog = false }) { Text("Cancel", color = Color.White) } },
-            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-        )
-    }
-
-    Popup(
-        alignment = Alignment.TopStart,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
-    ) {
-        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp))
-                    Text("Ad Blocking", color = Color.White, fontSize = 18.sp)
-                }
-
-                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text("Enable Ad Blocking", color = Color.White, fontSize = 16.sp)
-                        Switch(checked = enabled, onCheckedChange = onEnabledChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    HorizontalDivider(color = Color.DarkGray)
-                    Spacer(Modifier.height(16.dp))
-                    Text("Filter Rules", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Loaded rules: ${adBlocker.ruleCount}", color = Color.Gray, fontSize = 14.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Import a .txt filter list (EasyList, uBlock format) to block ads and trackers.", color = Color.Gray.copy(alpha = 0.7f), fontSize = 13.sp)
-                }
-
-                Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                    OutlinedButton(onClick = { showImportDialog = true }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
-                        Text("Import Filter List", color = Color.White)
                     }
                 }
             }
@@ -2165,5 +2035,5 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
 }
 
 // END OF PART 10/10
-// END OF FILE - Grey Browser V1.10
+// END OF FILE - Grey Browser V2.0
 // ═══════════════════════════════════════════════════════════════════
