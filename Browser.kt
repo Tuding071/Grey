@@ -506,6 +506,8 @@ class NetworkSpeedLimiter {
 // ── Extension Manager ──────────────────────────────────────────────
 class ExtensionManager(private val runtime: GeckoRuntime) {
     
+    private val installedExtensions = mutableMapOf<String, org.mozilla.geckoview.WebExtension>()
+    
     fun installFromUrl(url: String, onResult: (Boolean, String) -> Unit) {
         thread(name = "ext-install") {
             try {
@@ -526,11 +528,17 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
                 conn.disconnect()
                 
                 val controller = runtime.webExtensionController
-                val uri = Uri.fromFile(xpiFile)
-                controller.install(uri).accept({ ext ->
-                    onResult(true, ext?.id ?: "installed")
+                val xpiUri = xpiFile.toURI().toString()
+                
+                controller.install(xpiUri).accept({ ext ->
+                    if (ext != null) {
+                        installedExtensions[ext.id] = ext
+                        onResult(true, ext.id)
+                    } else {
+                        onResult(false, "Install returned null")
+                    }
                 }, { error ->
-                    onResult(false, "Install failed: ${error.message}")
+                    onResult(false, "Install failed: ${error?.message ?: "unknown"}")
                 })
             } catch (e: Exception) {
                 onResult(false, "Error: ${e.message}")
@@ -539,14 +547,19 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
     }
     
     fun uninstall(extId: String) {
-        runtime.webExtensionController.uninstall(extId)
+        installedExtensions[extId]?.let { ext ->
+            runtime.webExtensionController.uninstall(ext)
+            installedExtensions.remove(extId)
+        }
     }
     
     fun setEnabled(extId: String, enabled: Boolean) {
-        if (enabled) {
-            runtime.webExtensionController.enable(extId)
-        } else {
-            runtime.webExtensionController.disable(extId)
+        installedExtensions[extId]?.let { ext ->
+            if (enabled) {
+                runtime.webExtensionController.enable(ext)
+            } else {
+                runtime.webExtensionController.disable(ext)
+            }
         }
     }
     
