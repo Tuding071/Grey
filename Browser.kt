@@ -423,7 +423,7 @@ fun formatSpeedLimit(limit: Long): String = when (limit) {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.2/5 (V1.9) ===
+// === PART 1.2/5 (V1.10) ===
 // ═══════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -443,12 +443,18 @@ fun GreyBrowser() {
         mutableStateListOf<ScriptItem>().apply { addAll(loadScripts(context)) }
     }
 
+    // ── Video Scripts State ──────────────────────────────────────────
+    val videoScripts = remember {
+        mutableStateListOf<ScriptItem>().apply { addAll(loadVideoScripts(context)) }
+    }
+    var showVideoScripts by remember { mutableStateOf(false) }
+
     // ── Download State ────────────────────────────────────────────────
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
-    var downloadUpdateTrigger by remember { mutableIntStateOf(0) }  // Forces UI recomposition
-    // Detected videos
+    var downloadUpdateTrigger by remember { mutableIntStateOf(0) }
+    // Detected videos (populated by video scripts via grey-video://)
     val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
     var showVideoDropdown by remember { mutableStateOf(false) }
     // Download Editor state
@@ -457,8 +463,8 @@ fun GreyBrowser() {
     var downloadEditorName by remember { mutableStateOf("") }
     var downloadEditorSize by remember { mutableStateOf("Unknown") }
     var downloadEditorIsVideo by remember { mutableStateOf(false) }
-    // Speed limit
-    var speedLimit by remember { mutableStateOf(0L) }
+    // Global network speed limiter (replaces old speedLimit state)
+    val networkLimiter = remember { NetworkSpeedLimiter() }
     // ── History State ──────────────────────────────────────────────────
     val history = remember { mutableStateListOf<HistoryItem>().apply { addAll(loadHistory(context)) } }
     var showHistory by remember { mutableStateOf(false) }
@@ -485,23 +491,18 @@ fun GreyBrowser() {
         }
     }
 
-    fun detectVideoUrl(url: String, pageUrl: String) {
-        val lowerUrl = url.lowercase()
-        val isVideo = lowerUrl.contains(".mp4") || lowerUrl.contains(".webm") || 
-                      lowerUrl.contains(".m3u8") || lowerUrl.contains(".ts") ||
-                      lowerUrl.contains("video") || lowerUrl.contains("stream")
-        if (isVideo && url.startsWith("http") && !detectedVideos.any { it.first == url }) {
-            detectedVideos.add(Pair(url, pageUrl))
+    val injectVideoScripts: (GeckoSession) -> Unit = { s ->
+        for (script in videoScripts) {
+            if (script.enabled && script.code.isNotBlank()) {
+                s.loadUri("javascript:" + Uri.encode("(function(){\n${script.code}\n})();"))
+            }
         }
     }
 
     fun addToHistory(url: String, title: String) {
         if (url == "about:blank" || url.isBlank()) return
-        // Remove existing entry with same URL
         history.removeAll { it.url == url }
-        // Add to end (newest)
         history.add(HistoryItem(url = url, title = title.ifBlank { url }, timestamp = System.currentTimeMillis()))
-        // Trim if too many
         if (history.size > MAX_HISTORY_ITEMS) {
             history.removeAt(0)
         }
@@ -563,6 +564,7 @@ fun GreyBrowser() {
         saveTabsData(context, tabs, pinnedDomains, lastActiveUrl)
     }
     LaunchedEffect(scripts.toList()) { saveScripts(context, scripts) }
+    LaunchedEffect(videoScripts.toList()) { saveVideoScripts(context, videoScripts) }
 
     LaunchedEffect(currentTabIndex) {
         if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
@@ -571,17 +573,14 @@ fun GreyBrowser() {
         }
     }
 
-    LaunchedEffect(currentTabIndex) {
-        detectedVideos.clear()
-        showVideoDropdown = false
-    }
+    // No longer clear detected videos on tab switch — cleared on navigation instead
 
 // END OF PART 1.2/5
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.3/5 (V1.9 - Highlight fix + History save + Service helpers) ===
+// === PART 1.3/5 (V1.10 - Video Scripts + Direct URL + Queue) ===
 // ═══════════════════════════════════════════════════════════════════
 
     val setupDelegates = fun(tabState: TabState) {
@@ -592,17 +591,21 @@ fun GreyBrowser() {
                 tabState.lastUpdated = System.currentTimeMillis()
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
-                    // FIX: Save lastActiveUrl immediately on navigation start
                     lastActiveUrl = url
                     if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
                         highlightedTabIndex = currentTabIndex
                     }
+                    // Clear video dropdown on navigation
+                    if (tabs.getOrNull(currentTabIndex) == tabState || (currentTabIndex == -1 && tabState == homeTab)) {
+                        detectedVideos.clear()
+                        showVideoDropdown = false
+                    }
                     injectScripts(s)
+                    injectVideoScripts(s)
                 }
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                // Save to history when page finishes loading
                 if (success && tabState.url != "about:blank") {
                     addToHistory(tabState.url, tabState.title)
                 }
@@ -621,7 +624,6 @@ fun GreyBrowser() {
             ) {
                 if (element.linkUri != null) {
                     contextMenuUri = element.linkUri; showContextMenu = true
-                    detectVideoUrl(element.linkUri!!, tabState.url)
                 }
             }
             override fun onExternalResponse(
@@ -649,7 +651,28 @@ fun GreyBrowser() {
                     tabState.url = newUrl
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
-                        detectVideoUrl(newUrl, tabState.url)
+
+                        // ── Video Script Bridge ──────────────────
+                        // Scripts push video URLs via grey-video://push?url=...
+                        if (newUrl.startsWith("grey-video://push?url=")) {
+                            val videoUrl = Uri.decode(newUrl.removePrefix("grey-video://push?url="))
+                            if (videoUrl.startsWith("http") && !detectedVideos.any { it.first == videoUrl }) {
+                                detectedVideos.add(Pair(videoUrl, tabState.url))
+                                showVideoDropdown = true
+                            }
+                            return  // Don't navigate to this fake URL
+                        }
+
+                        // ── Direct Video URL Detection ────────────
+                        val lowerUrl = newUrl.lowercase()
+                        if (lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".mp4") || 
+                            lowerUrl.endsWith(".webm") || lowerUrl.endsWith(".ts")) {
+                            downloadEditorUrl = newUrl
+                            downloadEditorName = newUrl.substringAfterLast("/").substringBefore("?")
+                            downloadEditorSize = "Unknown"
+                            downloadEditorIsVideo = true
+                            showDownloadEditor = true
+                        }
                     }
                 }
             }
@@ -805,8 +828,9 @@ fun GreyBrowser() {
 // END OF PART 1.3/5
 
 
+
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.4/5 (V1.9 - Real pause + UI trigger) ===
+// === PART 1.4/5 (V1.10 - Global Speed Limiter + Auto-Queue) ===
 // ═══════════════════════════════════════════════════════════════════
 
     fun getDownloadDir(): File {
@@ -816,6 +840,15 @@ fun GreyBrowser() {
     }
 
     fun addDownload(item: DownloadItem) { activeDownloads.add(item) }
+
+    fun checkNextQueued() {
+        val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
+        if (next != null) {
+            startDownload(next.id)
+        } else {
+            stopDownloadService(context)
+        }
+    }
 
     fun downloadM3U8(item: DownloadItem) {
         item.state = DownloadState.DOWNLOADING
@@ -836,7 +869,11 @@ fun GreyBrowser() {
                     .filter { it.isNotBlank() && !it.startsWith("#") }
                     .map { seg -> if (seg.startsWith("http")) seg.trim() else "$baseUrl/${seg.trim()}" }
                 
-                if (segments.isEmpty()) { item.state = DownloadState.FAILED; stopDownloadService(context); return@thread }
+                if (segments.isEmpty()) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                    return@thread
+                }
                 
                 val tempDir = File(context.cacheDir, "m3u8_${item.id}")
                 tempDir.mkdirs()
@@ -844,39 +881,71 @@ fun GreyBrowser() {
                 
                 for ((i, segUrl) in segments.withIndex()) {
                     // REAL PAUSE: Check before downloading segment
-                    while (item.state == DownloadState.PAUSED) { Thread.sleep(500) }
-                    if (item.state == DownloadState.FAILED) break
+                    while (item.state == DownloadState.PAUSED) {
+                        Thread.sleep(500)
+                        if (item.state == DownloadState.FAILED) {
+                            tempDir.deleteRecursively()
+                            return@thread
+                        }
+                    }
+                    if (item.state == DownloadState.FAILED) {
+                        tempDir.deleteRecursively()
+                        return@thread
+                    }
                     
                     val segFile = File(tempDir, "seg_${i.toString().padStart(5, '0')}.ts")
                     try {
                         val segConn = URL(segUrl).openConnection() as HttpURLConnection
                         segConn.connectTimeout = 10000; segConn.readTimeout = 10000
                         if (item.referer.isNotBlank()) segConn.setRequestProperty("Referer", item.referer)
-                        segConn.inputStream.use { input -> segFile.outputStream().use { output -> input.copyTo(output) } }
+                        
+                        segConn.inputStream.use { input ->
+                            segFile.outputStream().use { output ->
+                                val buffer = ByteArray(8192)
+                                var bytesRead: Int
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    // ── Global speed limit ─────────
+                                    networkLimiter.acquire(bytesRead.toLong())
+                                    output.write(buffer, 0, bytesRead)
+                                }
+                            }
+                        }
                         segmentFiles.add(segFile)
                         item.progress = ((i + 1) * 100) / segments.size
                         if (showDownloadManager) downloadUpdateTrigger++
-                    } catch (e: Exception) { }
+                    } catch (e: Exception) {
+                        // Segment failed, continue with others
+                    }
                 }
                 
-                if (segmentFiles.isEmpty()) { item.state = DownloadState.FAILED; stopDownloadService(context); tempDir.deleteRecursively(); return@thread }
+                if (segmentFiles.isEmpty()) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                    tempDir.deleteRecursively()
+                    return@thread
+                }
                 
                 val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
                 FileOutputStream(outputFile).use { out ->
-                    for (seg in segmentFiles) { seg.inputStream().use { it.copyTo(out) } }
+                    for (seg in segmentFiles) {
+                        seg.inputStream().use { it.copyTo(out) }
+                    }
                 }
                 
                 item.tempFile = outputFile
-                item.state = DownloadState.COMPLETED; item.progress = 100
+                item.state = DownloadState.COMPLETED
+                item.progress = 100
                 if (showDownloadManager) downloadUpdateTrigger++
                 tempDir.deleteRecursively()
             } catch (e: Exception) {
-                if (item.state != DownloadState.PAUSED) item.state = DownloadState.FAILED
-                if (showDownloadManager) downloadUpdateTrigger++
+                if (item.state != DownloadState.PAUSED) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                }
             } finally {
                 if (currentDownloadId == item.id) {
                     currentDownloadId = null
-                    stopDownloadService(context)
+                    checkNextQueued()
                 }
             }
         }
@@ -891,7 +960,6 @@ fun GreyBrowser() {
         item.state = DownloadState.DOWNLOADING
         currentDownloadId = id
         startDownloadService(context)
-        val currentSpeedLimit = speedLimit
         
         thread(name = "download-$id") {
             try {
@@ -909,10 +977,9 @@ fun GreyBrowser() {
                 val output = FileOutputStream(outputFile)
                 
                 val buffer = ByteArray(8192)
-                var bytesRead: Int; var totalRead = 0L
+                var bytesRead: Int
+                var totalRead = 0L
                 val startTime = System.currentTimeMillis()
-                var lastThrottleTime = startTime
-                var bytesSinceThrottle = 0L
                 var lastUpdateTime = startTime
                 
                 while (true) {
@@ -920,39 +987,27 @@ fun GreyBrowser() {
                     while (item.state == DownloadState.PAUSED) {
                         Thread.sleep(500)
                         if (item.state == DownloadState.FAILED) {
-                            input.close(); output.close(); conn.disconnect()
-                            stopDownloadService(context)
+                            try { input.close() } catch (_: Exception) {}
+                            try { output.close() } catch (_: Exception) {}
+                            try { conn.disconnect() } catch (_: Exception) {}
                             return@thread
                         }
                     }
                     if (item.state == DownloadState.FAILED) {
-                        input.close(); output.close(); conn.disconnect()
-                        stopDownloadService(context)
+                        try { input.close() } catch (_: Exception) {}
+                        try { output.close() } catch (_: Exception) {}
+                        try { conn.disconnect() } catch (_: Exception) {}
                         return@thread
                     }
+                    
+                    // ── Global speed limit ─────────────────
+                    networkLimiter.acquire(buffer.size.toLong())
                     
                     bytesRead = input.read(buffer)
                     if (bytesRead == -1) break
                     
                     output.write(buffer, 0, bytesRead)
                     totalRead += bytesRead
-                    bytesSinceThrottle += bytesRead
-                    
-                    // Speed throttling
-                    if (currentSpeedLimit > 0L) {
-                        val now = System.currentTimeMillis()
-                        val elapsed = now - lastThrottleTime
-                        if (elapsed >= 1000) {
-                            val currentSpeed = (bytesSinceThrottle * 1000) / elapsed
-                            if (currentSpeed > currentSpeedLimit) {
-                                val targetTime = (bytesSinceThrottle * 1000) / currentSpeedLimit
-                                val sleepTime = targetTime - elapsed
-                                if (sleepTime > 0) Thread.sleep(sleepTime)
-                            }
-                            lastThrottleTime = System.currentTimeMillis()
-                            bytesSinceThrottle = 0L
-                        }
-                    }
                     
                     // Update progress every 500ms only if Download Manager is visible
                     val now = System.currentTimeMillis()
@@ -970,9 +1025,12 @@ fun GreyBrowser() {
                         lastUpdateTime = now
                     }
                 }
-                input.close(); output.close(); conn.disconnect()
-                if (item.state != DownloadState.PAUSED) { 
-                    item.state = DownloadState.COMPLETED; item.progress = 100
+                input.close()
+                output.close()
+                conn.disconnect()
+                if (item.state != DownloadState.PAUSED) {
+                    item.state = DownloadState.COMPLETED
+                    item.progress = 100
                     if (showDownloadManager) downloadUpdateTrigger++
                 }
             } catch (e: Exception) {
@@ -983,7 +1041,7 @@ fun GreyBrowser() {
             } finally {
                 if (currentDownloadId == id) {
                     currentDownloadId = null
-                    stopDownloadService(context)
+                    checkNextQueued()
                 }
             }
         }
@@ -1005,10 +1063,12 @@ fun GreyBrowser() {
     
     fun deleteDownload(id: String) {
         val item = activeDownloads.find { it.id == id } ?: return
-        item.tempFile?.delete(); activeDownloads.remove(item)
-        if (currentDownloadId == id) {
+        val wasActive = currentDownloadId == id
+        item.tempFile?.delete()
+        activeDownloads.remove(item)
+        if (wasActive) {
             currentDownloadId = null
-            stopDownloadService(context)
+            checkNextQueued()
         }
     }
 
@@ -1030,8 +1090,9 @@ fun GreyBrowser() {
 // END OF PART 1.4/5
 
 
+
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.5/5 (V1.9 - History menu + trigger pass + HistoryUI call) ===
+// === PART 1.5/5 (V1.10 - Video Scripts Menu + Updated Download Editor + History Menu) ===
 // ═══════════════════════════════════════════════════════════════════
 
     if (showDownloadEditor) {
@@ -1057,13 +1118,19 @@ fun GreyBrowser() {
             confirmButton = {
                 Row {
                     TextButton({
-                        addDownload(DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url, state = DownloadState.PAUSED))
+                        // ADD: Just add to queue, don't start
+                        addDownload(DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url, state = DownloadState.QUEUED))
                         showDownloadEditor = false
                     }) { Text("Add", color = Color.White) }
                     Spacer(Modifier.width(8.dp))
                     TextButton({
+                        // START: Add to queue, start if nothing is downloading
                         val item = DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url)
-                        addDownload(item); startDownload(item.id)
+                        addDownload(item)
+                        if (currentDownloadId == null) {
+                            startDownload(item.id)
+                        }
+                        // else: stays QUEUED, will auto-start via checkNextQueued()
                         showDownloadEditor = false
                     }) { Text("Start", color = Color.White) }
                 }
@@ -1079,6 +1146,7 @@ fun GreyBrowser() {
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
     if (showScriptManager) { ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false }) }
+    if (showVideoScripts) { VideoScriptsUI(scripts = videoScripts, onDismiss = { showVideoScripts = false }) }
 
     if (showHistory) {
         HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
@@ -1087,13 +1155,13 @@ fun GreyBrowser() {
     if (showDownloadManager) {
         DownloadManagerUI(
             downloads = activeDownloads,
+            currentDownloadId = currentDownloadId,
             onDismiss = { showDownloadManager = false },
             onStart = { startDownload(it) },
             onPause = { pauseDownload(it) },
             onResume = { resumeDownload(it) },
             onDelete = { deleteDownload(it) },
-            speedLimit = speedLimit,
-            onSpeedLimitChange = { speedLimit = it },
+            networkLimiter = networkLimiter,
             updateTrigger = downloadUpdateTrigger
         )
     }
@@ -1249,6 +1317,7 @@ fun GreyBrowser() {
                         DropdownMenuItem(text = { Text("Downloads", color = Color.White) }, onClick = { showMenu = false; showDownloadManager = true })
                         DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
                         DropdownMenuItem(text = { Text("Script Manager", color = Color.White) }, onClick = { showMenu = false; showScriptManager = true })
+                        DropdownMenuItem(text = { Text("Video Scripts", color = Color.White) }, onClick = { showMenu = false; showVideoScripts = true })
                         DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                     }
                 }
@@ -1262,8 +1331,9 @@ fun GreyBrowser() {
 // END OF PART 1/2
 
 
+
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2.1/5 (V1.9 - updateTrigger for live UI) ===
+// === PART 2.1/5 (V1.10 - Updated DownloadManagerUI with Queue + Speed Limiter) ===
 // ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1273,13 +1343,13 @@ fun GreyBrowser() {
 @Composable
 fun DownloadManagerUI(
     downloads: List<DownloadItem>,
+    currentDownloadId: String?,
     onDismiss: () -> Unit,
     onStart: (String) -> Unit,
     onPause: (String) -> Unit,
     onResume: (String) -> Unit,
     onDelete: (String) -> Unit,
-    speedLimit: Long,
-    onSpeedLimitChange: (Long) -> Unit,
+    networkLimiter: NetworkSpeedLimiter,
     updateTrigger: Int
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -1337,7 +1407,7 @@ fun DownloadManagerUI(
                     Spacer(Modifier.weight(1f))
                     Box {
                         TextButton({ showSpeedMenu = true }) {
-                            Text(formatSpeedLimit(speedLimit), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                            Text(formatSpeedLimit(networkLimiter.maxBytesPerSecond), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
                         }
                         DropdownMenu(
                             expanded = showSpeedMenu,
@@ -1348,8 +1418,8 @@ fun DownloadManagerUI(
                         ) {
                             SPEED_LIMITS.forEach { limit ->
                                 DropdownMenuItem(
-                                    text = { Text(formatSpeedLimit(limit), color = if (limit == speedLimit) Color.White else Color.Gray, fontSize = 13.sp) },
-                                    onClick = { onSpeedLimitChange(limit); showSpeedMenu = false }
+                                    text = { Text(formatSpeedLimit(limit), color = if (limit == networkLimiter.maxBytesPerSecond) Color.White else Color.Gray, fontSize = 13.sp) },
+                                    onClick = { networkLimiter.maxBytesPerSecond = limit; showSpeedMenu = false }
                                 )
                             }
                         }
@@ -1365,7 +1435,7 @@ fun DownloadManagerUI(
                             val currentState = remember(updateTrigger) { item.state }
                             val currentProgress = remember(updateTrigger) { item.progress }
                             val currentSpeed = remember(updateTrigger) { item.speed }
-                            
+
                             Surface(
                                 Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
                                 color = Color.Transparent
@@ -1389,7 +1459,15 @@ fun DownloadManagerUI(
                                     Spacer(Modifier.height(4.dp))
                                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                         when (currentState) {
-                                            DownloadState.QUEUED -> TextButton({ onStart(item.id) }) { Text("Start", color = Color.White, fontSize = 13.sp) }
+                                            DownloadState.QUEUED -> {
+                                                if (currentDownloadId == null) {
+                                                    // Nothing downloading — show Start
+                                                    TextButton({ onStart(item.id) }) { Text("Start", color = Color.White, fontSize = 13.sp) }
+                                                } else {
+                                                    // Something is downloading — show Queued (in queue)
+                                                    Text("In Queue", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                                                }
+                                            }
                                             DownloadState.DOWNLOADING -> TextButton({ onPause(item.id) }) { Text("Pause", color = Color.White, fontSize = 13.sp) }
                                             DownloadState.PAUSED -> TextButton({ onResume(item.id) }) { Text("Resume", color = Color.White, fontSize = 13.sp) }
                                             else -> {}
