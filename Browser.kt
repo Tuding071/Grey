@@ -266,7 +266,6 @@ fun formatSpeedLimit(limit: Long): String = when (limit) {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 3/10 — Data Classes, Enums, Save/Load Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -290,7 +289,6 @@ data class ExtensionItem(
     val name: String,
     val description: String = "",
     val iconUrl: String = "",
-    var downloadUrl: String = "",
     var enabled: Boolean = true,
     val source: String = "store"
 )
@@ -421,8 +419,7 @@ fun saveExtensions(context: Context, extensions: List<ExtensionItem>) {
         val obj = JSONObject()
         obj.put("id", e.id); obj.put("name", e.name)
         obj.put("description", e.description); obj.put("iconUrl", e.iconUrl)
-        obj.put("downloadUrl", e.downloadUrl); obj.put("enabled", e.enabled)
-        obj.put("source", e.source)
+        obj.put("enabled", e.enabled); obj.put("source", e.source)
         arr.put(obj)
     }
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_EXTENSIONS, arr.toString()).apply()
@@ -437,14 +434,14 @@ fun loadExtensions(context: Context): List<ExtensionItem> {
                 val o = arr.getJSONObject(i)
                 add(ExtensionItem(o.getString("id"), o.getString("name"),
                     o.optString("description", ""), o.optString("iconUrl", ""),
-                    o.optString("downloadUrl", ""), o.getBoolean("enabled"),
-                    o.optString("source", "store")))
+                    o.getBoolean("enabled"), o.optString("source", "store")))
             }
         }
     } catch (e: Exception) { emptyList() }
 }
 
 // END OF PART 3/10
+
 
 
 
@@ -541,16 +538,18 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
                 val controller = runtime.webExtensionController
                 val xpiUri = xpiFile.toURI().toString()
                 
-                controller.install(xpiUri).accept({ ext ->
-                    if (ext != null) {
-                        installedExtensions[ext.id] = ext
-                        onResult(true, ext.id)
-                    } else {
-                        onResult(false, "Install returned null")
-                    }
-                }, { error ->
-                    onResult(false, "Install failed: ${error?.message ?: "unknown"}")
-                })
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    controller.install(xpiUri).accept({ ext ->
+                        if (ext != null) {
+                            installedExtensions[ext.id] = ext
+                            onResult(true, ext.id)
+                        } else {
+                            onResult(false, "Install returned null")
+                        }
+                    }, { error ->
+                        onResult(false, "Install failed: ${error?.message ?: "unknown"}")
+                    })
+                }
             } catch (e: Exception) {
                 onResult(false, "Error: ${e.message}")
             }
@@ -573,79 +572,9 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
             }
         }
     }
-    
-    fun searchStore(query: String, onResult: (List<ExtensionItem>) -> Unit) {
-        thread(name = "ext-search") {
-            try {
-                val apiUrl = "https://addons.mozilla.org/api/v5/addons/search/?q=${Uri.encode(query)}&type=extension&app=android&sort=rating&page_size=20"
-                val conn = URL(apiUrl).openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000; conn.readTimeout = 15000
-                conn.connect()
-                
-                val json = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                
-                val results = mutableListOf<ExtensionItem>()
-                val root = JSONObject(json)
-                val resultsArray = root.optJSONArray("results")
-                if (resultsArray != null) {
-                    for (i in 0 until resultsArray.length()) {
-                        val ext = resultsArray.getJSONObject(i)
-                        val guid = ext.optString("guid", "")
-                        val slug = ext.optString("slug", "")
-                        val name = ext.optJSONObject("name")?.optString("en-US", "") ?: ""
-                        val description = ext.optJSONObject("summary")?.optString("en-US", "") ?: ""
-                        val iconUrl = ext.optString("icon_url", "")
-                        
-                        // Try to get XPI URL from current_version.files
-                        var xpiUrl = ""
-                        val currentVersion = ext.optJSONObject("current_version")
-                        if (currentVersion != null) {
-                            val files = currentVersion.optJSONArray("files")
-                            if (files != null && files.length() > 0) {
-                                for (j in 0 until files.length()) {
-                                    val file = files.getJSONObject(j)
-                                    val fileUrl = file.optString("url", "")
-                                    if (fileUrl.isNotBlank() && fileUrl.endsWith(".xpi")) {
-                                        xpiUrl = fileUrl
-                                        break
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Fallback: construct download URL from slug
-                        if (xpiUrl.isBlank() && slug.isNotBlank()) {
-                            xpiUrl = "https://addons.mozilla.org/firefox/downloads/latest/$slug/addon-$slug-latest.xpi"
-                        }
-                        
-                        results.add(ExtensionItem(
-                            id = guid.ifBlank { slug },
-                            name = name,
-                            description = description,
-                            iconUrl = iconUrl,
-                            enabled = false,
-                            source = "store"
-                        ).also { it.downloadUrl = xpiUrl })
-                    }
-                }
-                onResult(results)
-            } catch (e: Exception) {
-                onResult(emptyList())
-            }
-        }
-    }
-    
-    fun getFeatured(onResult: (List<ExtensionItem>) -> Unit) {
-        searchStore("recommended", onResult)
-    }
 }
 
 // END OF PART 4/10
-
-
-
-
 
 
 
@@ -804,6 +733,9 @@ fun GreyBrowser() {
     }
 
 // END OF PART 5/10
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -864,6 +796,21 @@ fun GreyBrowser() {
             ) {
                 val url = response.uri
                 if (url != null) {
+                    // Check if this is an extension (.xpi) file
+                    if (url.endsWith(".xpi")) {
+                        extensionManager.installFromUrl(url) { success, msg ->
+                            if (success) {
+                                // Find extension info from URL or use defaults
+                                val extName = url.substringAfterLast("/").substringBeforeLast(".xpi").ifBlank { "Extension" }
+                                extensions.add(ExtensionItem(id = msg, name = extName, enabled = true))
+                                showToast("Extension installed")
+                            } else {
+                                showToast("Extension install failed: $msg")
+                            }
+                        }
+                        return
+                    }
+                    
                     val fileName = url.substringAfterLast("/").substringBefore("?")
                     downloadEditorUrl = url
                     downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
@@ -1056,6 +1003,11 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 6/10
+
+
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 7/10 — GreyBrowser() Download Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1313,6 +1265,9 @@ fun GreyBrowser() {
     }
 
 // END OF PART 7/10
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1366,7 +1321,7 @@ fun GreyBrowser() {
     }
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
-    if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onDismiss = { showExtensions = false }) }
+    if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onOpenUrl = { url -> createForegroundTab(url) }, onDismiss = { showExtensions = false }) }
 
     if (showHistory) {
         HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
@@ -1584,6 +1539,10 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
+
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 9/10 — DownloadManagerUI Composable ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1734,6 +1693,9 @@ fun DownloadManagerUI(
 
 
 
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 10/10 — ExtensionsUI, BookmarksUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1746,13 +1708,10 @@ fun DownloadManagerUI(
 fun ExtensionsUI(
     extensionManager: ExtensionManager,
     extensions: MutableList<ExtensionItem>,
+    onOpenUrl: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
-    var searchQuery by remember { mutableStateOf("") }
-    var storeResults by remember { mutableStateOf<List<ExtensionItem>>(emptyList()) }
-    var isSearching by remember { mutableStateOf(false) }
-    var installMessage by remember { mutableStateOf("") }
+    var showSettingsForExt by remember { mutableStateOf<String?>(null) }
 
     Popup(
         alignment = Alignment.TopStart,
@@ -1767,105 +1726,37 @@ fun ExtensionsUI(
                     Text("Extensions", color = Color.White, fontSize = 18.sp)
                 }
 
-                // Tab row
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                // Find Extensions button
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     OutlinedButton(
-                        onClick = { selectedTab = 0 },
-                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            onOpenUrl("https://addons.mozilla.org/android/extensions/")
+                            onDismiss()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = if (selectedTab == 0) Color.White else Color.Gray),
-                        border = BorderStroke(1.dp, if (selectedTab == 0) Color.White else Color.DarkGray)
-                    ) { Text("Discover", fontSize = 13.sp) }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = { selectedTab = 1 },
-                        modifier = Modifier.weight(1f),
-                        shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = if (selectedTab == 1) Color.White else Color.Gray),
-                        border = BorderStroke(1.dp, if (selectedTab == 1) Color.White else Color.DarkGray)
-                    ) { Text("Installed", fontSize = 13.sp) }
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) {
+                        Text("Find Extensions", color = Color.White)
+                    }
                 }
 
-                if (selectedTab == 0) {
-                    // ── Discover Tab ──────────────────────────
-                    OutlinedTextField(
-                        value = searchQuery, onValueChange = { searchQuery = it }, singleLine = true,
-                        placeholder = { Text("Search extensions...", color = Color.Gray.copy(alpha = 0.5f)) },
-                        leadingIcon = { Icon(Icons.Default.Search, "Search", tint = Color.Gray) },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
-                        shape = RectangleShape,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = {
-                            if (searchQuery.isNotBlank()) {
-                                isSearching = true
-                                extensionManager.searchStore(searchQuery) { results ->
-                                    storeResults = results
-                                    isSearching = false
-                                }
-                            }
-                        })
-                    )
+                HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 
-                    if (installMessage.isNotBlank()) {
-                        Text(installMessage, color = Color(0xFF4CAF50), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-                    }
-
-                    if (isSearching) {
-                        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
-                    } else {
-                        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                            if (storeResults.isEmpty() && searchQuery.isBlank()) {
-                                item {
-                                    Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                                        Text("Search for extensions to add", color = Color.Gray, fontSize = 14.sp)
-                                    }
-                                }
-                            }
-                            items(storeResults) { ext ->
-                                val alreadyInstalled = extensions.any { it.id == ext.id }
-                                Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(ext.name, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                            Text(ext.description.take(100), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        }
-                                        if (alreadyInstalled) {
-                                            Text("Installed", color = Color.Gray, fontSize = 12.sp)
-                                        } else {
-                                            TextButton({
-                                                if (ext.downloadUrl.isNotBlank()) {
-                                                    extensionManager.installFromUrl(ext.downloadUrl) { success, msg ->
-                                                        if (success) {
-                                                            extensions.add(ext.copy(enabled = true))
-                                                            installMessage = "${ext.name} installed!"
-                                                        } else {
-                                                            installMessage = "Failed: $msg"
-                                                        }
-                                                    }
-                                                } else {
-                                                    installMessage = "No download URL available"
-                                                }
-                                            }) { Text("Install", color = Color.White, fontSize = 13.sp) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if (extensions.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No extensions installed", color = Color.Gray, fontSize = 14.sp) }
                 } else {
-                    // ── Installed Tab ─────────────────────────
-                    if (extensions.isEmpty()) {
-                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No extensions installed", color = Color.Gray, fontSize = 14.sp) }
-                    } else {
-                        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                            items(extensions.toList()) { ext ->
-                                Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                        items(extensions.toList()) { ext ->
+                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Text(ext.name, color = if (ext.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                            Text(ext.description.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            if (ext.description.isNotBlank()) {
+                                                Text(ext.description.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            }
                                         }
                                         Switch(
                                             checked = ext.enabled,
@@ -1879,10 +1770,17 @@ fun ExtensionsUI(
                                             colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)),
                                             modifier = Modifier.padding(end = 4.dp)
                                         )
-                                        IconButton({
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        TextButton({
+                                            showSettingsForExt = ext.id
+                                        }) { Text("Settings", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp) }
+                                        Spacer(Modifier.width(4.dp))
+                                        TextButton({
                                             extensions.removeAll { it.id == ext.id }
                                             extensionManager.uninstall(ext.id)
-                                        }) { Icon(Icons.Default.Delete, "Uninstall", tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(20.dp)) }
+                                        }) { Text("Uninstall", color = Color.Red.copy(alpha = 0.7f), fontSize = 12.sp) }
                                     }
                                 }
                             }
@@ -1891,6 +1789,31 @@ fun ExtensionsUI(
                 }
             }
         }
+    }
+
+    // Extension Settings Dialog
+    if (showSettingsForExt != null) {
+        val ext = extensions.find { it.id == showSettingsForExt }
+        AlertDialog(
+            onDismissRequest = { showSettingsForExt = null },
+            title = { Text(ext?.name ?: "Extension", color = Color.White, fontSize = 18.sp) },
+            text = {
+                Column {
+                    Text("Extension ID:", color = Color.Gray, fontSize = 12.sp)
+                    Text(showSettingsForExt ?: "", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                    Spacer(Modifier.height(12.dp))
+                    Text("Extension settings are managed by the extension itself. Check the extension's documentation for configuration options.", color = Color.Gray, fontSize = 14.sp)
+                }
+            },
+            confirmButton = {
+                TextButton({ showSettingsForExt = null }) { Text("Close", color = Color.White) }
+            },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            shape = RectangleShape,
+            tonalElevation = 0.dp
+        )
     }
 }
 
@@ -2101,4 +2024,3 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
 // END OF PART 10/10
 // END OF FILE - Grey Browser V2.0
 // ═══════════════════════════════════════════════════════════════════
-
