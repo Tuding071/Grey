@@ -458,8 +458,6 @@ fun loadBookmarks(context: Context): List<Bookmark> {
 // END OF PART 3/10
 
 
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 4/10 — Utility Functions, NetworkSpeedLimiter, AdBlocker ===
 // ═══════════════════════════════════════════════════════════════════
@@ -496,12 +494,12 @@ class NetworkSpeedLimiter {
         synchronized(lock) {
             while (true) {
                 refillTokens(limit)
-                if (tokens >= bytes) {
-                    tokens -= bytes
+                if (tokens >= bytes.toDouble()) {
+                    tokens -= bytes.toDouble()
                     return
                 }
-                val needed = bytes - tokens
-                val waitMs = (needed * 1000) / limit + 1
+                val needed = bytes.toDouble() - tokens
+                val waitMs = ((needed * 1000) / limit).toLong() + 1
                 try { (lock as java.lang.Object).wait(waitMs) }
                 catch (e: InterruptedException) { return }
             }
@@ -762,6 +760,7 @@ fun GreyBrowser() {
 
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -857,15 +856,6 @@ fun GreyBrowser() {
                         }
                     }
                 }
-            }
-            override fun onLoadRequest(
-                session: GeckoSession,
-                request: GeckoSession.NavigationDelegate.LoadRequest
-            ): GeckoResult<GeckoSession.NavigationDelegate.AllowOrDeny>? {
-                if (adBlockingEnabled && adBlocker.shouldBlock(request.uri)) {
-                    return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.DENY)
-                }
-                return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW)
             }
         }
     }
@@ -1021,6 +1011,7 @@ fun GreyBrowser() {
 
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 7/10 — GreyBrowser() Download Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1033,12 +1024,96 @@ fun GreyBrowser() {
 
     fun addDownload(item: DownloadItem) { activeDownloads.add(item) }
 
-    fun checkNextQueued() {
-        val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
-        if (next != null) {
-            startDownload(next.id)
-        } else {
-            stopDownloadService(context)
+    fun startDownload(id: String) {
+        val item = activeDownloads.find { it.id == id } ?: return
+        if (currentDownloadId != null && currentDownloadId != id) return
+        
+        if (item.url.contains(".m3u8")) { downloadM3U8(item); return }
+        
+        item.state = DownloadState.DOWNLOADING
+        currentDownloadId = id
+        startDownloadService(context)
+        
+        thread(name = "download-$id") {
+            try {
+                val url = URL(item.url)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000; conn.readTimeout = 30000
+                if (item.referer.isNotBlank()) conn.setRequestProperty("Referer", item.referer)
+                if (item.cookies.isNotBlank()) conn.setRequestProperty("Cookie", item.cookies)
+                conn.connect()
+                
+                val totalSize = conn.contentLength.toLong()
+                val input = BufferedInputStream(conn.inputStream)
+                val outputFile = File(getDownloadDir(), item.fileName)
+                item.tempFile = outputFile
+                val output = FileOutputStream(outputFile)
+                
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                var totalRead = 0L
+                val startTime = System.currentTimeMillis()
+                var lastUpdateTime = startTime
+                
+                while (true) {
+                    while (item.state == DownloadState.PAUSED) {
+                        Thread.sleep(500)
+                        if (item.state == DownloadState.FAILED) {
+                            try { input.close() } catch (_: Exception) {}
+                            try { output.close() } catch (_: Exception) {}
+                            try { conn.disconnect() } catch (_: Exception) {}
+                            return@thread
+                        }
+                    }
+                    if (item.state == DownloadState.FAILED) {
+                        try { input.close() } catch (_: Exception) {}
+                        try { output.close() } catch (_: Exception) {}
+                        try { conn.disconnect() } catch (_: Exception) {}
+                        return@thread
+                    }
+                    
+                    networkLimiter.acquire(buffer.size.toLong())
+                    
+                    bytesRead = input.read(buffer)
+                    if (bytesRead == -1) break
+                    
+                    output.write(buffer, 0, bytesRead)
+                    totalRead += bytesRead
+                    
+                    val now = System.currentTimeMillis()
+                    if (now - lastUpdateTime >= 500) {
+                        val elapsed = (now - startTime) / 1000f
+                        val speedBps = if (elapsed > 0) totalRead / elapsed else 0f
+                        item.downloadedBytes = totalRead
+                        item.progress = if (totalSize > 0) ((totalRead * 100) / totalSize).toInt() else 0
+                        item.speed = when {
+                            speedBps > 1_000_000 -> "%.1f MB/s".format(speedBps / 1_000_000)
+                            speedBps > 1_000 -> "%.0f KB/s".format(speedBps / 1_000)
+                            else -> "%.0f B/s".format(speedBps)
+                        }
+                        if (showDownloadManager) downloadUpdateTrigger++
+                        lastUpdateTime = now
+                    }
+                }
+                input.close()
+                output.close()
+                conn.disconnect()
+                if (item.state != DownloadState.PAUSED) {
+                    item.state = DownloadState.COMPLETED
+                    item.progress = 100
+                    if (showDownloadManager) downloadUpdateTrigger++
+                }
+            } catch (e: Exception) {
+                if (item.state != DownloadState.PAUSED) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                }
+            } finally {
+                if (currentDownloadId == id) {
+                    currentDownloadId = null
+                    checkNextQueued()
+                }
+            }
         }
     }
 
@@ -1141,96 +1216,12 @@ fun GreyBrowser() {
         }
     }
 
-    fun startDownload(id: String) {
-        val item = activeDownloads.find { it.id == id } ?: return
-        if (currentDownloadId != null && currentDownloadId != id) return
-        
-        if (item.url.contains(".m3u8")) { downloadM3U8(item); return }
-        
-        item.state = DownloadState.DOWNLOADING
-        currentDownloadId = id
-        startDownloadService(context)
-        
-        thread(name = "download-$id") {
-            try {
-                val url = URL(item.url)
-                val conn = url.openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000; conn.readTimeout = 30000
-                if (item.referer.isNotBlank()) conn.setRequestProperty("Referer", item.referer)
-                if (item.cookies.isNotBlank()) conn.setRequestProperty("Cookie", item.cookies)
-                conn.connect()
-                
-                val totalSize = conn.contentLength.toLong()
-                val input = BufferedInputStream(conn.inputStream)
-                val outputFile = File(getDownloadDir(), item.fileName)
-                item.tempFile = outputFile
-                val output = FileOutputStream(outputFile)
-                
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                var totalRead = 0L
-                val startTime = System.currentTimeMillis()
-                var lastUpdateTime = startTime
-                
-                while (true) {
-                    while (item.state == DownloadState.PAUSED) {
-                        Thread.sleep(500)
-                        if (item.state == DownloadState.FAILED) {
-                            try { input.close() } catch (_: Exception) {}
-                            try { output.close() } catch (_: Exception) {}
-                            try { conn.disconnect() } catch (_: Exception) {}
-                            return@thread
-                        }
-                    }
-                    if (item.state == DownloadState.FAILED) {
-                        try { input.close() } catch (_: Exception) {}
-                        try { output.close() } catch (_: Exception) {}
-                        try { conn.disconnect() } catch (_: Exception) {}
-                        return@thread
-                    }
-                    
-                    networkLimiter.acquire(buffer.size.toLong())
-                    
-                    bytesRead = input.read(buffer)
-                    if (bytesRead == -1) break
-                    
-                    output.write(buffer, 0, bytesRead)
-                    totalRead += bytesRead
-                    
-                    val now = System.currentTimeMillis()
-                    if (now - lastUpdateTime >= 500) {
-                        val elapsed = (now - startTime) / 1000f
-                        val speedBps = if (elapsed > 0) totalRead / elapsed else 0f
-                        item.downloadedBytes = totalRead
-                        item.progress = if (totalSize > 0) ((totalRead * 100) / totalSize).toInt() else 0
-                        item.speed = when {
-                            speedBps > 1_000_000 -> "%.1f MB/s".format(speedBps / 1_000_000)
-                            speedBps > 1_000 -> "%.0f KB/s".format(speedBps / 1_000)
-                            else -> "%.0f B/s".format(speedBps)
-                        }
-                        if (showDownloadManager) downloadUpdateTrigger++
-                        lastUpdateTime = now
-                    }
-                }
-                input.close()
-                output.close()
-                conn.disconnect()
-                if (item.state != DownloadState.PAUSED) {
-                    item.state = DownloadState.COMPLETED
-                    item.progress = 100
-                    if (showDownloadManager) downloadUpdateTrigger++
-                }
-            } catch (e: Exception) {
-                if (item.state != DownloadState.PAUSED) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                }
-            } finally {
-                if (currentDownloadId == id) {
-                    currentDownloadId = null
-                    checkNextQueued()
-                }
-            }
+    fun checkNextQueued() {
+        val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
+        if (next != null) {
+            startDownload(next.id)
+        } else {
+            stopDownloadService(context)
         }
     }
 
