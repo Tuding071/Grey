@@ -445,7 +445,6 @@ fun loadExtensions(context: Context): List<ExtensionItem> {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 4/10 — Utility Functions, NetworkSpeedLimiter, ExtensionManager ===
 // ═══════════════════════════════════════════════════════════════════
@@ -516,43 +515,21 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
     
     private val installedExtensions = mutableMapOf<String, org.mozilla.geckoview.WebExtension>()
     
-    fun installFromUrl(url: String, onResult: (Boolean, String) -> Unit) {
-        thread(name = "ext-install") {
-            try {
-                val xpiUrl = URL(url)
-                val conn = xpiUrl.openConnection() as HttpURLConnection
-                conn.connectTimeout = 30000; conn.readTimeout = 30000
-                conn.connect()
-                
-                if (conn.responseCode != 200) {
-                    onResult(false, "Failed to download: HTTP ${conn.responseCode}")
-                    return@thread
+    fun installFromFile(uri: Uri, onResult: (Boolean, String) -> Unit) {
+        val xpiUri = uri.toString()
+        val controller = runtime.webExtensionController
+        
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            controller.install(xpiUri).accept({ ext ->
+                if (ext != null) {
+                    installedExtensions[ext.id] = ext
+                    onResult(true, ext.id)
+                } else {
+                    onResult(false, "Install returned null")
                 }
-                
-                val xpiFile = File.createTempFile("extension", ".xpi")
-                FileOutputStream(xpiFile).use { output ->
-                    conn.inputStream.use { input -> input.copyTo(output) }
-                }
-                conn.disconnect()
-                
-                val controller = runtime.webExtensionController
-                val xpiUri = xpiFile.toURI().toString()
-                
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    controller.install(xpiUri).accept({ ext ->
-                        if (ext != null) {
-                            installedExtensions[ext.id] = ext
-                            onResult(true, ext.id)
-                        } else {
-                            onResult(false, "Install returned null")
-                        }
-                    }, { error ->
-                        onResult(false, "Install failed: ${error?.message ?: "unknown"}")
-                    })
-                }
-            } catch (e: Exception) {
-                onResult(false, "Error: ${e.message}")
-            }
+            }, { error ->
+                onResult(false, "Install failed: ${error?.message ?: "unknown"}")
+            })
         }
     }
     
@@ -575,6 +552,10 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 }
 
 // END OF PART 4/10
+
+
+
+
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -753,7 +734,6 @@ fun GreyBrowser() {
             override fun onPageStart(s: GeckoSession, url: String) {
                 tabState.url = url; tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
-                log("onPageStart: $url")
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
                     lastActiveUrl = url
@@ -768,7 +748,6 @@ fun GreyBrowser() {
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                log("onPageStop: success=$success url=${tabState.url}")
                 if (success && tabState.url != "about:blank") {
                     addToHistory(tabState.url, tabState.title)
                 }
@@ -786,7 +765,6 @@ fun GreyBrowser() {
                 element: GeckoSession.ContentDelegate.ContextElement
             ) {
                 if (element.linkUri != null) {
-                    log("onContextMenu: ${element.linkUri}")
                     contextMenuUri = element.linkUri; showContextMenu = true
                     val lowerUrl = element.linkUri!!.lowercase()
                     if (lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".webm") || 
@@ -803,23 +781,7 @@ fun GreyBrowser() {
                 response: WebResponse
             ) {
                 val url = response.uri
-                log("onExternalResponse: $url")
                 if (url != null) {
-                    if (url.endsWith(".xpi")) {
-                        log("XPI detected! Installing extension...")
-                        extensionManager.installFromUrl(url) { success, msg ->
-                            log("Extension install result: success=$success msg=$msg")
-                            if (success) {
-                                val extName = url.substringAfterLast("/").substringBeforeLast(".xpi").ifBlank { "Extension" }
-                                extensions.add(ExtensionItem(id = msg, name = extName, enabled = true))
-                                showToast("Extension installed")
-                            } else {
-                                showToast("Extension install failed: $msg")
-                            }
-                        }
-                        return
-                    }
-                    
                     val fileName = url.substringAfterLast("/").substringBefore("?")
                     downloadEditorUrl = url
                     downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
@@ -840,7 +802,6 @@ fun GreyBrowser() {
                 hasUserGesture: Boolean
             ) {
                 url?.let { newUrl ->
-                    log("onLocationChange: $newUrl")
                     tabState.url = newUrl
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
@@ -1011,6 +972,8 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 6/10
+
+
 
 
 
@@ -1274,6 +1237,7 @@ fun GreyBrowser() {
 
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1327,7 +1291,7 @@ fun GreyBrowser() {
     }
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
-    if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onOpenUrl = { url -> createForegroundTab(url) }, onDismiss = { showExtensions = false }) }
+    if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onDismiss = { showExtensions = false }) }
     if (showLogcat) { LogcatUI(logLines = logLines, onClear = { logLines.clear() }, onDismiss = { showLogcat = false }) }
 
     if (showHistory) {
@@ -1700,7 +1664,6 @@ fun DownloadManagerUI(
 // END OF PART 9/10
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 10/10 — ExtensionsUI, LogcatUI, BookmarksUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1713,9 +1676,23 @@ fun DownloadManagerUI(
 fun ExtensionsUI(
     extensionManager: ExtensionManager,
     extensions: MutableList<ExtensionItem>,
-    onOpenUrl: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var filePickerLauncher = rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val extName = uri.lastPathSegment?.substringBeforeLast(".xpi") ?: "Extension"
+            extensionManager.installFromFile(uri) { success, msg ->
+                if (success) {
+                    extensions.add(ExtensionItem(id = msg, name = extName, enabled = true))
+                }
+            }
+        }
+    }
+
     var showSettingsForExt by remember { mutableStateOf<String?>(null) }
 
     Popup(
@@ -1731,19 +1708,16 @@ fun ExtensionsUI(
                     Text("Extensions", color = Color.White, fontSize = 18.sp)
                 }
 
-                // Find Extensions button
+                // Install .xpi button
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     OutlinedButton(
-                        onClick = {
-                            onOpenUrl("https://addons.mozilla.org/android/extensions/")
-                            onDismiss()
-                        },
+                        onClick = { filePickerLauncher.launch("application/x-xpinstall") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RectangleShape,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                         border = BorderStroke(1.dp, Color.White)
                     ) {
-                        Text("Find Extensions", color = Color.White)
+                        Text("Install .xpi", color = Color.White)
                     }
                 }
 
@@ -1823,7 +1797,7 @@ fun ExtensionsUI(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// ── LOGCAT UI ➤ (Simplified — internal buffer only) ──────────────
+// ── LOGCAT UI ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
@@ -1865,7 +1839,7 @@ fun LogcatUI(
                             val lineColor = when {
                                 line.contains("Error") || line.contains("FAILED") || line.contains("error") -> Color.Red
                                 line.contains("install") || line.contains("Install") -> Color(0xFF4CAF50)
-                                line.contains("XPI") || line.contains("Extension") -> Color(0xFFFFA500)
+                                line.contains("Extension") -> Color(0xFFFFA500)
                                 else -> Color.White
                             }
                             Text(
@@ -1882,10 +1856,6 @@ fun LogcatUI(
         }
     }
 }
-
-
-
-
 
 // ═══════════════════════════════════════════════════════════════════
 // ── BOOKMARKS UI ─────────────────────────────────────────────────
