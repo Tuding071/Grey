@@ -556,9 +556,9 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
     fun setEnabled(extId: String, enabled: Boolean) {
         installedExtensions[extId]?.let { ext ->
             if (enabled) {
-                runtime.webExtensionController.enable(ext, GeckoResult())
+                runtime.webExtensionController.enable(ext, 1)
             } else {
-                runtime.webExtensionController.disable(ext, GeckoResult())
+                runtime.webExtensionController.disable(ext, 1)
             }
         }
     }
