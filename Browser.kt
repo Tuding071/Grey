@@ -1022,15 +1022,6 @@ fun GreyBrowser() {
 
     fun addDownload(item: DownloadItem) { activeDownloads.add(item) }
 
-    fun checkNextQueued() {
-        val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
-        if (next != null) {
-            startDownload(next.id)
-        } else {
-            stopDownloadService(context)
-        }
-    }
-
     fun startDownload(id: String) {
         val item = activeDownloads.find { it.id == id } ?: return
         if (currentDownloadId != null && currentDownloadId != id) return
@@ -1118,7 +1109,13 @@ fun GreyBrowser() {
             } finally {
                 if (currentDownloadId == id) {
                     currentDownloadId = null
-                    checkNextQueued()
+                    // Auto-start next QUEUED (skips PAUSED items)
+                    val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
+                    if (next != null) {
+                        startDownload(next.id)
+                    } else {
+                        stopDownloadService(context)
+                    }
                 }
             }
         }
@@ -1217,7 +1214,13 @@ fun GreyBrowser() {
             } finally {
                 if (currentDownloadId == item.id) {
                     currentDownloadId = null
-                    checkNextQueued()
+                    // Auto-start next QUEUED (skips PAUSED items)
+                    val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
+                    if (next != null) {
+                        startDownload(next.id)
+                    } else {
+                        stopDownloadService(context)
+                    }
                 }
             }
         }
@@ -1230,11 +1233,14 @@ fun GreyBrowser() {
     
     fun resumeDownload(id: String) {
         val item = activeDownloads.find { it.id == id } ?: return
-        item.state = DownloadState.DOWNLOADING
-        if (showDownloadManager) downloadUpdateTrigger++
-        if (currentDownloadId == null) {
+        if (currentDownloadId != null && currentDownloadId != id) {
+            // Something else is downloading, just queue it
+            item.state = DownloadState.QUEUED
+        } else {
+            item.state = DownloadState.DOWNLOADING
             startDownload(id)
         }
+        if (showDownloadManager) downloadUpdateTrigger++
     }
     
     fun deleteDownload(id: String) {
@@ -1244,7 +1250,13 @@ fun GreyBrowser() {
         activeDownloads.remove(item)
         if (wasActive) {
             currentDownloadId = null
-            checkNextQueued()
+            // Auto-start next QUEUED (skips PAUSED items)
+            val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
+            if (next != null) {
+                startDownload(next.id)
+            } else {
+                stopDownloadService(context)
+            }
         }
     }
 
@@ -1264,6 +1276,7 @@ fun GreyBrowser() {
     }
 
 // END OF PART 7/10
+
 
 
 
