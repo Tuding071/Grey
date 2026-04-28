@@ -458,6 +458,8 @@ fun loadBookmarks(context: Context): List<Bookmark> {
 // END OF PART 3/10
 
 
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 4/10 — Utility Functions, NetworkSpeedLimiter, AdBlocker ===
 // ═══════════════════════════════════════════════════════════════════
@@ -859,11 +861,11 @@ fun GreyBrowser() {
             override fun onLoadRequest(
                 session: GeckoSession,
                 request: GeckoSession.NavigationDelegate.LoadRequest
-            ): GeckoResult<AllowOrDeny> {
+            ): GeckoResult<GeckoSession.NavigationDelegate.AllowOrDeny>? {
                 if (adBlockingEnabled && adBlocker.shouldBlock(request.uri)) {
-                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                    return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.DENY)
                 }
-                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+                return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW)
             }
         }
     }
@@ -1015,8 +1017,6 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 6/10
-
-
 
 
 
@@ -1275,6 +1275,8 @@ fun GreyBrowser() {
     }
 
 // END OF PART 7/10
+
+
 
 
 
