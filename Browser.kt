@@ -578,10 +578,6 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 
 
 
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -628,9 +624,22 @@ fun GreyBrowser() {
     // ── Bookmark State ─────────────────────────────────────────────────
     val bookmarks = remember { mutableStateListOf<Bookmark>().apply { addAll(loadBookmarks(context)) } }
     var showBookmarks by remember { mutableStateOf(false) }
+    // ── Logcat State ───────────────────────────────────────────────────
+    val logLines = remember { mutableStateListOf<String>() }
+    var showLogcat by remember { mutableStateOf(false) }
+    var isLogcatRunning by remember { mutableStateOf(false) }
     // ── Toast State ────────────────────────────────────────────────────
     var toastMessage by remember { mutableStateOf("") }
     var showToast by remember { mutableStateOf(false) }
+
+    // ── Logging helper ────────────────────────────────────────────────
+    fun log(msg: String) {
+        android.util.Log.d("GreyBrowser", msg)
+        logLines.add("${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())} $msg")
+        if (logLines.size > 500) {
+            logLines.removeAt(0)
+        }
+    }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -732,7 +741,32 @@ fun GreyBrowser() {
         }
     }
 
+    // Logcat reader
+    LaunchedEffect(isLogcatRunning) {
+        if (isLogcatRunning) {
+            try {
+                val process = Runtime.getRuntime().exec(arrayOf("logcat", "-c"))
+                process.waitFor()
+                val reader = Runtime.getRuntime().exec(arrayOf("logcat", "-s", "GreyBrowser"))
+                val bufferedReader = java.io.BufferedReader(java.io.InputStreamReader(reader.inputStream))
+                var line: String?
+                while (isLogcatRunning) {
+                    line = bufferedReader.readLine()
+                    if (line != null) {
+                        logLines.add(line)
+                        if (logLines.size > 500) {
+                            logLines.removeAt(0)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                log("Logcat error: ${e.message}")
+            }
+        }
+    }
+
 // END OF PART 5/10
+
 
 
 
@@ -746,13 +780,13 @@ fun GreyBrowser() {
             override fun onPageStart(s: GeckoSession, url: String) {
                 tabState.url = url; tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
+                log("onPageStart: $url")
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
                     lastActiveUrl = url
                     if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
                         highlightedTabIndex = currentTabIndex
                     }
-                    // Clear video dropdown on navigation
                     if (tabs.getOrNull(currentTabIndex) == tabState || (currentTabIndex == -1 && tabState == homeTab)) {
                         detectedVideos.clear()
                         showVideoDropdown = false
@@ -761,6 +795,7 @@ fun GreyBrowser() {
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
+                log("onPageStop: success=$success url=${tabState.url}")
                 if (success && tabState.url != "about:blank") {
                     addToHistory(tabState.url, tabState.title)
                 }
@@ -778,8 +813,8 @@ fun GreyBrowser() {
                 element: GeckoSession.ContentDelegate.ContextElement
             ) {
                 if (element.linkUri != null) {
+                    log("onContextMenu: ${element.linkUri}")
                     contextMenuUri = element.linkUri; showContextMenu = true
-                    // Detect video links from context menu
                     val lowerUrl = element.linkUri!!.lowercase()
                     if (lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".webm") || 
                         lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".ts")) {
@@ -795,12 +830,13 @@ fun GreyBrowser() {
                 response: WebResponse
             ) {
                 val url = response.uri
+                log("onExternalResponse: $url")
                 if (url != null) {
-                    // Check if this is an extension (.xpi) file
                     if (url.endsWith(".xpi")) {
+                        log("XPI detected! Installing extension...")
                         extensionManager.installFromUrl(url) { success, msg ->
+                            log("Extension install result: success=$success msg=$msg")
                             if (success) {
-                                // Find extension info from URL or use defaults
                                 val extName = url.substringAfterLast("/").substringBeforeLast(".xpi").ifBlank { "Extension" }
                                 extensions.add(ExtensionItem(id = msg, name = extName, enabled = true))
                                 showToast("Extension installed")
@@ -817,7 +853,6 @@ fun GreyBrowser() {
                     downloadEditorSize = "Unknown"
                     downloadEditorIsVideo = url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8")
                     showDownloadEditor = true
-                    // Also add to detected videos
                     if (downloadEditorIsVideo && !detectedVideos.any { it.first == url }) {
                         detectedVideos.add(Pair(url, tabState.url))
                         showVideoDropdown = true
@@ -832,11 +867,11 @@ fun GreyBrowser() {
                 hasUserGesture: Boolean
             ) {
                 url?.let { newUrl ->
+                    log("onLocationChange: $newUrl")
                     tabState.url = newUrl
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
 
-                        // ── Direct Video URL Detection ────────────
                         val lowerUrl = newUrl.lowercase()
                         if (lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".mp4") || 
                             lowerUrl.endsWith(".webm") || lowerUrl.endsWith(".ts")) {
@@ -1003,8 +1038,6 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 6/10
-
-
 
 
 
@@ -1267,7 +1300,6 @@ fun GreyBrowser() {
 // END OF PART 7/10
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1322,6 +1354,7 @@ fun GreyBrowser() {
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
     if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onOpenUrl = { url -> createForegroundTab(url) }, onDismiss = { showExtensions = false }) }
+    if (showLogcat) { LogcatUI(logLines = logLines, isRunning = isLogcatRunning, onToggleRunning = { isLogcatRunning = it }, onClear = { logLines.clear() }, onDismiss = { showLogcat = false }) }
 
     if (showHistory) {
         HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
@@ -1508,6 +1541,7 @@ fun GreyBrowser() {
                             DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
                             DropdownMenuItem(text = { Text("Extensions", color = Color.White) }, onClick = { showMenu = false; showExtensions = true })
                             DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
+                            DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true; isLogcatRunning = true })
                         }
                     }
                 }
@@ -1539,7 +1573,6 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
-
 
 
 
@@ -1693,11 +1726,8 @@ fun DownloadManagerUI(
 
 
 
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 10/10 — ExtensionsUI, BookmarksUI, HistoryUI, Settings, Helpers ===
+// === PART 10/10 — ExtensionsUI, LogcatUI, BookmarksUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1814,6 +1844,77 @@ fun ExtensionsUI(
             shape = RectangleShape,
             tonalElevation = 0.dp
         )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ── LOGCAT UI ────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+fun LogcatUI(
+    logLines: List<String>,
+    isRunning: Boolean,
+    onToggleRunning: (Boolean) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(logLines.size) {
+        if (logLines.isNotEmpty()) {
+            listState.animateScrollToItem(logLines.size - 1)
+        }
+    }
+
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = {
+            onToggleRunning(false)
+            onDismiss()
+        },
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({
+                        onToggleRunning(false)
+                        onDismiss()
+                    }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp))
+                    Text("Logcat", color = Color.White, fontSize = 18.sp)
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { onClear() }) { Text("Clear", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp) }
+                    TextButton(onClick = { onToggleRunning(!isRunning) }) {
+                        Text(if (isRunning) "⏸ Pause" else "▶ Resume", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                    }
+                }
+
+                if (logLines.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("No logs yet. Waiting for events...", color = Color.Gray, fontSize = 14.sp)
+                    }
+                } else {
+                    LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                        items(logLines) { line ->
+                            val lineColor = when {
+                                line.contains(" E/") || line.contains("FAILED") || line.contains("Error") -> Color.Red
+                                line.contains(" W/") -> Color(0xFFFFA500)
+                                else -> Color.White
+                            }
+                            Text(
+                                line,
+                                color = lineColor.copy(alpha = 0.9f),
+                                fontSize = 11.sp,
+                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
