@@ -1010,7 +1010,6 @@ fun GreyBrowser() {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 7/10 — GreyBrowser() Download Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1022,105 +1021,6 @@ fun GreyBrowser() {
     }
 
     fun addDownload(item: DownloadItem) { activeDownloads.add(item) }
-
-    fun downloadM3U8(item: DownloadItem) {
-        item.state = DownloadState.DOWNLOADING
-        currentDownloadId = item.id
-        startDownloadService(context)
-        
-        thread(name = "m3u8-${item.id}") {
-            try {
-                val url = URL(item.url)
-                val conn = url.openConnection() as HttpURLConnection
-                if (item.referer.isNotBlank()) conn.setRequestProperty("Referer", item.referer)
-                conn.connect()
-                val playlist = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                
-                val baseUrl = item.url.substringBeforeLast("/")
-                val segments = playlist.lines()
-                    .filter { it.isNotBlank() && !it.startsWith("#") }
-                    .map { seg -> if (seg.startsWith("http")) seg.trim() else "$baseUrl/${seg.trim()}" }
-                
-                if (segments.isEmpty()) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                    return@thread
-                }
-                
-                val tempDir = File(context.cacheDir, "m3u8_${item.id}")
-                tempDir.mkdirs()
-                val segmentFiles = mutableListOf<File>()
-                
-                for ((i, segUrl) in segments.withIndex()) {
-                    while (item.state == DownloadState.PAUSED) {
-                        Thread.sleep(500)
-                        if (item.state == DownloadState.FAILED) {
-                            tempDir.deleteRecursively()
-                            return@thread
-                        }
-                    }
-                    if (item.state == DownloadState.FAILED) {
-                        tempDir.deleteRecursively()
-                        return@thread
-                    }
-                    
-                    val segFile = File(tempDir, "seg_${i.toString().padStart(5, '0')}.ts")
-                    try {
-                        val segConn = URL(segUrl).openConnection() as HttpURLConnection
-                        segConn.connectTimeout = 10000; segConn.readTimeout = 10000
-                        if (item.referer.isNotBlank()) segConn.setRequestProperty("Referer", item.referer)
-                        
-                        segConn.inputStream.use { input ->
-                            segFile.outputStream().use { output ->
-                                val buffer = ByteArray(8192)
-                                var bytesRead: Int
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    networkLimiter.acquire(bytesRead.toLong())
-                                    output.write(buffer, 0, bytesRead)
-                                }
-                            }
-                        }
-                        segmentFiles.add(segFile)
-                        item.progress = ((i + 1) * 100) / segments.size
-                        if (showDownloadManager) downloadUpdateTrigger++
-                    } catch (e: Exception) {
-                        // Segment failed, continue with others
-                    }
-                }
-                
-                if (segmentFiles.isEmpty()) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                    tempDir.deleteRecursively()
-                    return@thread
-                }
-                
-                val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
-                FileOutputStream(outputFile).use { out ->
-                    for (seg in segmentFiles) {
-                        seg.inputStream().use { it.copyTo(out) }
-                    }
-                }
-                
-                item.tempFile = outputFile
-                item.state = DownloadState.COMPLETED
-                item.progress = 100
-                if (showDownloadManager) downloadUpdateTrigger++
-                tempDir.deleteRecursively()
-            } catch (e: Exception) {
-                if (item.state != DownloadState.PAUSED) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                }
-            } finally {
-                if (currentDownloadId == item.id) {
-                    currentDownloadId = null
-                    checkNextQueued()
-                }
-            }
-        }
-    }
 
     fun checkNextQueued() {
         val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
@@ -1224,6 +1124,105 @@ fun GreyBrowser() {
         }
     }
 
+    fun downloadM3U8(item: DownloadItem) {
+        item.state = DownloadState.DOWNLOADING
+        currentDownloadId = item.id
+        startDownloadService(context)
+        
+        thread(name = "m3u8-${item.id}") {
+            try {
+                val url = URL(item.url)
+                val conn = url.openConnection() as HttpURLConnection
+                if (item.referer.isNotBlank()) conn.setRequestProperty("Referer", item.referer)
+                conn.connect()
+                val playlist = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+                
+                val baseUrl = item.url.substringBeforeLast("/")
+                val segments = playlist.lines()
+                    .filter { it.isNotBlank() && !it.startsWith("#") }
+                    .map { seg -> if (seg.startsWith("http")) seg.trim() else "$baseUrl/${seg.trim()}" }
+                
+                if (segments.isEmpty()) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                    return@thread
+                }
+                
+                val tempDir = File(context.cacheDir, "m3u8_${item.id}")
+                tempDir.mkdirs()
+                val segmentFiles = mutableListOf<File>()
+                
+                for ((i, segUrl) in segments.withIndex()) {
+                    while (item.state == DownloadState.PAUSED) {
+                        Thread.sleep(500)
+                        if (item.state == DownloadState.FAILED) {
+                            tempDir.deleteRecursively()
+                            return@thread
+                        }
+                    }
+                    if (item.state == DownloadState.FAILED) {
+                        tempDir.deleteRecursively()
+                        return@thread
+                    }
+                    
+                    val segFile = File(tempDir, "seg_${i.toString().padStart(5, '0')}.ts")
+                    try {
+                        val segConn = URL(segUrl).openConnection() as HttpURLConnection
+                        segConn.connectTimeout = 10000; segConn.readTimeout = 10000
+                        if (item.referer.isNotBlank()) segConn.setRequestProperty("Referer", item.referer)
+                        
+                        segConn.inputStream.use { input ->
+                            segFile.outputStream().use { output ->
+                                val buffer = ByteArray(8192)
+                                var bytesRead: Int
+                                while (input.read(buffer).also { bytesRead = it } != -1) {
+                                    networkLimiter.acquire(bytesRead.toLong())
+                                    output.write(buffer, 0, bytesRead)
+                                }
+                            }
+                        }
+                        segmentFiles.add(segFile)
+                        item.progress = ((i + 1) * 100) / segments.size
+                        if (showDownloadManager) downloadUpdateTrigger++
+                    } catch (e: Exception) {
+                        // Segment failed, continue with others
+                    }
+                }
+                
+                if (segmentFiles.isEmpty()) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                    tempDir.deleteRecursively()
+                    return@thread
+                }
+                
+                val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
+                FileOutputStream(outputFile).use { out ->
+                    for (seg in segmentFiles) {
+                        seg.inputStream().use { it.copyTo(out) }
+                    }
+                }
+                
+                item.tempFile = outputFile
+                item.state = DownloadState.COMPLETED
+                item.progress = 100
+                if (showDownloadManager) downloadUpdateTrigger++
+                tempDir.deleteRecursively()
+            } catch (e: Exception) {
+                if (item.state != DownloadState.PAUSED) {
+                    item.state = DownloadState.FAILED
+                    if (showDownloadManager) downloadUpdateTrigger++
+                }
+            } finally {
+                if (currentDownloadId == item.id) {
+                    currentDownloadId = null
+                    checkNextQueued()
+                }
+            }
+        }
+    }
+
     fun pauseDownload(id: String) { 
         activeDownloads.find { it.id == id }?.state = DownloadState.PAUSED
         if (showDownloadManager) downloadUpdateTrigger++
@@ -1265,7 +1264,6 @@ fun GreyBrowser() {
     }
 
 // END OF PART 7/10
-
 
 
 
