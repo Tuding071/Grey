@@ -1,32 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V1.9 (History + Download Fixes + Highlight Fix + Headers + Notif Fix)
+// Grey Browser - V1.10 (Ad Blocking + Bookmarks + Toast + Full Features)
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.1/5 ===
+// === PART 1/10 — Package, Imports, MainActivity, DownloadService ===
+// ═══════════════════════════════════════════════════════════════════
 
 package com.grey.browser
-
-// ═══════════════════════════════════════════════════════════════════
-// GECKOVIEW API NOTE:
-// - ACTIVE: session.setActive(true). Fully rendered, network active.
-// - WARM:   session.setActive(false). Paused in RAM, instant resume.
-// - COLD:   session = null. Discarded from RAM, restores on click.
-// - Background download via Foreground Service with minimal notification
-// ═══════════════════════════════════════════════════════════════════
-// VERSION HISTORY:
-// V1.4 - Scripts auto-inject on page load. Removed Quick Script, play button,
-//        Select All, Copy buttons. Added delete confirmation for scripts.
-// V1.5 - Tab lifecycle: 1 ACTIVE + max 9 WARM + unlimited COLD
-// V1.6 - Downloader core: queue with manual start, one-at-a-time.
-//        M3U8: download segments, merge to .ts file.
-//        Copy link restored. Group delete fix.
-// V1.7 - Video sniffer with UI button. Download Editor popup.
-//        Crash fix for last tab/group delete.
-// V1.8 - Background download via Foreground Service. Speed limit selector.
-//        Delete confirmation for downloads. Resume fix.
-// V1.9 - History feature. Download UI live updates. Real pause fix.
-//        Current tab highlight fix. Browser headers for downloads.
-//        Notification tap does nothing.
-// ═══════════════════════════════════════════════════════════════════
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -41,7 +19,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.IBinder
-import android.os.PowerManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -71,6 +48,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -109,6 +87,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -155,6 +134,14 @@ class DownloadService : Service() {
     }
     override fun onBind(intent: Intent?): IBinder? = null
 }
+
+// END OF PART 1/10
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 2/10 — FaviconCache, Constants, SPEED_LIMITS ===
+// ═══════════════════════════════════════════════════════════════════
 
 object FaviconCache {
     private const val MAX_FAVICONS = 50
@@ -256,7 +243,76 @@ private const val KEY_TABS = "saved_tabs"
 private const val KEY_PINNED = "pinned_domains"
 private const val KEY_LAST_ACTIVE_URL = "last_active_url"
 private const val KEY_SCRIPTS = "saved_scripts"
+private const val KEY_VIDEO_SCRIPTS = "saved_video_scripts"
 private const val KEY_HISTORY = "saved_history"
+private const val KEY_BOOKMARKS = "saved_bookmarks"
+private const val KEY_ADBLOCK_RULES = "adblock_rules"
+private const val KEY_ADBLOCK_ENABLED = "adblock_enabled"
+
+const val MAX_LOADED_TABS = 10
+const val MAX_WARM_TABS = 9
+const val UNDO_DELAY_MS = 3000L
+const val MAX_HISTORY_ITEMS = 500
+
+val SPEED_LIMITS = listOf(0L, 50L * 1024, 100L * 1024, 250L * 1024, 500L * 1024, 1024L * 1024)
+fun formatSpeedLimit(limit: Long): String = when (limit) {
+    0L -> "No Limit"
+    50L * 1024 -> "50 KB/s"
+    100L * 1024 -> "100 KB/s"
+    250L * 1024 -> "250 KB/s"
+    500L * 1024 -> "500 KB/s"
+    1024L * 1024 -> "1 MB/s"
+    else -> "No Limit"
+}
+
+// END OF PART 2/10
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 3/10 — Data Classes, Enums, Save/Load Functions ===
+// ═══════════════════════════════════════════════════════════════════
+
+data class ScriptItem(val id: String, val name: String, val code: String, val enabled: Boolean)
+
+data class HistoryItem(
+    val url: String,
+    val title: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+data class Bookmark(
+    val id: String = UUID.randomUUID().toString(),
+    val url: String,
+    val title: String,
+    val folder: String = "",
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED }
+
+data class DownloadItem(
+    val id: String = UUID.randomUUID().toString(),
+    val url: String,
+    val fileName: String,
+    val fileSize: Long = 0L,
+    var downloadedBytes: Long = 0L,
+    var state: DownloadState = DownloadState.QUEUED,
+    var progress: Int = 0,
+    var speed: String = "",
+    val referer: String = "",
+    val cookies: String = "",
+    var isVideo: Boolean = false,
+    var tempFile: File? = null
+)
+
+class TabState {
+    var session by mutableStateOf<GeckoSession?>(null)
+    var title by mutableStateOf("New Tab")
+    var url by mutableStateOf("about:blank")
+    var progress by mutableIntStateOf(100)
+    var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
+    var isBlankTab by mutableStateOf(true)
+    var isDiscarded by mutableStateOf(false)
+}
 
 fun saveTabs(context: Context) {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().apply()
@@ -302,55 +358,6 @@ fun loadTabsData(context: Context): Triple<List<Pair<String, String>>, List<Stri
     return Triple(tabsList, pinnedList, lastActiveUrl)
 }
 
-data class ScriptItem(val id: String, val name: String, val code: String, val enabled: Boolean)
-
-// ── History System ────────────────────────────────────────────────────
-data class HistoryItem(
-    val url: String,
-    val title: String,
-    val timestamp: Long = System.currentTimeMillis()
-)
-
-fun saveHistory(context: Context, history: List<HistoryItem>) {
-    val arr = JSONArray()
-    for (h in history) {
-        val obj = JSONObject()
-        obj.put("url", h.url); obj.put("title", h.title); obj.put("timestamp", h.timestamp)
-        arr.put(obj)
-    }
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_HISTORY, arr.toString()).apply()
-}
-
-fun loadHistory(context: Context): List<HistoryItem> {
-    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_HISTORY, null) ?: return emptyList()
-    return try {
-        val arr = JSONArray(json)
-        mutableListOf<HistoryItem>().apply {
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(HistoryItem(o.getString("url"), o.getString("title"), o.getLong("timestamp")))
-            }
-        }
-    } catch (e: Exception) { emptyList() }
-}
-
-enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED }
-
-data class DownloadItem(
-    val id: String = UUID.randomUUID().toString(),
-    val url: String,
-    val fileName: String,
-    val fileSize: Long = 0L,
-    var downloadedBytes: Long = 0L,
-    var state: DownloadState = DownloadState.QUEUED,
-    var progress: Int = 0,
-    var speed: String = "",
-    val referer: String = "",
-    val cookies: String = "",
-    var isVideo: Boolean = false,
-    var tempFile: File? = null
-)
-
 fun saveScripts(context: Context, scripts: List<ScriptItem>) {
     val arr = JSONArray()
     for (s in scripts) {
@@ -375,15 +382,85 @@ fun loadScripts(context: Context): List<ScriptItem> {
     } catch (e: Exception) { emptyList() }
 }
 
-class TabState {
-    var session by mutableStateOf<GeckoSession?>(null)
-    var title by mutableStateOf("New Tab")
-    var url by mutableStateOf("about:blank")
-    var progress by mutableIntStateOf(100)
-    var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
-    var isBlankTab by mutableStateOf(true)
-    var isDiscarded by mutableStateOf(false)
+fun saveVideoScripts(context: Context, scripts: List<ScriptItem>) {
+    val arr = JSONArray()
+    for (s in scripts) {
+        val obj = JSONObject()
+        obj.put("id", s.id); obj.put("name", s.name)
+        obj.put("code", s.code); obj.put("enabled", s.enabled)
+        arr.put(obj)
+    }
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_VIDEO_SCRIPTS, arr.toString()).apply()
 }
+
+fun loadVideoScripts(context: Context): List<ScriptItem> {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_VIDEO_SCRIPTS, null) ?: return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        mutableListOf<ScriptItem>().apply {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(ScriptItem(o.getString("id"), o.getString("name"), o.getString("code"), o.getBoolean("enabled")))
+            }
+        }
+    } catch (e: Exception) { emptyList() }
+}
+
+fun saveHistory(context: Context, history: List<HistoryItem>) {
+    val arr = JSONArray()
+    for (h in history) {
+        val obj = JSONObject()
+        obj.put("url", h.url); obj.put("title", h.title); obj.put("timestamp", h.timestamp)
+        arr.put(obj)
+    }
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_HISTORY, arr.toString()).apply()
+}
+
+fun loadHistory(context: Context): List<HistoryItem> {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_HISTORY, null) ?: return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        mutableListOf<HistoryItem>().apply {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(HistoryItem(o.getString("url"), o.getString("title"), o.getLong("timestamp")))
+            }
+        }
+    } catch (e: Exception) { emptyList() }
+}
+
+fun saveBookmarks(context: Context, bookmarks: List<Bookmark>) {
+    val arr = JSONArray()
+    for (b in bookmarks) {
+        val obj = JSONObject()
+        obj.put("id", b.id); obj.put("url", b.url)
+        obj.put("title", b.title); obj.put("folder", b.folder)
+        obj.put("timestamp", b.timestamp)
+        arr.put(obj)
+    }
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_BOOKMARKS, arr.toString()).apply()
+}
+
+fun loadBookmarks(context: Context): List<Bookmark> {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_BOOKMARKS, null) ?: return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        mutableListOf<Bookmark>().apply {
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                add(Bookmark(o.getString("id"), o.getString("url"), o.getString("title"),
+                    o.optString("folder", ""), o.getLong("timestamp")))
+            }
+        }
+    } catch (e: Exception) { emptyList() }
+}
+
+// END OF PART 3/10
+
+
+// ═══════════════════════════════════════════════════════════════════
+// === PART 4/10 — Utility Functions, NetworkSpeedLimiter, AdBlocker ===
+// ═══════════════════════════════════════════════════════════════════
 
 fun getDomainName(url: String): String {
     if (url == "about:blank" || url.isBlank()) return ""
@@ -394,11 +471,6 @@ fun getDomainName(url: String): String {
     } catch (e: Exception) { "Unknown" }
 }
 
-const val MAX_LOADED_TABS = 10
-const val MAX_WARM_TABS = 9
-const val UNDO_DELAY_MS = 3000L
-const val MAX_HISTORY_ITEMS = 500
-
 fun resolveUrl(input: String): String {
     if (input.isBlank()) return "about:blank"
     if (input.contains("://") || (input.contains(".") && !input.contains(" "))) {
@@ -407,23 +479,110 @@ fun resolveUrl(input: String): String {
     return "https://www.google.com/search?q=${Uri.encode(input)}"
 }
 
-val SPEED_LIMITS = listOf(0L, 50L * 1024, 100L * 1024, 250L * 1024, 500L * 1024, 1024L * 1024)
-fun formatSpeedLimit(limit: Long): String = when (limit) {
-    0L -> "No Limit"
-    50L * 1024 -> "50 KB/s"
-    100L * 1024 -> "100 KB/s"
-    250L * 1024 -> "250 KB/s"
-    500L * 1024 -> "500 KB/s"
-    1024L * 1024 -> "1 MB/s"
-    else -> "No Limit"
+// ── Global Network Speed Limiter ────────────────────────────────────
+class NetworkSpeedLimiter {
+    @Volatile var maxBytesPerSecond: Long = 0L
+    
+    private var tokens: Double = 0.0
+    private var lastRefillNs: Long = System.nanoTime()
+    private val lock = Any()
+    
+    fun acquire(bytes: Long) {
+        val limit = maxBytesPerSecond
+        if (limit <= 0L) return
+        
+        synchronized(lock) {
+            while (true) {
+                refillTokens(limit)
+                if (tokens >= bytes) {
+                    tokens -= bytes
+                    return
+                }
+                val needed = bytes - tokens
+                val waitMs = (needed * 1000) / limit + 1
+                try { (lock as java.lang.Object).wait(waitMs) }
+                catch (e: InterruptedException) { return }
+            }
+        }
+    }
+    
+    private fun refillTokens(limit: Long) {
+        val nowNs = System.nanoTime()
+        val elapsedNs = nowNs - lastRefillNs
+        if (elapsedNs <= 0) return
+        val elapsedSeconds = elapsedNs / 1_000_000_000.0
+        tokens += elapsedSeconds * limit
+        val maxTokens = limit.toDouble() * 2
+        if (tokens > maxTokens) tokens = maxTokens
+        lastRefillNs = nowNs
+    }
 }
 
-// END OF PART 1.1/5
+// ── Ad Blocker ──────────────────────────────────────────────────────
+class AdBlocker {
+    private val blockRules = mutableListOf<Rule>()
+    private val allowRules = mutableListOf<Rule>()
+    
+    data class Rule(val pattern: String, val isRegex: Boolean, val options: Set<String>)
+    
+    fun loadFilterList(txtContent: String) {
+        blockRules.clear()
+        allowRules.clear()
+        for (line in txtContent.lines()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
+            
+            val isException = trimmed.startsWith("@@")
+            val ruleBody = if (isException) trimmed.removePrefix("@@") else trimmed
+            
+            val parts = ruleBody.split("$")
+            val urlPattern = parts[0]
+            val options = if (parts.size > 1) parts[1].split(",").map { it.trim() }.toSet() else emptySet()
+            
+            val rule = Rule(urlPattern, urlPattern.startsWith("/") && urlPattern.endsWith("/"), options)
+            
+            if (isException) allowRules.add(rule) else blockRules.add(rule)
+        }
+    }
+    
+    val ruleCount: Int get() = blockRules.size + allowRules.size
+    
+    fun shouldBlock(url: String): Boolean {
+        if (allowRules.any { matches(it, url) }) return false
+        return blockRules.any { matches(it, url) }
+    }
+    
+    private fun matches(rule: Rule, url: String): Boolean {
+        val regex = patternToRegex(rule.pattern)
+        return regex.containsMatchIn(url)
+    }
+    
+    private fun patternToRegex(pattern: String): Regex {
+        return when {
+            pattern.startsWith("||") -> {
+                val domain = pattern.removePrefix("||").removeSuffix("^")
+                Regex("^https?://([a-zA-Z0-9-]+\\.)*${Regex.escape(domain)}/")
+            }
+            pattern.startsWith("|") -> {
+                Regex("^${Regex.escape(pattern.removePrefix("|"))}")
+            }
+            pattern.startsWith("/") && pattern.endsWith("/") -> {
+                Regex(pattern.removeSurrounding("/"))
+            }
+            else -> {
+                Regex(Regex.escape(pattern))
+            }
+        }
+    }
+}
+
+// END OF PART 4/10
+
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.2/5 (V1.10) ===
+// === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -463,11 +622,21 @@ fun GreyBrowser() {
     var downloadEditorName by remember { mutableStateOf("") }
     var downloadEditorSize by remember { mutableStateOf("Unknown") }
     var downloadEditorIsVideo by remember { mutableStateOf(false) }
-    // Global network speed limiter (replaces old speedLimit state)
+    // Global network speed limiter
     val networkLimiter = remember { NetworkSpeedLimiter() }
     // ── History State ──────────────────────────────────────────────────
     val history = remember { mutableStateListOf<HistoryItem>().apply { addAll(loadHistory(context)) } }
     var showHistory by remember { mutableStateOf(false) }
+    // ── Bookmark State ─────────────────────────────────────────────────
+    val bookmarks = remember { mutableStateListOf<Bookmark>().apply { addAll(loadBookmarks(context)) } }
+    var showBookmarks by remember { mutableStateOf(false) }
+    // ── Ad Blocking State ──────────────────────────────────────────────
+    val adBlocker = remember { AdBlocker() }
+    var adBlockingEnabled by remember { mutableStateOf(prefs.getBoolean(KEY_ADBLOCK_ENABLED, false)) }
+    var showAdBlocking by remember { mutableStateOf(false) }
+    // ── Toast State ────────────────────────────────────────────────────
+    var toastMessage by remember { mutableStateOf("") }
+    var showToast by remember { mutableStateOf(false) }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
@@ -507,6 +676,11 @@ fun GreyBrowser() {
             history.removeAt(0)
         }
         saveHistory(context, history)
+    }
+
+    fun showToast(msg: String) {
+        toastMessage = msg
+        showToast = true
     }
 
     val homeSession = remember {
@@ -565,6 +739,7 @@ fun GreyBrowser() {
     }
     LaunchedEffect(scripts.toList()) { saveScripts(context, scripts) }
     LaunchedEffect(videoScripts.toList()) { saveVideoScripts(context, videoScripts) }
+    LaunchedEffect(bookmarks.toList()) { saveBookmarks(context, bookmarks) }
 
     LaunchedEffect(currentTabIndex) {
         if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
@@ -573,14 +748,20 @@ fun GreyBrowser() {
         }
     }
 
-    // No longer clear detected videos on tab switch — cleared on navigation instead
+    // LaunchedEffect for toast auto-hide
+    if (showToast) {
+        LaunchedEffect(showToast) {
+            delay(2000)
+            showToast = false
+        }
+    }
 
-// END OF PART 1.2/5
+// END OF PART 5/10
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.3/5 (V1.10 - Video Scripts + Direct URL + Queue) ===
+// === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
 
     val setupDelegates = fun(tabState: TabState) {
@@ -653,14 +834,13 @@ fun GreyBrowser() {
                         tabState.isBlankTab = false
 
                         // ── Video Script Bridge ──────────────────
-                        // Scripts push video URLs via grey-video://push?url=...
                         if (newUrl.startsWith("grey-video://push?url=")) {
                             val videoUrl = Uri.decode(newUrl.removePrefix("grey-video://push?url="))
                             if (videoUrl.startsWith("http") && !detectedVideos.any { it.first == videoUrl }) {
                                 detectedVideos.add(Pair(videoUrl, tabState.url))
                                 showVideoDropdown = true
                             }
-                            return  // Don't navigate to this fake URL
+                            return
                         }
 
                         // ── Direct Video URL Detection ────────────
@@ -675,6 +855,15 @@ fun GreyBrowser() {
                         }
                     }
                 }
+            }
+            override fun onLoadRequest(
+                session: GeckoSession,
+                request: GeckoSession.NavigationDelegate.LoadRequest
+            ): GeckoResult<AllowOrDeny> {
+                if (adBlockingEnabled && adBlocker.shouldBlock(request.uri)) {
+                    return GeckoResult.fromValue(AllowOrDeny.DENY)
+                }
+                return GeckoResult.fromValue(AllowOrDeny.ALLOW)
             }
         }
     }
@@ -825,12 +1014,15 @@ fun GreyBrowser() {
 
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
-// END OF PART 1.3/5
+// END OF PART 6/10
+
+
+
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.4/5 (V1.10 - Global Speed Limiter + Auto-Queue) ===
+// === PART 7/10 — GreyBrowser() Download Functions ===
 // ═══════════════════════════════════════════════════════════════════
 
     fun getDownloadDir(): File {
@@ -880,7 +1072,6 @@ fun GreyBrowser() {
                 val segmentFiles = mutableListOf<File>()
                 
                 for ((i, segUrl) in segments.withIndex()) {
-                    // REAL PAUSE: Check before downloading segment
                     while (item.state == DownloadState.PAUSED) {
                         Thread.sleep(500)
                         if (item.state == DownloadState.FAILED) {
@@ -904,7 +1095,6 @@ fun GreyBrowser() {
                                 val buffer = ByteArray(8192)
                                 var bytesRead: Int
                                 while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    // ── Global speed limit ─────────
                                     networkLimiter.acquire(bytesRead.toLong())
                                     output.write(buffer, 0, bytesRead)
                                 }
@@ -983,7 +1173,6 @@ fun GreyBrowser() {
                 var lastUpdateTime = startTime
                 
                 while (true) {
-                    // REAL PAUSE: Check BEFORE reading from network
                     while (item.state == DownloadState.PAUSED) {
                         Thread.sleep(500)
                         if (item.state == DownloadState.FAILED) {
@@ -1000,7 +1189,6 @@ fun GreyBrowser() {
                         return@thread
                     }
                     
-                    // ── Global speed limit ─────────────────
                     networkLimiter.acquire(buffer.size.toLong())
                     
                     bytesRead = input.read(buffer)
@@ -1009,7 +1197,6 @@ fun GreyBrowser() {
                     output.write(buffer, 0, bytesRead)
                     totalRead += bytesRead
                     
-                    // Update progress every 500ms only if Download Manager is visible
                     val now = System.currentTimeMillis()
                     if (now - lastUpdateTime >= 500) {
                         val elapsed = (now - startTime) / 1000f
@@ -1087,12 +1274,12 @@ fun GreyBrowser() {
         }
     }
 
-// END OF PART 1.4/5
+// END OF PART 7/10
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1.5/5 (V1.10 - Video Scripts Menu + Updated Download Editor + History Menu) ===
+// === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
 
     if (showDownloadEditor) {
@@ -1118,20 +1305,19 @@ fun GreyBrowser() {
             confirmButton = {
                 Row {
                     TextButton({
-                        // ADD: Just add to queue, don't start
                         addDownload(DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url, state = DownloadState.QUEUED))
                         showDownloadEditor = false
+                        showToast("Added to downloads")
                     }) { Text("Add", color = Color.White) }
                     Spacer(Modifier.width(8.dp))
                     TextButton({
-                        // START: Add to queue, start if nothing is downloading
                         val item = DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url)
                         addDownload(item)
                         if (currentDownloadId == null) {
                             startDownload(item.id)
                         }
-                        // else: stays QUEUED, will auto-start via checkNextQueued()
                         showDownloadEditor = false
+                        showToast("Download started")
                     }) { Text("Start", color = Color.White) }
                 }
             },
@@ -1147,9 +1333,14 @@ fun GreyBrowser() {
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
     if (showScriptManager) { ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false }) }
     if (showVideoScripts) { VideoScriptsUI(scripts = videoScripts, onDismiss = { showVideoScripts = false }) }
+    if (showAdBlocking) { AdBlockingUI(adBlocker = adBlocker, enabled = adBlockingEnabled, onEnabledChange = { adBlockingEnabled = it; prefs.edit().putBoolean(KEY_ADBLOCK_ENABLED, it).apply() }, onDismiss = { showAdBlocking = false }) }
 
     if (showHistory) {
         HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
+    }
+
+    if (showBookmarks) {
+        BookmarksUI(bookmarks = bookmarks, onDismiss = { showBookmarks = false }, onOpenUrl = { url -> createForegroundTab(url) }, onDelete = { id -> bookmarks.removeAll { it.id == id }; showToast("Bookmark deleted") }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
     }
 
     if (showDownloadManager) {
@@ -1172,7 +1363,7 @@ fun GreyBrowser() {
             Column(Modifier.border(1.dp, Color.White, RectangleShape).background(Color(0xFF1E1E1E)).width(IntrinsicSize.Max)) {
                 ContextMenuItem("New Tab") { createForegroundTab(ctxUri!!); showContextMenu = false }
                 ContextMenuItem("Open in Background") { createBackgroundTab(ctxUri!!); showContextMenu = false }
-                ContextMenuItem("Copy link") { clipMgr.setText(AnnotatedString(ctxUri!!)); showContextMenu = false }
+                ContextMenuItem("Copy link") { clipMgr.setText(AnnotatedString(ctxUri!!)); showContextMenu = false; showToast("Link copied") }
             }
         }
     }
@@ -1279,65 +1470,95 @@ fun GreyBrowser() {
     LaunchedEffect(currentTab, currentTab.url) { if (!isUrlFocused) { urlInput = TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url) } }
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
-        Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton({ showTabManager = true }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
-                val isLoading = currentTab.progress in 1..99
-                OutlinedTextField(
-                    value = urlInput, onValueChange = { urlInput = it }, singleLine = true,
-                    placeholder = { Text(if (currentTab.isBlankTab) "Search or enter URL" else currentTab.url.take(50), color = Color.White.copy(alpha = 0.5f), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    modifier = Modifier.weight(1f).padding(vertical = 8.dp).background(Color(0xFF1E1E1E)).focusRequester(focusRequester).onFocusChanged { isUrlFocused = it.isFocused }.drawBehind { if (isLoading) drawRect(Color.White, size = size.copy(width = size.width * currentTab.progress / 100f)) },
-                    textStyle = TextStyle(if (isLoading) Color.Gray else Color.White, 16.sp), shape = RectangleShape,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri) } }),
-                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
-                    trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
-                )
-                IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
-                if (detectedVideos.isNotEmpty()) {
-                    Box {
-                        IconButton({ showVideoDropdown = !showVideoDropdown }) { Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White) }
-                        if (showVideoDropdown) {
-                            DropdownMenu(expanded = showVideoDropdown, onDismissRequest = { showVideoDropdown = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
-                                detectedVideos.take(10).forEach { (url, _) ->
-                                    val shortName = url.substringAfterLast("/").substringBefore("?").take(50)
-                                    DropdownMenuItem(text = { Text(shortName, color = Color.White, fontSize = 13.sp) }, onClick = {
-                                        showVideoDropdown = false; downloadEditorUrl = url
-                                        downloadEditorName = currentTab.title; downloadEditorSize = "Unknown"
-                                        downloadEditorIsVideo = true; showDownloadEditor = true
-                                    })
+        Box(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ showTabManager = true; showToast("Tab manager opened") }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
+                    val isLoading = currentTab.progress in 1..99
+                    OutlinedTextField(
+                        value = urlInput, onValueChange = { urlInput = it }, singleLine = true,
+                        placeholder = { Text(if (currentTab.isBlankTab) "Search or enter URL" else currentTab.url.take(50), color = Color.White.copy(alpha = 0.5f), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        modifier = Modifier.weight(1f).padding(vertical = 8.dp).background(Color(0xFF1E1E1E)).focusRequester(focusRequester).onFocusChanged { isUrlFocused = it.isFocused }.drawBehind { if (isLoading) drawRect(Color.White, size = size.copy(width = size.width * currentTab.progress / 100f)) },
+                        textStyle = TextStyle(if (isLoading) Color.Gray else Color.White, 16.sp), shape = RectangleShape,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri) } }),
+                        colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
+                        trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
+                    )
+                    IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
+                    if (detectedVideos.isNotEmpty()) {
+                        Box {
+                            IconButton({ showVideoDropdown = !showVideoDropdown }) { Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White) }
+                            if (showVideoDropdown) {
+                                DropdownMenu(expanded = showVideoDropdown, onDismissRequest = { showVideoDropdown = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+                                    detectedVideos.take(10).forEach { (url, _) ->
+                                        val shortName = url.substringAfterLast("/").substringBefore("?").take(50)
+                                        DropdownMenuItem(text = { Text(shortName, color = Color.White, fontSize = 13.sp) }, onClick = {
+                                            showVideoDropdown = false; downloadEditorUrl = url
+                                            downloadEditorName = currentTab.title; downloadEditorSize = "Unknown"
+                                            downloadEditorIsVideo = true; showDownloadEditor = true
+                                        })
+                                    }
                                 }
                             }
                         }
                     }
+                    Box {
+                        IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+                            DropdownMenuItem(text = { Text("Add to Bookmark", color = Color.White) }, onClick = {
+                                showMenu = false
+                                val url = currentTab.url
+                                if (url != "about:blank" && url.isNotBlank()) {
+                                    bookmarks.removeAll { it.url == url }
+                                    bookmarks.add(Bookmark(url = url, title = currentTab.title.ifBlank { url }))
+                                    showToast("Added to bookmarks")
+                                }
+                            })
+                            DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true })
+                            DropdownMenuItem(text = { Text("Downloads", color = Color.White) }, onClick = { showMenu = false; showDownloadManager = true })
+                            DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
+                            DropdownMenuItem(text = { Text("Script Manager", color = Color.White) }, onClick = { showMenu = false; showScriptManager = true })
+                            DropdownMenuItem(text = { Text("Video Scripts", color = Color.White) }, onClick = { showMenu = false; showVideoScripts = true })
+                            DropdownMenuItem(text = { Text("Ad Blocking", color = Color.White) }, onClick = { showMenu = false; showAdBlocking = true })
+                            DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
+                        }
+                    }
                 }
-                Box {
-                    IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
-                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
-                        DropdownMenuItem(text = { Text("Downloads", color = Color.White) }, onClick = { showMenu = false; showDownloadManager = true })
-                        DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
-                        DropdownMenuItem(text = { Text("Script Manager", color = Color.White) }, onClick = { showMenu = false; showScriptManager = true })
-                        DropdownMenuItem(text = { Text("Video Scripts", color = Color.White) }, onClick = { showMenu = false; showVideoScripts = true })
-                        DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
+                Box(Modifier.weight(1f).fillMaxWidth()) { GeckoViewBox() }
+            }
+
+            // ── Toast Overlay ──────────────────────────────────
+            if (showToast) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Surface(
+                        modifier = Modifier.padding(bottom = 80.dp),
+                        color = Color.White.copy(alpha = 0.9f),
+                        shape = RectangleShape
+                    ) {
+                        Text(
+                            toastMessage,
+                            color = Color.Black,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                        )
                     }
                 }
             }
-            Box(Modifier.weight(1f).fillMaxWidth()) { GeckoViewBox() }
         }
     }
 }
 
-// END OF PART 1.5/5
-// END OF PART 1/2
+// END OF PART 8/10
 
 
 
-// ═══════════════════════════════════════════════════════════════════
-// === PART 2.1/5 (V1.10 - Updated DownloadManagerUI with Queue + Speed Limiter) ===
-// ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
-// ── DOWNLOAD MANAGER UI ──────────────────────────────────────────
+// === PART 9/10 — DownloadManagerUI Composable ===
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
@@ -1431,7 +1652,6 @@ fun DownloadManagerUI(
                 } else {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                         items(downloads) { item ->
-                            // Read fresh values from the item using updateTrigger
                             val currentState = remember(updateTrigger) { item.state }
                             val currentProgress = remember(updateTrigger) { item.progress }
                             val currentSpeed = remember(updateTrigger) { item.speed }
@@ -1461,10 +1681,8 @@ fun DownloadManagerUI(
                                         when (currentState) {
                                             DownloadState.QUEUED -> {
                                                 if (currentDownloadId == null) {
-                                                    // Nothing downloading — show Start
                                                     TextButton({ onStart(item.id) }) { Text("Start", color = Color.White, fontSize = 13.sp) }
                                                 } else {
-                                                    // Something is downloading — show Queued (in queue)
                                                     Text("In Queue", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                                                 }
                                             }
@@ -1485,14 +1703,13 @@ fun DownloadManagerUI(
     }
 }
 
-// END OF PART 2.1/5
-
+// END OF PART 9/10
 
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2.2/5 ===
+// === PART 10/10 — ScriptManager, VideoScriptsUI, BookmarksUI, AdBlockingUI, Settings, History, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1539,17 +1756,9 @@ fun ScriptManager(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
                     val idx = scripts.indexOfFirst { it.id == editingScript!!.id }
                     if (idx >= 0) scripts[idx] = editingScript!!.copy(name = name, code = code)
                 } else {
-                    scripts.add(
-                        ScriptItem(
-                            id = UUID.randomUUID().toString(),
-                            name = name,
-                            code = code,
-                            enabled = true
-                        )
-                    )
+                    scripts.add(ScriptItem(id = UUID.randomUUID().toString(), name = name, code = code, enabled = true))
                 }
-                editingScript = null
-                isCreating = false
+                editingScript = null; isCreating = false
             },
             onCancel = { editingScript = null; isCreating = false }
         )
@@ -1582,85 +1791,29 @@ fun ScriptList(
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
     ) {
-        Surface(
-            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)),
-            color = Color(0xFF1E1E1E)
-        ) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.Close, "Close", tint = Color.White)
-                    }
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
                     Spacer(Modifier.width(4.dp))
                     Text("Scripts", color = Color.White, fontSize = 18.sp)
-                    if (scripts.isNotEmpty()) {
-                        Spacer(Modifier.width(8.dp))
-                        Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp)
-                    }
+                    if (scripts.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp) }
                 }
 
                 if (scripts.isEmpty()) {
-                    Box(
-                        Modifier.weight(1f).fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("No scripts saved", color = Color.Gray, fontSize = 16.sp)
-                    }
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No scripts saved", color = Color.Gray, fontSize = 16.sp) }
                 } else {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                         items(scripts) { script ->
-                            Surface(
-                                Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                                    .border(0.5.dp, Color.DarkGray, RectangleShape),
-                                color = Color.Transparent
-                            ) {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
-                                        Text(
-                                            script.name,
-                                            color = if (script.enabled) Color.White else Color.Gray,
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                        Text(
-                                            script.code.take(80),
-                                            color = Color.Gray.copy(alpha = 0.7f),
-                                            fontSize = 12.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        Text(script.name, color = if (script.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                                        Text(script.code.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
-                                    Switch(
-                                        checked = script.enabled,
-                                        onCheckedChange = { onToggle(script) },
-                                        colors = SwitchDefaults.colors(
-                                            checkedThumbColor = Color.White,
-                                            checkedTrackColor = Color(0xFF444444),
-                                            uncheckedThumbColor = Color.White,
-                                            uncheckedTrackColor = Color(0xFF444444)
-                                        ),
-                                        modifier = Modifier.padding(end = 4.dp)
-                                    )
-                                    IconButton({ onEdit(script) }) {
-                                        Icon(
-                                            Icons.Default.Edit, "Edit",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                    IconButton({ onDelete(script) }) {
-                                        Icon(
-                                            Icons.Default.Delete, "Delete",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
+                                    Switch(checked = script.enabled, onCheckedChange = { onToggle(script) }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)), modifier = Modifier.padding(end = 4.dp))
+                                    IconButton({ onEdit(script) }) { Icon(Icons.Default.Edit, "Edit", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                    IconButton({ onDelete(script) }) { Icon(Icons.Default.Delete, "Delete", tint = Color.White, modifier = Modifier.size(20.dp)) }
                                 }
                             }
                         }
@@ -1668,271 +1821,319 @@ fun ScriptList(
                 }
 
                 Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                    OutlinedButton(
-                        onClick = onAdd,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) {
-                        Icon(Icons.Default.Add, null, tint = Color.White)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Add Script", color = Color.White)
+                    OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                        Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("Add Script", color = Color.White)
                     }
                 }
             }
         }
     }
 }
-
-// END OF PART 2.2/5
-
-
-
-
-
-
-// ═══════════════════════════════════════════════════════════════════
-// === PART 2.3/5 ===
-// ═══════════════════════════════════════════════════════════════════
 
 @Composable
 fun ScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel: () -> Unit) {
     var name by remember { mutableStateOf(script?.name ?: "") }
     var code by remember { mutableStateOf(script?.code ?: "") }
 
+    Popup(alignment = Alignment.TopStart, onDismissRequest = onCancel, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onCancel() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (script != null) "Edit Script" else "New Script", color = Color.White, fontSize = 18.sp)
+                }
+                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
+                    Text("Name:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
+                    Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    OutlinedTextField(value = code, onValueChange = { code = it }, modifier = Modifier.fillMaxWidth().weight(1f), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
+                }
+                Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                    OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Cancel", color = Color.White) }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { if (name.isNotBlank()) onSave(name, code) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Save Script", color = Color.White) }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ── VIDEO SCRIPTS UI ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+fun VideoScriptsUI(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
+    var editingScript by remember { mutableStateOf<ScriptItem?>(null) }
+    var isCreating by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var scriptToDelete by remember { mutableStateOf<ScriptItem?>(null) }
+
+    if (showDeleteConfirm && scriptToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false; scriptToDelete = null },
+            title = { Text("Delete Video Script?", color = Color.White, fontSize = 18.sp) },
+            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
+            confirmButton = { TextButton({ scripts.remove(scriptToDelete!!); showDeleteConfirm = false; scriptToDelete = null }) { Text("Delete", color = Color.White) } },
+            dismissButton = { TextButton({ showDeleteConfirm = false; scriptToDelete = null }) { Text("Cancel", color = Color.White) } },
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
+        )
+    }
+
+    if (editingScript != null || isCreating) {
+        VideoScriptEditor(
+            script = editingScript,
+            onSave = { name, code ->
+                if (editingScript != null) {
+                    val idx = scripts.indexOfFirst { it.id == editingScript!!.id }
+                    if (idx >= 0) scripts[idx] = editingScript!!.copy(name = name, code = code)
+                } else {
+                    scripts.add(ScriptItem(id = UUID.randomUUID().toString(), name = name, code = code, enabled = true))
+                }
+                editingScript = null; isCreating = false
+            },
+            onCancel = { editingScript = null; isCreating = false }
+        )
+    } else {
+        Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+            Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                        Spacer(Modifier.width(4.dp)); Text("Video Scripts", color = Color.White, fontSize = 18.sp)
+                        if (scripts.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp) }
+                    }
+                    Text("Scripts here push video URLs to downloader via:\n  window.location = 'grey-video://push?url=' + encodeURIComponent(url)", color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
+
+                    if (scripts.isEmpty()) {
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No video scripts", color = Color.Gray, fontSize = 16.sp) }
+                    } else {
+                        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                            items(scripts) { script ->
+                                Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(script.name, color = if (script.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                                            Text(script.code.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        Switch(checked = script.enabled, onCheckedChange = { val idx = scripts.indexOf(script); if (idx >= 0) scripts[idx] = script.copy(enabled = !script.enabled) }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)), modifier = Modifier.padding(end = 4.dp))
+                                        IconButton({ editingScript = script }) { Icon(Icons.Default.Edit, "Edit", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                        IconButton({ scriptToDelete = script; showDeleteConfirm = true }) { Icon(Icons.Default.Delete, "Delete", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                        OutlinedButton(onClick = { isCreating = true }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                            Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("Add Video Script", color = Color.White)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun VideoScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel: () -> Unit) {
+    var name by remember { mutableStateOf(script?.name ?: "") }
+    var code by remember { mutableStateOf(script?.code ?: "") }
+
+    Popup(alignment = Alignment.TopStart, onDismissRequest = onCancel, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onCancel() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (script != null) "Edit Video Script" else "New Video Script", color = Color.White, fontSize = 18.sp)
+                }
+                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
+                    Text("Name:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
+                    Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    OutlinedTextField(
+                        value = code, onValueChange = { code = it }, modifier = Modifier.fillMaxWidth().weight(1f),
+                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                        placeholder = { Text("// Push video URLs to downloader:\n// window.location = 'grey-video://push?url=' + encodeURIComponent(url)\n//\n// Example: Find all <video> sources\n// document.querySelectorAll('video source').forEach(s => {\n//   if (s.src) window.location = 'grey-video://push?url=' + s.src;\n// });", color = Color.Gray.copy(alpha = 0.5f), fontSize = 13.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
+                        shape = RectangleShape
+                    )
+                }
+                Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                    OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Cancel", color = Color.White) }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { if (name.isNotBlank()) onSave(name, code) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Save Script", color = Color.White) }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ── BOOKMARKS UI ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+fun BookmarksUI(
+    bookmarks: List<Bookmark>,
+    onDismiss: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    faviconBitmaps: Map<String, Bitmap?>,
+    loadFavicon: (String) -> Unit
+) {
     Popup(
         alignment = Alignment.TopStart,
-        onDismissRequest = onCancel,
+        onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
     ) {
-        Surface(
-            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)),
-            color = Color(0xFF1E1E1E)
-        ) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton({ onCancel() }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
-                    }
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
                     Spacer(Modifier.width(4.dp))
-                    Text(
-                        if (script != null) "Edit Script" else "New Script",
-                        color = Color.White,
-                        fontSize = 18.sp
-                    )
+                    Text("Bookmarks", color = Color.White, fontSize = 18.sp)
+                    if (bookmarks.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${bookmarks.size})", color = Color.Gray, fontSize = 14.sp) }
                 }
 
-                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
-                    Text(
-                        "Name:",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.White,
-                            unfocusedBorderColor = Color.White,
-                            cursorColor = Color.White,
-                            focusedContainerColor = Color(0xFF1E1E1E),
-                            unfocusedContainerColor = Color(0xFF1E1E1E)
-                        ),
-                        shape = RectangleShape
-                    )
-                    Text(
-                        "Script:",
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(bottom = 4.dp)
-                    )
-                    OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it },
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color.White,
-                            unfocusedBorderColor = Color.White,
-                            cursorColor = Color.White,
-                            focusedContainerColor = Color(0xFF1E1E1E),
-                            unfocusedContainerColor = Color(0xFF1E1E1E)
-                        ),
-                        shape = RectangleShape
-                    )
-                }
+                if (bookmarks.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No bookmarks", color = Color.Gray, fontSize = 16.sp) }
+                } else {
+                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                        items(bookmarks.reversed()) { item ->
+                            val domain = getDomainName(item.url)
+                            LaunchedEffect(item.url) { loadFavicon(domain) }
+                            val fav = faviconBitmaps[domain]
 
-                Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                    OutlinedButton(
-                        onClick = onCancel,
-                        modifier = Modifier.weight(1f),
-                        shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) { Text("Cancel", color = Color.White) }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = { if (name.isNotBlank()) onSave(name, code) },
-                        modifier = Modifier.weight(1f),
-                        shape = RectangleShape,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        border = BorderStroke(1.dp, Color.White)
-                    ) { Text("Save Script", color = Color.White) }
+                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
+                                    if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
+                                    else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(item.url, color = Color.Gray.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    IconButton({ onDelete(item.id) }) { Icon(Icons.Default.Close, "Delete", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp)) }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-// END OF PART 2.3/5
-
-
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2.4/5 ===
-// ═══════════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════════
-// ── Composable Helpers ────────────────────────────────────────────
+// ── AD BLOCKING UI ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
-    val bg = if (isSelected) Color.White else Color.Transparent
-    val fg = if (isSelected) Color.Black else Color.White
-    val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(
-        Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }
-            .border(0.5.dp, borderColor, RectangleShape),
-        color = bg
-    ) {
-        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(2.dp))
-            Box(
-                Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray)
-                    .padding(horizontal = 4.dp, vertical = 1.dp)
-            ) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
-        }
-    }
-}
-
-@Composable
-fun SidebarGroupChip(
-    domain: String,
-    isSelected: Boolean,
-    tabCount: Int,
-    onClick: () -> Unit,
-    favicon: Bitmap?,
-    onAppear: () -> Unit,
-    isBlinking: Boolean,
-    isPinned: Boolean
+fun AdBlockingUI(
+    adBlocker: AdBlocker,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    LaunchedEffect(domain) { onAppear() }
-    val blinkAlpha = if (isBlinking) {
-        val t = rememberInfiniteTransition(label = "blink_$domain")
-        t.animateFloat(
-            0.2f, 0.5f,
-            infiniteRepeatable(tween(400), RepeatMode.Reverse),
-            label = "blinkV"
-        )
-    } else null
-    val bgAlpha =
-        if (isBlinking && blinkAlpha != null) blinkAlpha.value else if (isSelected) 1f else 0f
-    val bg = Color.White.copy(alpha = bgAlpha)
-    val fg = if (isSelected) Color.Black else Color.White
-    val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(
-        Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }
-            .border(0.5.dp, borderColor, RectangleShape),
-        color = bg
-    ) {
-        Box(Modifier.padding(6.dp)) {
-            if (isPinned) Icon(
-                Icons.Default.PushPin, "Pinned", tint = fg,
-                modifier = Modifier.size(12.dp).align(Alignment.TopStart)
-            )
-            Column(
-                Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Spacer(Modifier.height(4.dp))
-                if (favicon != null) Image(
-                    favicon.asImageBitmap(), domain,
-                    Modifier.size(24.dp).clip(CircleShape),
-                    contentScale = ContentScale.Fit
-                )
-                else Box(
-                    Modifier.size(24.dp).clip(CircleShape)
-                        .background(if (isSelected) Color.LightGray else Color.DarkGray),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        domain.take(1).uppercase(), color = fg,
-                        fontSize = 12.sp, fontWeight = FontWeight.Bold
+    var importUrl by remember { mutableStateOf("") }
+    var showImportDialog by remember { mutableStateOf(false) }
+
+    if (showImportDialog) {
+        var importTextField by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showImportDialog = false },
+            title = { Text("Import Filter List", color = Color.White, fontSize = 18.sp) },
+            text = {
+                Column {
+                    Text("Paste URL to .txt filter list:", color = Color.Gray, fontSize = 14.sp)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importTextField, onValueChange = { importTextField = it }, singleLine = true,
+                        placeholder = { Text("https://easylist.to/easylist/easylist.txt", color = Color.Gray.copy(alpha = 0.5f)) },
+                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
+                        shape = RectangleShape, modifier = Modifier.fillMaxWidth()
                     )
                 }
+            },
+            confirmButton = {
+                TextButton({
+                    if (importTextField.isNotBlank()) {
+                        thread(name = "import-filter") {
+                            try {
+                                val url = URL(importTextField)
+                                val content = url.openConnection().apply { connectTimeout = 15000; readTimeout = 15000 }.getInputStream().bufferedReader().readText()
+                                adBlocker.loadFilterList(content)
+                            } catch (e: Exception) { }
+                        }
+                    }
+                    showImportDialog = false
+                }) { Text("Import", color = Color.White) }
+            },
+            dismissButton = { TextButton({ showImportDialog = false }) { Text("Cancel", color = Color.White) } },
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
+        )
+    }
+
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp))
+                    Text("Ad Blocking", color = Color.White, fontSize = 18.sp)
+                }
+
+                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Enable Ad Blocking", color = Color.White, fontSize = 16.sp)
+                        Switch(checked = enabled, onCheckedChange = onEnabledChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(color = Color.DarkGray)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Filter Rules", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Loaded rules: ${adBlocker.ruleCount}", color = Color.Gray, fontSize = 14.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Import a .txt filter list (EasyList, uBlock format) to block ads and trackers.", color = Color.Gray.copy(alpha = 0.7f), fontSize = 13.sp)
+                }
+
+                Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                    OutlinedButton(onClick = { showImportDialog = true }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                        Text("Import Filter List", color = Color.White)
+                    }
+                }
             }
-            Box(
-                Modifier.align(Alignment.BottomEnd)
-                    .background(if (isSelected) Color.LightGray else Color.DarkGray)
-                    .padding(horizontal = 4.dp, vertical = 1.dp)
-            ) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
         }
     }
 }
 
-@Composable
-fun ContextMenuItem(text: String, onClick: () -> Unit) {
-    Box(
-        Modifier.fillMaxWidth().clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) { Text(text, color = Color.White, fontSize = 16.sp) }
-}
-
-// END OF PART 2.4/5
-
-
-
-
-
-
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2.5/5 ===
+// ── SETTINGS ─────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
 fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
     var js by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
-    var tp by remember {
-        mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false))
-    }
+    var tp by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
     var cb by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
     var am by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
     val apply = {
-        prefs.edit()
-            .putBoolean("javascript.enabled", js)
-            .putBoolean("privacy.trackingprotection.enabled", tp)
-            .putInt("network.cookie.cookieBehavior", cb)
-            .putBoolean("media.autoplay.enabled", am)
-            .apply()
-        onSettingsApplied()
-        onDismiss()
+        prefs.edit().putBoolean("javascript.enabled", js).putBoolean("privacy.trackingprotection.enabled", tp).putInt("network.cookie.cookieBehavior", cb).putBoolean("media.autoplay.enabled", am).apply()
+        onSettingsApplied(); onDismiss()
     }
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
+        onDismissRequest = onDismiss, title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
                 SettingSwitch("JavaScript", js) { js = it }
@@ -1944,32 +2145,15 @@ fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsAp
         },
         confirmButton = { TextButton(apply) { Text("OK", color = Color.White) } },
         dismissButton = { TextButton(onDismiss) { Text("Cancel", color = Color.White) } },
-        containerColor = Color(0xFF1E1E1E),
-        titleContentColor = Color.White,
-        textContentColor = Color.White,
-        shape = RectangleShape,
-        tonalElevation = 0.dp
+        containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
     )
 }
 
 @Composable
 fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        Arrangement.SpaceBetween,
-        Alignment.CenterVertically
-    ) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
         Text(text = label, color = Color.White, fontSize = 14.sp)
-        Switch(
-            checked = checked,
-            onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = Color(0xFF444444),
-                uncheckedThumbColor = Color.White,
-                uncheckedTrackColor = Color(0xFF444444)
-            )
-        )
+        Switch(checked = checked, onCheckedChange = onChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
     }
 }
 
@@ -1980,48 +2164,16 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
     val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
     Box {
-        OutlinedTextField(
-            value = st,
-            onValueChange = {},
-            readOnly = true,
-            trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-            shape = RectangleShape,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color.White,
-                unfocusedBorderColor = Color.White,
-                focusedContainerColor = Color(0xFF1E1E1E),
-                unfocusedContainerColor = Color(0xFF1E1E1E)
-            )
-        )
+        OutlinedTextField(value = st, onValueChange = {}, readOnly = true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)))
         Box(Modifier.matchParentSize().clickable { expanded = true })
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.border(1.dp, Color.White, RectangleShape),
-            containerColor = Color(0xFF1E1E1E),
-            shape = RectangleShape
-        ) {
-            options.forEach { (label, value) ->
-                DropdownMenuItem(
-                    text = { Text(text = label, color = Color.White) },
-                    onClick = { onChange(value); expanded = false }
-                )
-            }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
+            options.forEach { (label, value) -> DropdownMenuItem(text = { Text(text = label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
         }
     }
 }
 
-// END OF PART 2.5/5
 // ═══════════════════════════════════════════════════════════════════
-
-
-
-
-
-// ═══════════════════════════════════════════════════════════════════
-// === PART 2.6/5 (NEW - History UI) ===
+// ── HISTORY UI ───────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
@@ -2032,55 +2184,26 @@ fun HistoryUI(
     faviconBitmaps: Map<String, Bitmap?>,
     loadFavicon: (String) -> Unit
 ) {
-    Popup(
-        alignment = Alignment.TopStart,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
-    ) {
-        Surface(
-            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)),
-            color = Color(0xFF1E1E1E)
-        ) {
+    Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.Close, "Close", tint = Color.White)
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    Text("History", color = Color.White, fontSize = 18.sp)
-                    if (history.isNotEmpty()) {
-                        Spacer(Modifier.width(8.dp))
-                        Text("(${history.size})", color = Color.Gray, fontSize = 14.sp)
-                    }
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                    Spacer(Modifier.width(4.dp)); Text("History", color = Color.White, fontSize = 18.sp)
+                    if (history.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${history.size})", color = Color.Gray, fontSize = 14.sp) }
                 }
-
                 if (history.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("No history", color = Color.Gray, fontSize = 16.sp)
-                    }
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No history", color = Color.Gray, fontSize = 16.sp) }
                 } else {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                        // Show newest first (reverse order)
                         items(history.reversed()) { item ->
                             val domain = getDomainName(item.url)
                             LaunchedEffect(item.url) { loadFavicon(domain) }
                             val fav = faviconBitmaps[domain]
-                            
-                            Surface(
-                                Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
-                                color = Color.Transparent
-                            ) {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() },
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
                                     if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
-                                    else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) {
-                                        Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                    }
+                                    else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                                     Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2096,8 +2219,53 @@ fun HistoryUI(
     }
 }
 
-// END OF PART 2.6/5
+// ═══════════════════════════════════════════════════════════════════
+// ── COMPOSABLE HELPERS ────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
 
-// END OF PART 2/2
-// END OF FILE - Grey Browser V1.7
+@Composable
+fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
+    val bg = if (isSelected) Color.White else Color.Transparent
+    val fg = if (isSelected) Color.Black else Color.White
+    val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
+    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
+        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(2.dp))
+            Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
+        }
+    }
+}
+
+@Composable
+fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick: () -> Unit, favicon: Bitmap?, onAppear: () -> Unit, isBlinking: Boolean, isPinned: Boolean) {
+    LaunchedEffect(domain) { onAppear() }
+    val blinkAlpha = if (isBlinking) {
+        val t = rememberInfiniteTransition(label = "blink_$domain")
+        t.animateFloat(0.2f, 0.5f, infiniteRepeatable(tween(400), RepeatMode.Reverse), label = "blinkV")
+    } else null
+    val bgAlpha = if (isBlinking && blinkAlpha != null) blinkAlpha.value else if (isSelected) 1f else 0f
+    val bg = Color.White.copy(alpha = bgAlpha)
+    val fg = if (isSelected) Color.Black else Color.White
+    val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
+    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
+        Box(Modifier.padding(6.dp)) {
+            if (isPinned) Icon(Icons.Default.PushPin, "Pinned", tint = fg, modifier = Modifier.size(12.dp).align(Alignment.TopStart))
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(4.dp))
+                if (favicon != null) Image(favicon.asImageBitmap(), domain, Modifier.size(24.dp).clip(CircleShape), contentScale = ContentScale.Fit)
+                else Box(Modifier.size(24.dp).clip(CircleShape).background(if (isSelected) Color.LightGray else Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+            }
+            Box(Modifier.align(Alignment.BottomEnd).background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
+        }
+    }
+}
+
+@Composable
+fun ContextMenuItem(text: String, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) { Text(text, color = Color.White, fontSize = 16.sp) }
+}
+
+// END OF PART 10/10
+// END OF FILE - Grey Browser V1.10
 // ═══════════════════════════════════════════════════════════════════
