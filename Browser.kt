@@ -832,8 +832,8 @@ fun GreyBrowser() {
             }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
-            override fun onReady(s: GeckoSession) {
-                // Page fully loaded, DOM ready — inject scripts now
+            override fun onFirstComposite(s: GeckoSession) {
+                // Page content is rendered, DOM should be ready
                 injectScripts(s)
                 injectVideoSniffer(s)
             }
@@ -1047,8 +1047,6 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 6/10
-
-
 
 
 // ═══════════════════════════════════════════════════════════════════
