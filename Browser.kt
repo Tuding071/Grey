@@ -243,7 +243,6 @@ private const val KEY_TABS = "saved_tabs"
 private const val KEY_PINNED = "pinned_domains"
 private const val KEY_LAST_ACTIVE_URL = "last_active_url"
 private const val KEY_SCRIPTS = "saved_scripts"
-private const val KEY_VIDEO_SCRIPTS = "saved_video_scripts"
 private const val KEY_HISTORY = "saved_history"
 private const val KEY_BOOKMARKS = "saved_bookmarks"
 private const val KEY_ADBLOCK_RULES = "adblock_rules"
@@ -266,6 +265,7 @@ fun formatSpeedLimit(limit: Long): String = when (limit) {
 }
 
 // END OF PART 2/10
+
 
 // ═══════════════════════════════════════════════════════════════════
 // === PART 3/10 — Data Classes, Enums, Save/Load Functions ===
@@ -382,30 +382,6 @@ fun loadScripts(context: Context): List<ScriptItem> {
     } catch (e: Exception) { emptyList() }
 }
 
-fun saveVideoScripts(context: Context, scripts: List<ScriptItem>) {
-    val arr = JSONArray()
-    for (s in scripts) {
-        val obj = JSONObject()
-        obj.put("id", s.id); obj.put("name", s.name)
-        obj.put("code", s.code); obj.put("enabled", s.enabled)
-        arr.put(obj)
-    }
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_VIDEO_SCRIPTS, arr.toString()).apply()
-}
-
-fun loadVideoScripts(context: Context): List<ScriptItem> {
-    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_VIDEO_SCRIPTS, null) ?: return emptyList()
-    return try {
-        val arr = JSONArray(json)
-        mutableListOf<ScriptItem>().apply {
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(ScriptItem(o.getString("id"), o.getString("name"), o.getString("code"), o.getBoolean("enabled")))
-            }
-        }
-    } catch (e: Exception) { emptyList() }
-}
-
 fun saveHistory(context: Context, history: List<HistoryItem>) {
     val arr = JSONArray()
     for (h in history) {
@@ -458,6 +434,8 @@ fun loadBookmarks(context: Context): List<Bookmark> {
 // END OF PART 3/10
 
 
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 4/10 — Utility Functions, NetworkSpeedLimiter, AdBlocker ===
 // ═══════════════════════════════════════════════════════════════════
@@ -479,12 +457,12 @@ fun resolveUrl(input: String): String {
     return "https://www.google.com/search?q=${Uri.encode(input)}"
 }
 
-// ── Global Network Speed Limiter ────────────────────────────────────
+// ── Global Network Speed Limiter (per-second window) ──────────────
 class NetworkSpeedLimiter {
     @Volatile var maxBytesPerSecond: Long = 0L
     
-    private var tokens: Double = 0.0
-    private var lastRefillNs: Long = System.nanoTime()
+    private var bytesThisSecond: Long = 0L
+    private var windowStartNs: Long = System.nanoTime()
     private val lock = Any()
     
     fun acquire(bytes: Long) {
@@ -493,28 +471,36 @@ class NetworkSpeedLimiter {
         
         synchronized(lock) {
             while (true) {
-                refillTokens(limit)
-                if (tokens >= bytes.toDouble()) {
-                    tokens -= bytes.toDouble()
+                val nowNs = System.nanoTime()
+                val elapsedNs = nowNs - windowStartNs
+                
+                // Reset window every second
+                if (elapsedNs >= 1_000_000_000L) {
+                    bytesThisSecond = 0L
+                    windowStartNs = nowNs
+                }
+                
+                // Check if adding these bytes would exceed limit
+                if (bytesThisSecond + bytes <= limit) {
+                    bytesThisSecond += bytes
                     return
                 }
-                val needed = bytes.toDouble() - tokens
-                val waitMs = ((needed * 1000) / limit).toLong() + 1
-                try { (lock as java.lang.Object).wait(waitMs) }
-                catch (e: InterruptedException) { return }
+                
+                // Calculate how long to wait until next window
+                val remainingNs = 1_000_000_000L - elapsedNs
+                if (remainingNs > 0) {
+                    val waitMs = remainingNs / 1_000_000L
+                    val waitNs = (remainingNs % 1_000_000L).toInt()
+                    if (waitMs > 0) {
+                        try { (lock as java.lang.Object).wait(waitMs, waitNs) }
+                        catch (e: InterruptedException) { return }
+                    } else {
+                        try { (lock as java.lang.Object).wait(1) }
+                        catch (e: InterruptedException) { return }
+                    }
+                }
             }
         }
-    }
-    
-    private fun refillTokens(limit: Long) {
-        val nowNs = System.nanoTime()
-        val elapsedNs = nowNs - lastRefillNs
-        if (elapsedNs <= 0) return
-        val elapsedSeconds = elapsedNs / 1_000_000_000.0
-        tokens += elapsedSeconds * limit
-        val maxTokens = limit.toDouble() * 2
-        if (tokens > maxTokens) tokens = maxTokens
-        lastRefillNs = nowNs
     }
 }
 
@@ -580,7 +566,6 @@ class AdBlocker {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -602,18 +587,12 @@ fun GreyBrowser() {
         mutableStateListOf<ScriptItem>().apply { addAll(loadScripts(context)) }
     }
 
-    // ── Video Scripts State ──────────────────────────────────────────
-    val videoScripts = remember {
-        mutableStateListOf<ScriptItem>().apply { addAll(loadVideoScripts(context)) }
-    }
-    var showVideoScripts by remember { mutableStateOf(false) }
-
     // ── Download State ────────────────────────────────────────────────
     val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
     var currentDownloadId by remember { mutableStateOf<String?>(null) }
     var showDownloadManager by remember { mutableStateOf(false) }
     var downloadUpdateTrigger by remember { mutableIntStateOf(0) }
-    // Detected videos (populated by video scripts via grey-video://)
+    // Detected videos (populated by hardcoded sniffer)
     val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
     var showVideoDropdown by remember { mutableStateOf(false) }
     // Download Editor state
@@ -655,17 +634,77 @@ fun GreyBrowser() {
     val injectScripts: (GeckoSession) -> Unit = { s ->
         for (script in scripts) { 
             if (script.enabled && script.code.isNotBlank()) {
-                s.loadUri("javascript:" + Uri.encode("(function(){\n${script.code}\n})();")) 
+                s.loadUri("javascript:(function(){" + script.code + "})();")
             }
         }
     }
 
-    val injectVideoScripts: (GeckoSession) -> Unit = { s ->
-        for (script in videoScripts) {
-            if (script.enabled && script.code.isNotBlank()) {
-                s.loadUri("javascript:" + Uri.encode("(function(){\n${script.code}\n})();"))
-            }
+    // ── Hardcoded Video Sniffer ──────────────────────────────────────
+    val videoSnifferScript = """
+(function() {
+    if (window.__greySnifferInstalled) return;
+    window.__greySnifferInstalled = true;
+    var found = [];
+    var seen = {};
+    function add(url, type) {
+        if (!url || seen[url]) return;
+        seen[url] = true;
+        found.push({url: url, type: type});
+    }
+    // Hook fetch (EARLY)
+    var origFetch = window.fetch;
+    window.fetch = function() {
+        var args = arguments;
+        return origFetch.apply(this, args).then(function(res) {
+            try {
+                var url = res.url;
+                if (url.indexOf('.m3u8') > -1 || url.match(/\.(mp4|webm|ts)/i)) add(url, 'fetch');
+            } catch(e) {}
+            return res;
+        });
+    };
+    // Hook XHR (EARLY)
+    var origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        if (typeof url === 'string') {
+            if (url.indexOf('.m3u8') > -1 || url.match(/\.(mp4|webm|ts)/i)) add(url, 'xhr');
         }
+        return origOpen.apply(this, arguments);
+    };
+    // Run DOM scan when ready
+    function scan() {
+        document.querySelectorAll('video').forEach(function(v) {
+            if (v.src) add(v.src, 'video');
+            if (v.currentSrc) add(v.currentSrc, 'video');
+            v.querySelectorAll('source').forEach(function(s) {
+                if (s.src) add(s.src, 'source');
+            });
+        });
+        document.querySelectorAll('a[href]').forEach(function(a) {
+            var h = a.href.toLowerCase();
+            if (h.indexOf('.mp4') > -1 || h.indexOf('.webm') > -1 ||
+                h.indexOf('.m3u8') > -1 || h.indexOf('.ts') > -1) add(a.href, 'link');
+        });
+        var regex = /(https?:\/\/[^"'\s]+\.(m3u8|mp4|webm|ts)[^"'\s]*)/gi;
+        document.querySelectorAll('script').forEach(function(s) {
+            var m;
+            while ((m = regex.exec(s.textContent)) !== null) add(m[1], 'script');
+        });
+        // Push to Grey browser via location
+        found.forEach(function(v) {
+            window.location = 'grey-video://push?url=' + encodeURIComponent(v.url);
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', scan);
+    } else {
+        scan();
+    }
+})();
+""".trimIndent()
+
+    val injectVideoSniffer: (GeckoSession) -> Unit = { s ->
+        s.loadUri("javascript:" + videoSnifferScript)
     }
 
     fun addToHistory(url: String, title: String) {
@@ -738,7 +777,6 @@ fun GreyBrowser() {
         saveTabsData(context, tabs, pinnedDomains, lastActiveUrl)
     }
     LaunchedEffect(scripts.toList()) { saveScripts(context, scripts) }
-    LaunchedEffect(videoScripts.toList()) { saveVideoScripts(context, videoScripts) }
     LaunchedEffect(bookmarks.toList()) { saveBookmarks(context, bookmarks) }
 
     LaunchedEffect(currentTabIndex) {
@@ -757,7 +795,6 @@ fun GreyBrowser() {
     }
 
 // END OF PART 5/10
-
 
 
 
@@ -782,8 +819,6 @@ fun GreyBrowser() {
                         detectedVideos.clear()
                         showVideoDropdown = false
                     }
-                    injectScripts(s)
-                    injectVideoScripts(s)
                 }
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
@@ -797,6 +832,11 @@ fun GreyBrowser() {
             }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onReady(s: GeckoSession) {
+                // Page fully loaded, DOM ready — inject scripts now
+                injectScripts(s)
+                injectVideoSniffer(s)
+            }
             override fun onTitleChange(s: GeckoSession, title: String?) {
                 if (!tabState.isBlankTab) tabState.title = title ?: tabState.url
             }
@@ -834,7 +874,7 @@ fun GreyBrowser() {
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
 
-                        // ── Video Script Bridge ──────────────────
+                        // ── Video Sniffer Bridge ──────────────────
                         if (newUrl.startsWith("grey-video://push?url=")) {
                             val videoUrl = Uri.decode(newUrl.removePrefix("grey-video://push?url="))
                             if (videoUrl.startsWith("http") && !detectedVideos.any { it.first == videoUrl }) {
@@ -1007,6 +1047,7 @@ fun GreyBrowser() {
     fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
 
 // END OF PART 6/10
+
 
 
 
@@ -1208,7 +1249,6 @@ fun GreyBrowser() {
             } finally {
                 if (currentDownloadId == id) {
                     currentDownloadId = null
-                    // Auto-start next QUEUED (skips PAUSED)
                     val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
                     if (next != null) {
                         startDownload(next.id)
@@ -1273,7 +1313,6 @@ fun GreyBrowser() {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1328,7 +1367,6 @@ fun GreyBrowser() {
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
     if (showScriptManager) { ScriptManager(scripts = scripts, onDismiss = { showScriptManager = false }) }
-    if (showVideoScripts) { VideoScriptsUI(scripts = videoScripts, onDismiss = { showVideoScripts = false }) }
     if (showAdBlocking) { AdBlockingUI(adBlocker = adBlocker, enabled = adBlockingEnabled, onEnabledChange = { adBlockingEnabled = it; prefs.edit().putBoolean(KEY_ADBLOCK_ENABLED, it).apply() }, onDismiss = { showAdBlocking = false }) }
 
     if (showHistory) {
@@ -1515,7 +1553,6 @@ fun GreyBrowser() {
                             DropdownMenuItem(text = { Text("Downloads", color = Color.White) }, onClick = { showMenu = false; showDownloadManager = true })
                             DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
                             DropdownMenuItem(text = { Text("Script Manager", color = Color.White) }, onClick = { showMenu = false; showScriptManager = true })
-                            DropdownMenuItem(text = { Text("Video Scripts", color = Color.White) }, onClick = { showMenu = false; showVideoScripts = true })
                             DropdownMenuItem(text = { Text("Ad Blocking", color = Color.White) }, onClick = { showMenu = false; showAdBlocking = true })
                             DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                         }
@@ -1549,6 +1586,8 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
+
+
 
 
 
@@ -1703,13 +1742,12 @@ fun DownloadManagerUI(
 
 
 
+// ═══════════════════════════════════════════════════════════════════
+// === PART 10/10 — ScriptManager (blink-fixed), BookmarksUI, AdBlockingUI, Settings, History, Helpers ===
+// ═══════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 10/10 — ScriptManager, VideoScriptsUI, BookmarksUI, AdBlockingUI, Settings, History, Helpers ===
-// ═══════════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════════
-// ── SCRIPT MANAGER ────────────────────────────────────────────────
+// ── SCRIPT MANAGER (no-blink: single Popup) ──────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
@@ -1718,6 +1756,8 @@ fun ScriptManager(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
     var isCreating by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var scriptToDelete by remember { mutableStateOf<ScriptItem?>(null) }
+    var editName by remember { mutableStateOf("") }
+    var editCode by remember { mutableStateOf("") }
 
     if (showDeleteConfirm && scriptToDelete != null) {
         AlertDialog(
@@ -1744,167 +1784,59 @@ fun ScriptManager(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
         )
     }
 
-    if (editingScript != null || isCreating) {
-        ScriptEditor(
-            script = editingScript,
-            onSave = { name, code ->
-                if (editingScript != null) {
-                    val idx = scripts.indexOfFirst { it.id == editingScript!!.id }
-                    if (idx >= 0) scripts[idx] = editingScript!!.copy(name = name, code = code)
-                } else {
-                    scripts.add(ScriptItem(id = UUID.randomUUID().toString(), name = name, code = code, enabled = true))
-                }
-                editingScript = null; isCreating = false
-            },
-            onCancel = { editingScript = null; isCreating = false }
-        )
-    } else {
-        ScriptList(
-            scripts = scripts,
-            onDismiss = onDismiss,
-            onAdd = { isCreating = true },
-            onEdit = { editingScript = it },
-            onDelete = { scriptToDelete = it; showDeleteConfirm = true },
-            onToggle = { script ->
-                val idx = scripts.indexOf(script)
-                if (idx >= 0) scripts[idx] = script.copy(enabled = !script.enabled)
-            }
-        )
-    }
-}
-
-@Composable
-fun ScriptList(
-    scripts: List<ScriptItem>,
-    onDismiss: () -> Unit,
-    onAdd: () -> Unit,
-    onEdit: (ScriptItem) -> Unit,
-    onDelete: (ScriptItem) -> Unit,
-    onToggle: (ScriptItem) -> Unit
-) {
     Popup(
         alignment = Alignment.TopStart,
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
     ) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp))
-                    Text("Scripts", color = Color.White, fontSize = 18.sp)
-                    if (scripts.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp) }
-                }
-
-                if (scripts.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No scripts saved", color = Color.Gray, fontSize = 16.sp) }
-                } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(scripts) { script ->
-                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(script.name, color = if (script.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                        Text(script.code.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                    Switch(checked = script.enabled, onCheckedChange = { onToggle(script) }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)), modifier = Modifier.padding(end = 4.dp))
-                                    IconButton({ onEdit(script) }) { Icon(Icons.Default.Edit, "Edit", tint = Color.White, modifier = Modifier.size(20.dp)) }
-                                    IconButton({ onDelete(script) }) { Icon(Icons.Default.Delete, "Delete", tint = Color.White, modifier = Modifier.size(20.dp)) }
-                                }
-                            }
+            if (editingScript != null || isCreating) {
+                // ── Script Editor (inside same Popup — no blink) ──
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton({
+                            editingScript = null
+                            isCreating = false
+                        }, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
                         }
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (editingScript != null) "Edit Script" else "New Script", color = Color.White, fontSize = 18.sp)
+                    }
+                    Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
+                        Text("Name:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                        OutlinedTextField(value = editName, onValueChange = { editName = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
+                        Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
+                        OutlinedTextField(value = editCode, onValueChange = { editCode = it }, modifier = Modifier.fillMaxWidth().weight(1f), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
+                    }
+                    Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
+                        OutlinedButton(onClick = { editingScript = null; isCreating = false }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Cancel", color = Color.White) }
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(onClick = {
+                            if (editName.isNotBlank()) {
+                                if (editingScript != null) {
+                                    val idx = scripts.indexOfFirst { it.id == editingScript!!.id }
+                                    if (idx >= 0) scripts[idx] = editingScript!!.copy(name = editName, code = editCode)
+                                } else {
+                                    scripts.add(ScriptItem(id = UUID.randomUUID().toString(), name = editName, code = editCode, enabled = true))
+                                }
+                                editingScript = null; isCreating = false
+                            }
+                        }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Save Script", color = Color.White) }
                     }
                 }
-
-                Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                    OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
-                        Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("Add Script", color = Color.White)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel: () -> Unit) {
-    var name by remember { mutableStateOf(script?.name ?: "") }
-    var code by remember { mutableStateOf(script?.code ?: "") }
-
-    Popup(alignment = Alignment.TopStart, onDismissRequest = onCancel, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
-        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({ onCancel() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (script != null) "Edit Script" else "New Script", color = Color.White, fontSize = 18.sp)
-                }
-                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
-                    Text("Name:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
-                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
-                    Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
-                    OutlinedTextField(value = code, onValueChange = { code = it }, modifier = Modifier.fillMaxWidth().weight(1f), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
-                }
-                Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                    OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Cancel", color = Color.White) }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = { if (name.isNotBlank()) onSave(name, code) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Save Script", color = Color.White) }
-                }
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ── VIDEO SCRIPTS UI ─────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
-@Composable
-fun VideoScriptsUI(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
-    var editingScript by remember { mutableStateOf<ScriptItem?>(null) }
-    var isCreating by remember { mutableStateOf(false) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-    var scriptToDelete by remember { mutableStateOf<ScriptItem?>(null) }
-
-    if (showDeleteConfirm && scriptToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false; scriptToDelete = null },
-            title = { Text("Delete Video Script?", color = Color.White, fontSize = 18.sp) },
-            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
-            confirmButton = { TextButton({ scripts.remove(scriptToDelete!!); showDeleteConfirm = false; scriptToDelete = null }) { Text("Delete", color = Color.White) } },
-            dismissButton = { TextButton({ showDeleteConfirm = false; scriptToDelete = null }) { Text("Cancel", color = Color.White) } },
-            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-        )
-    }
-
-    if (editingScript != null || isCreating) {
-        VideoScriptEditor(
-            script = editingScript,
-            onSave = { name, code ->
-                if (editingScript != null) {
-                    val idx = scripts.indexOfFirst { it.id == editingScript!!.id }
-                    if (idx >= 0) scripts[idx] = editingScript!!.copy(name = name, code = code)
-                } else {
-                    scripts.add(ScriptItem(id = UUID.randomUUID().toString(), name = name, code = code, enabled = true))
-                }
-                editingScript = null; isCreating = false
-            },
-            onCancel = { editingScript = null; isCreating = false }
-        )
-    } else {
-        Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
-            Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
+            } else {
+                // ── Script List ──────────────────────────────
                 Column(Modifier.fillMaxSize()) {
                     Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                        Spacer(Modifier.width(4.dp)); Text("Video Scripts", color = Color.White, fontSize = 18.sp)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Scripts", color = Color.White, fontSize = 18.sp)
                         if (scripts.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${scripts.size})", color = Color.Gray, fontSize = 14.sp) }
                     }
-                    Text("Scripts here push video URLs to downloader via:\n  window.location = 'grey-video://push?url=' + encodeURIComponent(url)", color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-                    HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(horizontal = 8.dp))
 
                     if (scripts.isEmpty()) {
-                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No video scripts", color = Color.Gray, fontSize = 16.sp) }
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No scripts saved", color = Color.Gray, fontSize = 16.sp) }
                     } else {
                         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                             items(scripts) { script ->
@@ -1915,7 +1847,11 @@ fun VideoScriptsUI(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
                                             Text(script.code.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
                                         Switch(checked = script.enabled, onCheckedChange = { val idx = scripts.indexOf(script); if (idx >= 0) scripts[idx] = script.copy(enabled = !script.enabled) }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)), modifier = Modifier.padding(end = 4.dp))
-                                        IconButton({ editingScript = script }) { Icon(Icons.Default.Edit, "Edit", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                        IconButton({
+                                            editingScript = script
+                                            editName = script.name
+                                            editCode = script.code
+                                        }) { Icon(Icons.Default.Edit, "Edit", tint = Color.White, modifier = Modifier.size(20.dp)) }
                                         IconButton({ scriptToDelete = script; showDeleteConfirm = true }) { Icon(Icons.Default.Delete, "Delete", tint = Color.White, modifier = Modifier.size(20.dp)) }
                                     }
                                 }
@@ -1924,45 +1860,14 @@ fun VideoScriptsUI(scripts: MutableList<ScriptItem>, onDismiss: () -> Unit) {
                     }
 
                     Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                        OutlinedButton(onClick = { isCreating = true }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
-                            Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("Add Video Script", color = Color.White)
+                        OutlinedButton(onClick = {
+                            isCreating = true
+                            editName = ""
+                            editCode = ""
+                        }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
+                            Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("Add Script", color = Color.White)
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun VideoScriptEditor(script: ScriptItem?, onSave: (String, String) -> Unit, onCancel: () -> Unit) {
-    var name by remember { mutableStateOf(script?.name ?: "") }
-    var code by remember { mutableStateOf(script?.code ?: "") }
-
-    Popup(alignment = Alignment.TopStart, onDismissRequest = onCancel, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
-        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({ onCancel() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp))
-                    Text(if (script != null) "Edit Video Script" else "New Video Script", color = Color.White, fontSize = 18.sp)
-                }
-                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp)) {
-                    Text("Name:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
-                    OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)), shape = RectangleShape)
-                    Text("Script:", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
-                    OutlinedTextField(
-                        value = code, onValueChange = { code = it }, modifier = Modifier.fillMaxWidth().weight(1f),
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        placeholder = { Text("// Push video URLs to downloader:\n// window.location = 'grey-video://push?url=' + encodeURIComponent(url)\n//\n// Example: Find all <video> sources\n// document.querySelectorAll('video source').forEach(s => {\n//   if (s.src) window.location = 'grey-video://push?url=' + s.src;\n// });", color = Color.Gray.copy(alpha = 0.5f), fontSize = 13.sp) },
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
-                        shape = RectangleShape
-                    )
-                }
-                Row(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                    OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Cancel", color = Color.White) }
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(onClick = { if (name.isNotBlank()) onSave(name, code) }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Text("Save Script", color = Color.White) }
                 }
             }
         }
@@ -2036,11 +1941,10 @@ fun AdBlockingUI(
     onEnabledChange: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var importUrl by remember { mutableStateOf("") }
     var showImportDialog by remember { mutableStateOf(false) }
+    var importTextField by remember { mutableStateOf("") }
 
     if (showImportDialog) {
-        var importTextField by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showImportDialog = false },
             title = { Text("Import Filter List", color = Color.White, fontSize = 18.sp) },
