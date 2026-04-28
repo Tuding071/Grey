@@ -1681,6 +1681,9 @@ fun DownloadManagerUI(
 }
 
 // END OF PART 9/10
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 10/10 — ExtensionsUI, BookmarksUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1782,18 +1785,39 @@ fun ExtensionsUI(
                                             Text("Installed", color = Color.Gray, fontSize = 12.sp)
                                         } else {
                                             TextButton({
-                                                extensionManager.searchStore(ext.name) { results ->
-                                                    val fullExt = results.firstOrNull { it.id == ext.id }
-                                                    if (fullExt != null) {
-                                                        val xpiUrl = "https://addons.mozilla.org/firefox/downloads/latest/${fullExt.id}/addon-${fullExt.id}-latest.xpi"
-                                                        extensionManager.installFromUrl(xpiUrl) { success, msg ->
-                                                            if (success) {
-                                                                extensions.add(ext.copy(enabled = true))
-                                                                installMessage = "${ext.name} installed!"
+                                                // Fetch detailed extension info to get correct XPI URL
+                                                thread(name = "ext-detail") {
+                                                    try {
+                                                        val detailUrl = "https://addons.mozilla.org/api/v5/addons/addon/${ext.id}/"
+                                                        val conn = URL(detailUrl).openConnection() as HttpURLConnection
+                                                        conn.connectTimeout = 15000; conn.readTimeout = 15000
+                                                        conn.connect()
+                                                        val json = conn.inputStream.bufferedReader().readText()
+                                                        conn.disconnect()
+                                                        
+                                                        val root = JSONObject(json)
+                                                        val currentVersion = root.optJSONObject("current_version")
+                                                        val files = currentVersion?.optJSONArray("files")
+                                                        if (files != null && files.length() > 0) {
+                                                            val file = files.getJSONObject(0)
+                                                            val xpiUrl = file.optString("url", "")
+                                                            if (xpiUrl.isNotBlank()) {
+                                                                extensionManager.installFromUrl(xpiUrl) { success, msg ->
+                                                                    if (success) {
+                                                                        extensions.add(ext.copy(enabled = true))
+                                                                        installMessage = "${ext.name} installed!"
+                                                                    } else {
+                                                                        installMessage = "Failed: $msg"
+                                                                    }
+                                                                }
                                                             } else {
-                                                                installMessage = "Failed: $msg"
+                                                                installMessage = "No download URL found"
                                                             }
+                                                        } else {
+                                                            installMessage = "No files available"
                                                         }
+                                                    } catch (e: Exception) {
+                                                        installMessage = "Error: ${e.message}"
                                                     }
                                                 }
                                             }) { Text("Install", color = Color.White, fontSize = 13.sp) }
