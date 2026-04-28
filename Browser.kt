@@ -519,23 +519,30 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
     
     fun installFromFile(uri: Uri, onResult: (Boolean, String) -> Unit) {
         val xpiUri = uri.toString()
+        android.util.Log.d("GreyBrowser", "ExtensionManager.installFromFile: $xpiUri")
+        
         val controller = runtime.webExtensionController
         
         android.os.Handler(android.os.Looper.getMainLooper()).post {
+            android.util.Log.d("GreyBrowser", "ExtensionManager: Calling controller.install() on main thread")
             controller.install(xpiUri).accept({ ext ->
                 if (ext != null) {
+                    android.util.Log.d("GreyBrowser", "ExtensionManager: Install SUCCESS - id=${ext.id}")
                     installedExtensions[ext.id] = ext
                     onResult(true, ext.id)
                 } else {
+                    android.util.Log.e("GreyBrowser", "ExtensionManager: Install returned NULL extension")
                     onResult(false, "Install returned null")
                 }
             }, { error ->
+                android.util.Log.e("GreyBrowser", "ExtensionManager: Install ERROR - ${error?.message}")
                 onResult(false, "Install failed: ${error?.message ?: "unknown"}")
             })
         }
     }
     
     fun uninstall(extId: String) {
+        android.util.Log.d("GreyBrowser", "ExtensionManager.uninstall: $extId")
         installedExtensions[extId]?.let { ext ->
             runtime.webExtensionController.uninstall(ext)
             installedExtensions.remove(extId)
@@ -543,6 +550,7 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
     }
     
     fun setEnabled(extId: String, enabled: Boolean) {
+        android.util.Log.d("GreyBrowser", "ExtensionManager.setEnabled: $extId enabled=$enabled")
         installedExtensions[extId]?.let { ext ->
             if (enabled) {
                 runtime.webExtensionController.enable(ext, 1)
@@ -554,8 +562,6 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 }
 
 // END OF PART 4/10
-
-
 
 
 
@@ -1293,7 +1299,7 @@ fun GreyBrowser() {
     }
 
     if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
-    if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onDismiss = { showExtensions = false }) }
+    if (showExtensions) { ExtensionsUI(extensionManager = extensionManager, extensions = extensions, onShowToast = { msg -> showToast(msg) }, onDismiss = { showExtensions = false }) }
     if (showLogcat) { LogcatUI(logLines = logLines, onClear = { logLines.clear() }, onDismiss = { showLogcat = false }) }
 
     if (showHistory) {
@@ -1666,6 +1672,8 @@ fun DownloadManagerUI(
 // END OF PART 9/10
 
 
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 10/10 — ExtensionsUI, LogcatUI, BookmarksUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1678,18 +1686,23 @@ fun DownloadManagerUI(
 fun ExtensionsUI(
     extensionManager: ExtensionManager,
     extensions: MutableList<ExtensionItem>,
+    onShowToast: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var filePickerLauncher = rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             val extName = uri.lastPathSegment?.substringBeforeLast(".xpi") ?: "Extension"
+            android.util.Log.d("GreyBrowser", "ExtensionsUI: File picked - $extName uri=$uri")
+            onShowToast("Installing $extName...")
             extensionManager.installFromFile(uri) { success, msg ->
                 if (success) {
                     extensions.add(ExtensionItem(id = msg, name = extName, enabled = true))
+                    onShowToast("$extName installed!")
+                } else {
+                    onShowToast("Install failed: $msg")
                 }
             }
         }
@@ -1713,7 +1726,7 @@ fun ExtensionsUI(
                 // Install .xpi button
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     OutlinedButton(
-                        onClick = { filePickerLauncher.launch("application/x-xpinstall") },
+                        onClick = { filePickerLauncher.launch("*/*") },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RectangleShape,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
@@ -1761,6 +1774,7 @@ fun ExtensionsUI(
                                         TextButton({
                                             extensions.removeAll { it.id == ext.id }
                                             extensionManager.uninstall(ext.id)
+                                            onShowToast("Extension uninstalled")
                                         }) { Text("Uninstall", color = Color.Red.copy(alpha = 0.7f), fontSize = 12.sp) }
                                     }
                                 }
