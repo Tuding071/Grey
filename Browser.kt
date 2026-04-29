@@ -579,7 +579,6 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 
 // END OF PART 4/10
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -647,8 +646,9 @@ fun GreyBrowser() {
         showToast = true
     }
 
-    // ── Install hardcoded extensions on startup ──────────────────────
+    // ── Install hardcoded extensions on startup (sequential, 5s apart) ─
     LaunchedEffect(Unit) {
+        delay(3000) // Wait for runtime to fully initialize
         val builtInExtensions = listOf(
             Triple("extensions/ublock_origin.xpi", "uBlock Origin", "ublock_origin"),
             Triple("extensions/tampermonkey.xpi", "Tampermonkey", "tampermonkey"),
@@ -656,7 +656,10 @@ fun GreyBrowser() {
         )
         for ((assetPath, name, key) in builtInExtensions) {
             // Skip if already installed
-            if (extensions.any { it.id.contains(key, ignoreCase = true) }) continue
+            if (extensions.any { it.id.contains(key, ignoreCase = true) }) {
+                log("$name already installed, skipping")
+                continue
+            }
             log("Installing built-in extension: $name")
             extensionManager.installBuiltIn(assetPath) { success, msg ->
                 if (success) {
@@ -667,7 +670,9 @@ fun GreyBrowser() {
                     log("$name install failed: $msg")
                 }
             }
+            delay(5000) // 5-second gap between installs for assurance
         }
+        log("Built-in extension installation complete")
     }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
