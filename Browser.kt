@@ -1,14 +1,38 @@
 // ═══════════════════════════════════════════════════════════════════
-// Grey Browser - V2.1 (Extension Fixes)
+// Grey Browser - V3.0 (Clean + Import/Export)
 // ═══════════════════════════════════════════════════════════════════
-// === PART 1/10 — Package, Imports, MainActivity, DownloadService ===
+// === PART 1/10 — Package, GeckoView API Note, Imports, MainActivity ===
 // ═══════════════════════════════════════════════════════════════════
 
 package com.grey.browser
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
+// ═══════════════════════════════════════════════════════════════════
+// GECKOVIEW API NOTE:
+// This browser uses Mozilla GeckoView (org.mozilla.geckoview) as the 
+// rendering engine, NOT Android WebView. GeckoView has different APIs:
+//
+// - GeckoSession (not WebView) for browsing sessions
+// - GeckoRuntime for shared browser runtime
+// - GeckoView for rendering web content
+// - ProgressDelegate for page load progress (0-100)
+// - onPageStart is called when page starts loading, gives URL
+// - ContentDelegate for title changes, context menus
+// - NavigationDelegate for URL/location changes
+// - session.loadUri() to load URLs
+// - session.goBack() / session.goForward() for navigation
+// - session.stop() to cancel loading
+// - session.setActive(false) to freeze session completely (no network/JS/rendering)
+// - session.setActive(true) to resume session
+// - session.settings for browser settings
+// - session.close() to destroy session and free memory
+// - No "currentUrl" property, use NavigationDelegate.onLocationChange
+// - GeckoSession must be opened with runtime before use
+// - GeckoSession.open() requires GeckoRuntime
+// - suspendMediaWhenInactive = true pauses media when session inactive
+//
+// API Reference: https://mozilla.github.io/geckoview/javadoc/mozilla-central/
+// ═══════════════════════════════════════════════════════════════════
+
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -18,11 +42,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -43,19 +66,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Undo
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -84,66 +100,34 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import androidx.core.app.NotificationCompat
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
-import org.mozilla.geckoview.WebExtensionController
 import org.mozilla.geckoview.WebResponse
-import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
-import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        createNotificationChannel()
         setContent { GreyBrowser() }
     }
     override fun onPause() { super.onPause(); saveTabs(this) }
     override fun onDestroy() { super.onDestroy(); saveTabs(this) }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "grey_downloads",
-                "Downloads",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
-    }
-}
-
-class DownloadService : Service() {
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = NotificationCompat.Builder(this, "grey_downloads")
-            .setContentTitle("Grey is downloading")
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setOngoing(true)
-            .build()
-        startForeground(1001, notification)
-        return START_STICKY
-    }
-    override fun onBind(intent: Intent?): IBinder? = null
 }
 
 // END OF PART 1/10
 // ═══════════════════════════════════════════════════════════════════
-// === PART 2/10 — FaviconCache, Constants, SPEED_LIMITS ===
+// === PART 2/10 — FaviconCache, Constants ===
 // ═══════════════════════════════════════════════════════════════════
 
 object FaviconCache {
@@ -151,14 +135,14 @@ object FaviconCache {
     private const val FAVICON_DIR = "favicons"
     private const val META_FILE = "favicon_meta.json"
     data class FaviconMeta(val domain: String, val lastAccessed: Long = System.currentTimeMillis())
-
+    
     private fun getFaviconDir(context: Context): File {
         val dir = File(context.filesDir, FAVICON_DIR)
         if (!dir.exists()) dir.mkdirs()
         return dir
     }
     private fun getMetaFile(context: Context) = File(context.filesDir, META_FILE)
-
+    
     private fun loadMeta(context: Context): MutableList<FaviconMeta> {
         val file = getMetaFile(context)
         if (!file.exists()) return mutableListOf()
@@ -173,7 +157,7 @@ object FaviconCache {
             }
         } catch (e: Exception) { mutableListOf() }
     }
-
+    
     private fun saveMeta(context: Context, meta: List<FaviconMeta>) {
         val array = JSONArray()
         for (item in meta) {
@@ -184,10 +168,10 @@ object FaviconCache {
         }
         getMetaFile(context).writeText(array.toString())
     }
-
+    
     fun getFaviconFile(context: Context, domain: String) =
         File(getFaviconDir(context), domain.replace(".", "_").replace("/", "_") + ".png")
-
+    
     fun getFaviconBitmap(context: Context, domain: String): Bitmap? {
         val file = getFaviconFile(context, domain)
         if (!file.exists()) return null
@@ -202,7 +186,7 @@ object FaviconCache {
         saveMeta(context, meta)
         return BitmapFactory.decodeFile(file.absolutePath)
     }
-
+    
     private fun tryDownload(urlStr: String): Bitmap? {
         return try {
             val url = URL(urlStr)
@@ -215,7 +199,7 @@ object FaviconCache {
             } else { conn.disconnect(); null }
         } catch (e: Exception) { null }
     }
-
+    
     suspend fun downloadAndCacheFavicon(context: Context, domain: String): Bitmap? = withContext(Dispatchers.IO) {
         val sources = listOf(
             "https://www.google.com/s2/favicons?domain=$domain&sz=64",
@@ -247,32 +231,18 @@ private const val KEY_PINNED = "pinned_domains"
 private const val KEY_LAST_ACTIVE_URL = "last_active_url"
 private const val KEY_HISTORY = "saved_history"
 private const val KEY_BOOKMARKS = "saved_bookmarks"
-private const val KEY_EXTENSIONS = "saved_extensions"
-// ── FIX: stable key to track which built-in XPIs have been installed ──
-private const val KEY_BUILTIN_INSTALLED = "builtin_installed_keys"
 
 const val MAX_LOADED_TABS = 10
 const val MAX_WARM_TABS = 9
 const val UNDO_DELAY_MS = 3000L
 const val MAX_HISTORY_ITEMS = 500
 
-val SPEED_LIMITS = listOf(0L, 50L * 1024, 100L * 1024, 250L * 1024, 500L * 1024, 1024L * 1024)
-fun formatSpeedLimit(limit: Long): String = when (limit) {
-    0L -> "No Limit"
-    50L * 1024 -> "50 KB/s"
-    100L * 1024 -> "100 KB/s"
-    250L * 1024 -> "250 KB/s"
-    500L * 1024 -> "500 KB/s"
-    1024L * 1024 -> "1 MB/s"
-    else -> "No Limit"
-}
-
 // END OF PART 2/10
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 3/10 — Data Classes, Enums, Save/Load Functions ===
+// === PART 3/10 — Data Classes, Save/Load Functions ===
 // ═══════════════════════════════════════════════════════════════════
 
 data class HistoryItem(
@@ -287,32 +257,6 @@ data class Bookmark(
     val title: String,
     val folder: String = "",
     val timestamp: Long = System.currentTimeMillis()
-)
-
-data class ExtensionItem(
-    val id: String,
-    val name: String,
-    val description: String = "",
-    val iconUrl: String = "",
-    var enabled: Boolean = true,
-    val source: String = "store"
-)
-
-enum class DownloadState { QUEUED, DOWNLOADING, PAUSED, COMPLETED, FAILED }
-
-data class DownloadItem(
-    val id: String = UUID.randomUUID().toString(),
-    val url: String,
-    val fileName: String,
-    val fileSize: Long = 0L,
-    var downloadedBytes: Long = 0L,
-    var state: DownloadState = DownloadState.QUEUED,
-    var progress: Int = 0,
-    var speed: String = "",
-    val referer: String = "",
-    val cookies: String = "",
-    var isVideo: Boolean = false,
-    var tempFile: File? = null
 )
 
 class TabState {
@@ -418,39 +362,12 @@ fun loadBookmarks(context: Context): List<Bookmark> {
     } catch (e: Exception) { emptyList() }
 }
 
-fun saveExtensions(context: Context, extensions: List<ExtensionItem>) {
-    val arr = JSONArray()
-    for (e in extensions) {
-        val obj = JSONObject()
-        obj.put("id", e.id); obj.put("name", e.name)
-        obj.put("description", e.description); obj.put("iconUrl", e.iconUrl)
-        obj.put("enabled", e.enabled); obj.put("source", e.source)
-        arr.put(obj)
-    }
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putString(KEY_EXTENSIONS, arr.toString()).apply()
-}
-
-fun loadExtensions(context: Context): List<ExtensionItem> {
-    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_EXTENSIONS, null) ?: return emptyList()
-    return try {
-        val arr = JSONArray(json)
-        mutableListOf<ExtensionItem>().apply {
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                add(ExtensionItem(o.getString("id"), o.getString("name"),
-                    o.optString("description", ""), o.optString("iconUrl", ""),
-                    o.getBoolean("enabled"), o.optString("source", "store")))
-            }
-        }
-    } catch (e: Exception) { emptyList() }
-}
-
 // END OF PART 3/10
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 4/10 — Utility Functions, NetworkSpeedLimiter, ExtensionManager ===
+// === PART 4/10 — Utility Functions, Import/Export Logic ===
 // ═══════════════════════════════════════════════════════════════════
 
 fun getDomainName(url: String): String {
@@ -470,120 +387,221 @@ fun resolveUrl(input: String): String {
     return "https://www.google.com/search?q=${Uri.encode(input)}"
 }
 
-// ── Global Network Speed Limiter (per-second window) ──────────────
-class NetworkSpeedLimiter {
-    @Volatile var maxBytesPerSecond: Long = 0L
-    
-    private var bytesThisSecond: Long = 0L
-    private var windowStartNs: Long = System.nanoTime()
-    private val lock = Any()
-    
-    fun acquire(bytes: Long) {
-        val limit = maxBytesPerSecond
-        if (limit <= 0L) return
-        
-        synchronized(lock) {
-            while (true) {
-                val nowNs = System.nanoTime()
-                val elapsedNs = nowNs - windowStartNs
+// ── Import/Export Functions ────────────────────────────────────────
+
+fun exportData(
+    context: Context,
+    exportTabs: Boolean,
+    exportHistory: Boolean,
+    exportBookmarks: Boolean,
+    tabs: List<TabState>,
+    pinnedDomains: List<String>,
+    currentTabIndex: Int,
+    history: List<HistoryItem>,
+    bookmarks: List<Bookmark>,
+    exportAll: Boolean,
+    onResult: (Boolean, String) -> Unit
+) {
+    thread(name = "export-data") {
+        try {
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Grey")
+            if (!dir.exists()) dir.mkdirs()
+            
+            if (exportAll) {
+                // Single combined file
+                val root = JSONObject()
+                root.put("version", 1)
+                root.put("exportDate", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.getDefault()).format(java.util.Date()))
                 
-                if (elapsedNs >= 1_000_000_000L) {
-                    bytesThisSecond = 0L
-                    windowStartNs = nowNs
+                val tabsArr = JSONArray()
+                for (i in tabs.indices) {
+                    val t = tabs[i]
+                    if (t.isBlankTab) continue
+                    val obj = JSONObject()
+                    obj.put("url", t.url)
+                    obj.put("title", t.title)
+                    obj.put("isPinned", pinnedDomains.contains(getDomainName(t.url)))
+                    obj.put("order", i)
+                    obj.put("group", getDomainName(t.url))
+                    tabsArr.put(obj)
                 }
+                root.put("tabs", tabsArr)
+                val pinnedArr = JSONArray()
+                for (d in pinnedDomains) pinnedArr.put(d)
+                root.put("pinnedDomains", pinnedArr)
+                root.put("activeTabIndex", currentTabIndex)
                 
-                if (bytesThisSecond + bytes <= limit) {
-                    bytesThisSecond += bytes
-                    return
+                val histArr = JSONArray()
+                for (h in history) {
+                    val obj = JSONObject()
+                    obj.put("url", h.url); obj.put("title", h.title); obj.put("timestamp", h.timestamp)
+                    histArr.put(obj)
                 }
+                root.put("history", histArr)
                 
-                val remainingNs = 1_000_000_000L - elapsedNs
-                if (remainingNs > 0) {
-                    val waitMs = remainingNs / 1_000_000L
-                    val waitNs = (remainingNs % 1_000_000L).toInt()
-                    if (waitMs > 0) {
-                        try { (lock as java.lang.Object).wait(waitMs, waitNs) }
-                        catch (e: InterruptedException) { return }
-                    } else {
-                        try { (lock as java.lang.Object).wait(1) }
-                        catch (e: InterruptedException) { return }
+                val bookArr = JSONArray()
+                for (b in bookmarks) {
+                    val obj = JSONObject()
+                    obj.put("url", b.url); obj.put("title", b.title)
+                    obj.put("folder", b.folder); obj.put("timestamp", b.timestamp)
+                    bookArr.put(obj)
+                }
+                root.put("bookmarks", bookArr)
+                
+                val fileName = "grey_backup_${java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())}.json"
+                val file = File(dir, fileName)
+                file.writeText(root.toString(2))
+                onResult(true, file.absolutePath)
+            } else {
+                // Separate files per category
+                val files = mutableListOf<String>()
+                
+                if (exportTabs) {
+                    val root = JSONObject()
+                    root.put("type", "tabs")
+                    val tabsArr = JSONArray()
+                    for (i in tabs.indices) {
+                        val t = tabs[i]
+                        if (t.isBlankTab) continue
+                        val obj = JSONObject()
+                        obj.put("url", t.url)
+                        obj.put("title", t.title)
+                        obj.put("isPinned", pinnedDomains.contains(getDomainName(t.url)))
+                        obj.put("order", i)
+                        obj.put("group", getDomainName(t.url))
+                        tabsArr.put(obj)
                     }
+                    root.put("tabs", tabsArr)
+                    val file = File(dir, "grey_tabs.json")
+                    file.writeText(root.toString(2))
+                    files.add(file.absolutePath)
                 }
+                
+                if (exportHistory) {
+                    val root = JSONObject()
+                    root.put("type", "history")
+                    val histArr = JSONArray()
+                    for (h in history) {
+                        val obj = JSONObject()
+                        obj.put("url", h.url); obj.put("title", h.title); obj.put("timestamp", h.timestamp)
+                        histArr.put(obj)
+                    }
+                    root.put("history", histArr)
+                    val file = File(dir, "grey_history.json")
+                    file.writeText(root.toString(2))
+                    files.add(file.absolutePath)
+                }
+                
+                if (exportBookmarks) {
+                    val root = JSONObject()
+                    root.put("type", "bookmarks")
+                    val bookArr = JSONArray()
+                    for (b in bookmarks) {
+                        val obj = JSONObject()
+                        obj.put("url", b.url); obj.put("title", b.title)
+                        obj.put("folder", b.folder); obj.put("timestamp", b.timestamp)
+                        bookArr.put(obj)
+                    }
+                    root.put("bookmarks", bookArr)
+                    val file = File(dir, "grey_bookmarks.json")
+                    file.writeText(root.toString(2))
+                    files.add(file.absolutePath)
+                }
+                
+                onResult(true, files.joinToString("\n"))
             }
+        } catch (e: Exception) {
+            onResult(false, "Export failed: ${e.message}")
         }
     }
 }
 
-// ── Extension Manager ──────────────────────────────────────────────
-class ExtensionManager(private val runtime: GeckoRuntime) {
-    
-    private val installedExtensions = mutableMapOf<String, org.mozilla.geckoview.WebExtension>()
-    
-    // ── Install built-in extension from assets/extensions/{folderName}/ ──
-    fun installBuiltIn(folderName: String, onResult: (Boolean, String) -> Unit) {
-        val uri = "resource://android/assets/extensions/$folderName/"
-        android.util.Log.d("GreyBrowser", "ExtensionManager.installBuiltIn: $uri")
-        
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            runtime.webExtensionController.installBuiltIn(uri).accept({ ext ->
-                if (ext != null) {
-                    android.util.Log.d("GreyBrowser", "ExtensionManager: Built-in install SUCCESS - id=${ext.id}")
-                    installedExtensions[ext.id] = ext
-                    onResult(true, ext.id)
-                } else {
-                    android.util.Log.e("GreyBrowser", "ExtensionManager: Built-in install returned NULL")
-                    onResult(false, "Install returned null")
+fun importData(
+    context: Context,
+    uri: Uri,
+    tabs: MutableList<TabState>,
+    pinnedDomains: MutableList<String>,
+    history: MutableList<HistoryItem>,
+    bookmarks: MutableList<Bookmark>,
+    createForegroundTab: (String) -> Unit,
+    onResult: (Boolean, String) -> Unit
+) {
+    thread(name = "import-data") {
+        try {
+            val inputStream = context.contentResolver.openInputStream(uri)
+            val json = inputStream?.bufferedReader()?.readText() ?: ""
+            inputStream?.close()
+            
+            val root = JSONObject(json)
+            var importedTabs = 0
+            var importedHistory = 0
+            var importedBookmarks = 0
+            
+            // Import tabs if present
+            val tabsArr = root.optJSONArray("tabs")
+            if (tabsArr != null) {
+                for (i in 0 until tabsArr.length()) {
+                    val t = tabsArr.getJSONObject(i)
+                    val url = t.getString("url")
+                    createForegroundTab(url)
+                    importedTabs++
                 }
-            }, { error ->
-                val msg = error?.message ?: "unknown error"
-                android.util.Log.e("GreyBrowser", "ExtensionManager: Built-in install ERROR - $msg")
-                onResult(false, "GeckoView error: $msg")
-            })
-        }
-    }
-    
-    // ── Install from user-picked .xpi file ──
-    fun installFromFile(uri: Uri, onResult: (Boolean, String) -> Unit) {
-        val xpiUri = uri.toString()
-        android.util.Log.d("GreyBrowser", "ExtensionManager.installFromFile: $xpiUri")
-        
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            runtime.webExtensionController.install(xpiUri).accept({ ext ->
-                if (ext != null) {
-                    android.util.Log.d("GreyBrowser", "ExtensionManager: Install SUCCESS - id=${ext.id}")
-                    installedExtensions[ext.id] = ext
-                    onResult(true, ext.id)
-                } else {
-                    android.util.Log.e("GreyBrowser", "ExtensionManager: Install returned NULL")
-                    onResult(false, "Install returned null")
+            }
+            
+            // Import pinned domains
+            val pinnedArr = root.optJSONArray("pinnedDomains")
+            if (pinnedArr != null) {
+                for (i in 0 until pinnedArr.length()) {
+                    val domain = pinnedArr.getString(i)
+                    if (domain !in pinnedDomains) pinnedDomains.add(domain)
                 }
-            }, { error ->
-                val msg = error?.message ?: "unknown error"
-                android.util.Log.e("GreyBrowser", "ExtensionManager: Install ERROR - $msg")
-                onResult(false, "Install failed: $msg")
-            })
-        }
-    }
-    
-    fun uninstall(extId: String) {
-        android.util.Log.d("GreyBrowser", "ExtensionManager.uninstall: $extId")
-        installedExtensions[extId]?.let { ext ->
-            runtime.webExtensionController.uninstall(ext)
-            installedExtensions.remove(extId)
-        }
-    }
-    
-    fun setEnabled(extId: String, enabled: Boolean) {
-        android.util.Log.d("GreyBrowser", "ExtensionManager.setEnabled: $extId enabled=$enabled")
-        installedExtensions[extId]?.let { ext ->
-            if (enabled) runtime.webExtensionController.enable(ext, 1)
-            else runtime.webExtensionController.disable(ext, 1)
+            }
+            
+            // Import history if present
+            val histArr = root.optJSONArray("history")
+            if (histArr != null) {
+                for (i in 0 until histArr.length()) {
+                    val h = histArr.getJSONObject(i)
+                    val url = h.getString("url")
+                    if (history.none { it.url == url }) {
+                        history.add(HistoryItem(
+                            url = url,
+                            title = h.optString("title", url),
+                            timestamp = h.optLong("timestamp", System.currentTimeMillis())
+                        ))
+                        importedHistory++
+                    }
+                }
+                saveHistory(context, history)
+            }
+            
+            // Import bookmarks if present
+            val bookArr = root.optJSONArray("bookmarks")
+            if (bookArr != null) {
+                for (i in 0 until bookArr.length()) {
+                    val b = bookArr.getJSONObject(i)
+                    val url = b.getString("url")
+                    if (bookmarks.none { it.url == url }) {
+                        bookmarks.add(Bookmark(
+                            url = url,
+                            title = b.optString("title", url),
+                            folder = b.optString("folder", ""),
+                            timestamp = b.optLong("timestamp", System.currentTimeMillis())
+                        ))
+                        importedBookmarks++
+                    }
+                }
+                saveBookmarks(context, bookmarks)
+            }
+            
+            onResult(true, "Imported: $importedTabs tabs, $importedHistory history, $importedBookmarks bookmarks")
+        } catch (e: Exception) {
+            onResult(false, "Import failed: ${e.message}")
         }
     }
 }
 
 // END OF PART 4/10
-
 
 
 
@@ -602,31 +620,7 @@ fun GreyBrowser() {
     val prefs = remember {
         context.getSharedPreferences("browser_settings", Context.MODE_PRIVATE)
     }
-    val tabPrefs = remember {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    }
     val scope = rememberCoroutineScope()
-
-    // ── Extension State ───────────────────────────────────────────────
-    val extensionManager = remember { ExtensionManager(runtime) }
-    val extensions = remember {
-        mutableStateListOf<ExtensionItem>().apply { addAll(loadExtensions(context)) }
-    }
-    var showExtensions by remember { mutableStateOf(false) }
-
-    // ── Download State ────────────────────────────────────────────────
-    val activeDownloads = remember { mutableStateListOf<DownloadItem>() }
-    var currentDownloadId by remember { mutableStateOf<String?>(null) }
-    var showDownloadManager by remember { mutableStateOf(false) }
-    var downloadUpdateTrigger by remember { mutableIntStateOf(0) }
-    val detectedVideos = remember { mutableStateListOf<Pair<String, String>>() }
-    var showVideoDropdown by remember { mutableStateOf(false) }
-    var showDownloadEditor by remember { mutableStateOf(false) }
-    var downloadEditorUrl by remember { mutableStateOf("") }
-    var downloadEditorName by remember { mutableStateOf("") }
-    var downloadEditorSize by remember { mutableStateOf("Unknown") }
-    var downloadEditorIsVideo by remember { mutableStateOf(false) }
-    val networkLimiter = remember { NetworkSpeedLimiter() }
 
     // ── History State ──────────────────────────────────────────────────
     val history = remember { mutableStateListOf<HistoryItem>().apply { addAll(loadHistory(context)) } }
@@ -635,6 +629,9 @@ fun GreyBrowser() {
     // ── Bookmark State ─────────────────────────────────────────────────
     val bookmarks = remember { mutableStateListOf<Bookmark>().apply { addAll(loadBookmarks(context)) } }
     var showBookmarks by remember { mutableStateOf(false) }
+
+    // ── Import/Export State ────────────────────────────────────────────
+    var showImportExport by remember { mutableStateOf(false) }
 
     // ── Logcat State ───────────────────────────────────────────────────
     val logLines = remember { mutableStateListOf<String>() }
@@ -656,51 +653,6 @@ fun GreyBrowser() {
         showToast = true
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    // ── Built-in extension install from assets/extensions/ ──
-    // ══════════════════════════════════════════════════════════════════
-    LaunchedEffect(Unit) {
-        delay(3000) // Wait for GeckoRuntime to fully initialise
-
-        val installedKeys = tabPrefs
-            .getStringSet(KEY_BUILTIN_INSTALLED, emptySet())
-            ?.toMutableSet() ?: mutableSetOf()
-
-        // Folder names under assets/extensions/ (must match YML extraction)
-        val builtInExtensions = listOf(
-            Triple("ublock_origin",  "uBlock Origin",  "ublock_origin"),
-            Triple("tampermonkey",   "Tampermonkey",   "tampermonkey"),
-            Triple("privacy_badger", "Privacy Badger", "privacy_badger")
-        )
-
-        for ((folderName, name, key) in builtInExtensions) {
-            if (key in installedKeys) {
-                log("↳ $name already installed, skipping")
-                continue
-            }
-            log("⬇ Installing built-in: $name ($folderName)")
-            extensionManager.installBuiltIn(folderName) { success, msg ->
-                if (success) {
-                    if (extensions.none { it.id == msg }) {
-                        extensions.add(ExtensionItem(id = msg, name = name, enabled = true))
-                    }
-                    installedKeys.add(key)
-                    tabPrefs.edit()
-                        .putStringSet(KEY_BUILTIN_INSTALLED, installedKeys)
-                        .apply()
-                    saveExtensions(context, extensions.toList())
-                    log("✓ $name installed (geckoId=$msg)")
-                    showToast("$name installed")
-                } else {
-                    log("✗ $name FAILED: $msg")
-                    showToast("$name failed — check Logcat")
-                }
-            }
-            delay(5000) // 5-second gap between installs
-        }
-        log("Built-in extension pass complete. Installed: $installedKeys")
-    }
-
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
         session.settings.allowJavascript = prefs.getBoolean("javascript.enabled", true)
         session.settings.useTrackingProtection = prefs.getBoolean("privacy.trackingprotection.enabled", false)
@@ -718,7 +670,9 @@ fun GreyBrowser() {
         if (url == "about:blank" || url.isBlank()) return
         history.removeAll { it.url == url }
         history.add(HistoryItem(url = url, title = title.ifBlank { url }, timestamp = System.currentTimeMillis()))
-        if (history.size > MAX_HISTORY_ITEMS) history.removeAt(0)
+        if (history.size > MAX_HISTORY_ITEMS) {
+            history.removeAt(0)
+        }
         saveHistory(context, history)
     }
 
@@ -728,7 +682,9 @@ fun GreyBrowser() {
         }
     }
     val homeTab = remember {
-        TabState().apply { session = homeSession; isBlankTab = true; title = "Home" }
+        TabState().apply {
+            session = homeSession; isBlankTab = true; title = "Home"
+        }
     }
 
     val (savedTabs, savedPinned, savedLastActiveUrl) = remember { loadTabsData(context) }
@@ -775,7 +731,6 @@ fun GreyBrowser() {
         saveTabsData(context, tabs, pinnedDomains, lastActiveUrl)
     }
     LaunchedEffect(bookmarks.toList()) { saveBookmarks(context, bookmarks) }
-    LaunchedEffect(extensions.toList()) { saveExtensions(context, extensions) }
 
     LaunchedEffect(currentTabIndex) {
         if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
@@ -784,6 +739,7 @@ fun GreyBrowser() {
         }
     }
 
+    // LaunchedEffect for toast auto-hide
     if (showToast) {
         LaunchedEffect(showToast) {
             delay(2000)
@@ -792,7 +748,6 @@ fun GreyBrowser() {
     }
 
 // END OF PART 5/10
-
 
 
 
@@ -807,56 +762,47 @@ fun GreyBrowser() {
             override fun onPageStart(s: GeckoSession, url: String) {
                 tabState.url = url; tabState.progress = 5
                 tabState.lastUpdated = System.currentTimeMillis()
+                log("onPageStart: $url")
                 if (url != "about:blank") {
                     tabState.isBlankTab = false
                     lastActiveUrl = url
-                    if (currentTabIndex >= 0 && currentTabIndex < tabs.size) highlightedTabIndex = currentTabIndex
-                    if (tabs.getOrNull(currentTabIndex) == tabState || (currentTabIndex == -1 && tabState == homeTab)) {
-                        detectedVideos.clear()
-                        showVideoDropdown = false
+                    if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
+                        highlightedTabIndex = currentTabIndex
                     }
+                    // Save to history when page starts loading
+                    addToHistory(url, tabState.title)
                 }
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
                 tabState.progress = 100; tabState.lastUpdated = System.currentTimeMillis()
-                if (success && tabState.url != "about:blank") addToHistory(tabState.url, tabState.title)
+                log("onPageStop: success=$success url=${tabState.url}")
             }
-            override fun onProgressChange(s: GeckoSession, progress: Int) { tabState.progress = progress }
+            override fun onProgressChange(s: GeckoSession, progress: Int) {
+                tabState.progress = progress
+            }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(s: GeckoSession, title: String?) {
-                if (!tabState.isBlankTab) tabState.title = title ?: tabState.url
+                if (!tabState.isBlankTab) {
+                    tabState.title = title ?: tabState.url
+                    log("onTitleChange: ${tabState.title}")
+                }
             }
             override fun onContextMenu(
                 session: GeckoSession, screenX: Int, screenY: Int,
                 element: GeckoSession.ContentDelegate.ContextElement
             ) {
                 if (element.linkUri != null) {
+                    log("onContextMenu: ${element.linkUri}")
                     contextMenuUri = element.linkUri; showContextMenu = true
-                    val lowerUrl = element.linkUri!!.lowercase()
-                    if (lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".webm") ||
-                        lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".ts")) {
-                        if (!detectedVideos.any { it.first == element.linkUri }) {
-                            detectedVideos.add(Pair(element.linkUri!!, tabState.url))
-                            showVideoDropdown = true
-                        }
-                    }
                 }
             }
-            override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
+            override fun onExternalResponse(
+                session: GeckoSession,
+                response: WebResponse
+            ) {
                 val url = response.uri
-                if (url != null) {
-                    val fileName = url.substringAfterLast("/").substringBefore("?")
-                    downloadEditorUrl = url
-                    downloadEditorName = if (fileName.isNotBlank()) fileName else tabState.title
-                    downloadEditorSize = "Unknown"
-                    downloadEditorIsVideo = url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8")
-                    showDownloadEditor = true
-                    if (downloadEditorIsVideo && !detectedVideos.any { it.first == url }) {
-                        detectedVideos.add(Pair(url, tabState.url))
-                        showVideoDropdown = true
-                    }
-                }
+                log("onExternalResponse: $url")
             }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
@@ -866,22 +812,10 @@ fun GreyBrowser() {
                 hasUserGesture: Boolean
             ) {
                 url?.let { newUrl ->
+                    log("onLocationChange: $newUrl")
                     tabState.url = newUrl
                     if (newUrl != "about:blank") {
                         tabState.isBlankTab = false
-                        val lowerUrl = newUrl.lowercase()
-                        if (lowerUrl.endsWith(".m3u8") || lowerUrl.endsWith(".mp4") ||
-                            lowerUrl.endsWith(".webm") || lowerUrl.endsWith(".ts")) {
-                            downloadEditorUrl = newUrl
-                            downloadEditorName = newUrl.substringAfterLast("/").substringBefore("?")
-                            downloadEditorSize = "Unknown"
-                            downloadEditorIsVideo = true
-                            showDownloadEditor = true
-                            if (!detectedVideos.any { it.first == newUrl }) {
-                                detectedVideos.add(Pair(newUrl, tabState.url))
-                                showVideoDropdown = true
-                            }
-                        }
                     }
                 }
             }
@@ -898,12 +832,13 @@ fun GreyBrowser() {
                 }
                 ts.session = s; ts.isDiscarded = false; setupDelegates(ts)
                 ts.lastUpdated = System.currentTimeMillis()
+                log("Tab restored from cold: ${ts.url}")
             }
         }
         tabs.forEachIndexed { i, ts -> ts.session?.setActive(i == activeIndex) }
-        val warmTabs = tabs.filter {
+        val warmTabs = tabs.filter { 
             val idx = tabs.indexOf(it)
-            !it.isDiscarded && !it.isBlankTab && it.session != null && idx != activeIndex
+            !it.isDiscarded && !it.isBlankTab && it.session != null && idx != activeIndex 
         }
         if (warmTabs.size > MAX_WARM_TABS) {
             val toMakeCold = warmTabs.sortedBy { it.lastUpdated }.take(warmTabs.size - MAX_WARM_TABS)
@@ -924,18 +859,6 @@ fun GreyBrowser() {
         }
     }
 
-    fun startDownloadService(ctx: Context) {
-        val intent = Intent(ctx, DownloadService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(intent)
-        else ctx.startService(intent)
-    }
-
-    fun stopDownloadService(ctx: Context) {
-        if (activeDownloads.none { it.state == DownloadState.DOWNLOADING }) {
-            ctx.stopService(Intent(ctx, DownloadService::class.java))
-        }
-    }
-
     LaunchedEffect(pendingDeletions.toMap()) {
         while (pendingDeletions.isNotEmpty()) {
             delay(1000)
@@ -945,6 +868,7 @@ fun GreyBrowser() {
                 pendingDeletions.remove(index)
                 val tab = tabs.getOrNull(index)
                 if (tab == null) continue
+                log("Tab deleted: ${tab.url}")
                 tab.session?.setActive(false); tab.session?.close()
                 tabs.removeAt(index)
                 val updated = mutableMapOf<Int, Long>()
@@ -953,9 +877,10 @@ fun GreyBrowser() {
                 }
                 pendingDeletions.clear()
                 pendingDeletions.putAll(updated)
-
+                
                 if (tabs.isEmpty()) {
-                    currentTabIndex = -1; selectedDomain = ""
+                    currentTabIndex = -1
+                    selectedDomain = ""
                 } else if (currentTabIndex > index) {
                     currentTabIndex--
                 } else if (currentTabIndex == index && tabs.isNotEmpty()) {
@@ -1010,6 +935,7 @@ fun GreyBrowser() {
             session = s; this.url = url; isBlankTab = false; isDiscarded = false
             lastUpdated = System.currentTimeMillis(); setupDelegates(this)
         })
+        log("Background tab created: $url")
         manageTabLifecycle(currentTabIndex)
     }
 
@@ -1021,233 +947,29 @@ fun GreyBrowser() {
             session = s; isBlankTab = false; isDiscarded = false
             lastUpdated = System.currentTimeMillis(); setupDelegates(this)
         })
+        log("Foreground tab created: $url")
         currentTabIndex = tabs.lastIndex; manageTabLifecycle(currentTabIndex)
     }
 
     fun requestDeleteTab(index: Int) {
-        if (index >= 0 && index < tabs.size) pendingDeletions[index] = System.currentTimeMillis()
+        if (index >= 0 && index < tabs.size) {
+            pendingDeletions[index] = System.currentTimeMillis()
+            log("Tab delete requested: ${tabs[index].url}")
+        }
     }
 
-    fun undoDeleteTab(index: Int) { pendingDeletions.remove(index) }
+    fun undoDeleteTab(index: Int) { 
+        pendingDeletions.remove(index)
+        log("Tab delete undone")
+    }
 
 // END OF PART 6/10
 
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 7/10 — GreyBrowser() Download Functions ===
+// === PART 7/10 — GreyBrowser() BackHandler, GeckoViewBox ===
 // ═══════════════════════════════════════════════════════════════════
-
-    fun getDownloadDir(): File {
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Grey")
-        if (!dir.exists()) dir.mkdirs()
-        return dir
-    }
-
-    fun addDownload(item: DownloadItem) { activeDownloads.add(item) }
-
-    fun downloadM3U8(item: DownloadItem) {
-        item.state = DownloadState.DOWNLOADING
-        currentDownloadId = item.id
-        startDownloadService(context)
-
-        thread(name = "m3u8-${item.id}") {
-            try {
-                val url = URL(item.url)
-                val conn = url.openConnection() as HttpURLConnection
-                if (item.referer.isNotBlank()) conn.setRequestProperty("Referer", item.referer)
-                conn.connect()
-                val playlist = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-
-                val baseUrl = item.url.substringBeforeLast("/")
-                val segments = playlist.lines()
-                    .filter { it.isNotBlank() && !it.startsWith("#") }
-                    .map { seg -> if (seg.startsWith("http")) seg.trim() else "$baseUrl/${seg.trim()}" }
-
-                if (segments.isEmpty()) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                    return@thread
-                }
-
-                val tempDir = File(context.cacheDir, "m3u8_${item.id}")
-                tempDir.mkdirs()
-                val segmentFiles = mutableListOf<File>()
-
-                for ((i, segUrl) in segments.withIndex()) {
-                    while (item.state == DownloadState.PAUSED) {
-                        Thread.sleep(500)
-                        if (item.state == DownloadState.FAILED) { tempDir.deleteRecursively(); return@thread }
-                    }
-                    if (item.state == DownloadState.FAILED) { tempDir.deleteRecursively(); return@thread }
-
-                    val segFile = File(tempDir, "seg_${i.toString().padStart(5, '0')}.ts")
-                    try {
-                        val segConn = URL(segUrl).openConnection() as HttpURLConnection
-                        segConn.connectTimeout = 10000; segConn.readTimeout = 10000
-                        if (item.referer.isNotBlank()) segConn.setRequestProperty("Referer", item.referer)
-
-                        segConn.inputStream.use { input ->
-                            segFile.outputStream().use { output ->
-                                val buffer = ByteArray(8192)
-                                var bytesRead: Int
-                                while (input.read(buffer).also { bytesRead = it } != -1) {
-                                    networkLimiter.acquire(bytesRead.toLong())
-                                    output.write(buffer, 0, bytesRead)
-                                }
-                            }
-                        }
-                        segmentFiles.add(segFile)
-                        item.progress = ((i + 1) * 100) / segments.size
-                        if (showDownloadManager) downloadUpdateTrigger++
-                    } catch (e: Exception) { /* Segment failed, continue */ }
-                }
-
-                if (segmentFiles.isEmpty()) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                    tempDir.deleteRecursively()
-                    return@thread
-                }
-
-                val outputFile = File(getDownloadDir(), item.fileName.replace(".m3u8", ".ts"))
-                FileOutputStream(outputFile).use { out ->
-                    for (seg in segmentFiles) { seg.inputStream().use { it.copyTo(out) } }
-                }
-
-                item.tempFile = outputFile
-                item.state = DownloadState.COMPLETED
-                item.progress = 100
-                if (showDownloadManager) downloadUpdateTrigger++
-                tempDir.deleteRecursively()
-            } catch (e: Exception) {
-                if (item.state != DownloadState.PAUSED) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                }
-            } finally {
-                if (currentDownloadId == item.id) {
-                    currentDownloadId = null
-                    stopDownloadService(context)
-                }
-            }
-        }
-    }
-
-    fun startDownload(id: String) {
-        val item = activeDownloads.find { it.id == id } ?: return
-        if (currentDownloadId != null && currentDownloadId != id) return
-
-        if (item.url.contains(".m3u8")) { downloadM3U8(item); return }
-
-        item.state = DownloadState.DOWNLOADING
-        currentDownloadId = id
-        startDownloadService(context)
-
-        thread(name = "download-$id") {
-            try {
-                val url = URL(item.url)
-                val conn = url.openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000; conn.readTimeout = 30000
-                if (item.referer.isNotBlank()) conn.setRequestProperty("Referer", item.referer)
-                if (item.cookies.isNotBlank()) conn.setRequestProperty("Cookie", item.cookies)
-                conn.connect()
-
-                val totalSize = conn.contentLength.toLong()
-                val input = BufferedInputStream(conn.inputStream)
-                val outputFile = File(getDownloadDir(), item.fileName)
-                item.tempFile = outputFile
-                val output = FileOutputStream(outputFile)
-
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                var totalRead = 0L
-                val startTime = System.currentTimeMillis()
-                var lastUpdateTime = startTime
-
-                while (true) {
-                    while (item.state == DownloadState.PAUSED) {
-                        Thread.sleep(500)
-                        if (item.state == DownloadState.FAILED) {
-                            try { input.close() } catch (_: Exception) {}
-                            try { output.close() } catch (_: Exception) {}
-                            try { conn.disconnect() } catch (_: Exception) {}
-                            return@thread
-                        }
-                    }
-                    if (item.state == DownloadState.FAILED) {
-                        try { input.close() } catch (_: Exception) {}
-                        try { output.close() } catch (_: Exception) {}
-                        try { conn.disconnect() } catch (_: Exception) {}
-                        return@thread
-                    }
-
-                    networkLimiter.acquire(buffer.size.toLong())
-                    bytesRead = input.read(buffer)
-                    if (bytesRead == -1) break
-
-                    output.write(buffer, 0, bytesRead)
-                    totalRead += bytesRead
-
-                    val now = System.currentTimeMillis()
-                    if (now - lastUpdateTime >= 500) {
-                        val elapsed = (now - startTime) / 1000f
-                        val speedBps = if (elapsed > 0) totalRead / elapsed else 0f
-                        item.downloadedBytes = totalRead
-                        item.progress = if (totalSize > 0) ((totalRead * 100) / totalSize).toInt() else 0
-                        item.speed = when {
-                            speedBps > 1_000_000 -> "%.1f MB/s".format(speedBps / 1_000_000)
-                            speedBps > 1_000 -> "%.0f KB/s".format(speedBps / 1_000)
-                            else -> "%.0f B/s".format(speedBps)
-                        }
-                        if (showDownloadManager) downloadUpdateTrigger++
-                        lastUpdateTime = now
-                    }
-                }
-                input.close(); output.close(); conn.disconnect()
-                if (item.state != DownloadState.PAUSED) {
-                    item.state = DownloadState.COMPLETED; item.progress = 100
-                    if (showDownloadManager) downloadUpdateTrigger++
-                }
-            } catch (e: Exception) {
-                if (item.state != DownloadState.PAUSED) {
-                    item.state = DownloadState.FAILED
-                    if (showDownloadManager) downloadUpdateTrigger++
-                }
-            } finally {
-                if (currentDownloadId == id) {
-                    currentDownloadId = null
-                    val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
-                    if (next != null) startDownload(next.id) else stopDownloadService(context)
-                }
-            }
-        }
-    }
-
-    fun pauseDownload(id: String) {
-        activeDownloads.find { it.id == id }?.state = DownloadState.PAUSED
-        if (showDownloadManager) downloadUpdateTrigger++
-    }
-
-    fun resumeDownload(id: String) {
-        val item = activeDownloads.find { it.id == id } ?: return
-        if (currentDownloadId != null && currentDownloadId != id) item.state = DownloadState.QUEUED
-        else { item.state = DownloadState.DOWNLOADING; startDownload(id) }
-        if (showDownloadManager) downloadUpdateTrigger++
-    }
-
-    fun deleteDownload(id: String) {
-        val item = activeDownloads.find { it.id == id } ?: return
-        val wasActive = currentDownloadId == id
-        item.tempFile?.delete()
-        activeDownloads.remove(item)
-        if (wasActive) {
-            currentDownloadId = null
-            val next = activeDownloads.firstOrNull { it.state == DownloadState.QUEUED }
-            if (next != null) startDownload(next.id) else stopDownloadService(context)
-        }
-    }
 
     BackHandler {
         if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() }
@@ -1258,15 +980,9 @@ fun GreyBrowser() {
     fun GeckoViewBox() {
         val s = currentTab.session
         if (s != null) {
-            AndroidView(
-                factory = { ctx -> GeckoView(ctx).apply { setSession(s) } },
-                update = { gv -> gv.setSession(s) },
-                modifier = Modifier.fillMaxSize()
-            )
+            AndroidView(factory = { ctx -> GeckoView(ctx).apply { setSession(s) } }, update = { gv -> gv.setSession(s) }, modifier = Modifier.fillMaxSize())
         } else {
-            Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Color.White)
-            }
+            Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
         }
     }
 
@@ -1275,89 +991,23 @@ fun GreyBrowser() {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 8/10 — Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
+// === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
 
-    if (showDownloadEditor) {
-        var editName by remember { mutableStateOf(downloadEditorName) }
-        AlertDialog(
-            onDismissRequest = { showDownloadEditor = false },
-            title = { Text("Download", color = Color.White, fontSize = 18.sp) },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = editName, onValueChange = { editName = it }, singleLine = true,
-                        label = { Text("Name", color = Color.Gray) },
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)),
-                        shape = RectangleShape, modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text("Size: $downloadEditorSize", color = Color.Gray, fontSize = 14.sp)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Location: /Download/Grey/", color = Color.Gray, fontSize = 12.sp)
-                }
-            },
-            confirmButton = {
-                Row {
-                    TextButton({
-                        addDownload(DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url, state = DownloadState.QUEUED))
-                        showDownloadEditor = false; showToast("Added to downloads")
-                    }) { Text("Add", color = Color.White) }
-                    Spacer(Modifier.width(8.dp))
-                    TextButton({
-                        val item = DownloadItem(url = downloadEditorUrl, fileName = editName.ifBlank { downloadEditorName }, isVideo = downloadEditorIsVideo, referer = currentTab.url)
-                        addDownload(item)
-                        if (currentDownloadId == null) startDownload(item.id)
-                        showDownloadEditor = false; showToast("Download started")
-                    }) { Text("Start", color = Color.White) }
-                }
-            },
-            dismissButton = { TextButton({ showDownloadEditor = false }) { Text("Cancel", color = Color.White) } },
-            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-        )
-    }
-
     if (showConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showConfirmDialog = false; confirmAction = null },
-            title = { Text(confirmTitle, color = Color.White, fontSize = 18.sp) },
-            text = { Text(confirmMessage, color = Color.Gray, fontSize = 14.sp) },
-            confirmButton = { TextButton({ val a = confirmAction; showConfirmDialog = false; confirmAction = null; a?.invoke() }) { Text("Confirm", color = Color.White) } },
-            dismissButton = { TextButton({ showConfirmDialog = false; confirmAction = null }) { Text("Cancel", color = Color.White) } },
-            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-        )
+        AlertDialog(onDismissRequest = { showConfirmDialog = false; confirmAction = null }, title = { Text(confirmTitle, color = Color.White, fontSize = 18.sp) }, text = { Text(confirmMessage, color = Color.Gray, fontSize = 14.sp) }, confirmButton = { TextButton({ val a = confirmAction; showConfirmDialog = false; confirmAction = null; a?.invoke() }) { Text("Confirm", color = Color.White) } }, dismissButton = { TextButton({ showConfirmDialog = false; confirmAction = null }) { Text("Cancel", color = Color.White) } }, containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp)
     }
 
-    if (showSettings) {
-        SettingsDialog(prefs, { showSettings = false }) {
-            applySettingsToSession(homeSession)
-            tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } }
-        }
-    }
-    if (showExtensions) {
-        ExtensionsUI(
-            extensionManager = extensionManager,
-            extensions = extensions,
-            onShowToast = { msg -> showToast(msg) },
-            onDismiss = { showExtensions = false }
-        )
-    }
+    if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
+    if (showImportExport) { ImportExportUI(context = context, tabs = tabs, pinnedDomains = pinnedDomains, currentTabIndex = currentTabIndex, history = history, bookmarks = bookmarks, createForegroundTab = { url -> createForegroundTab(url) }, onShowToast = { msg -> showToast(msg) }, onDismiss = { showImportExport = false }) }
     if (showLogcat) { LogcatUI(logLines = logLines, onClear = { logLines.clear() }, onDismiss = { showLogcat = false }) }
+
     if (showHistory) {
         HistoryUI(history = history, onDismiss = { showHistory = false }, onOpenUrl = { url -> createForegroundTab(url) }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
     }
+
     if (showBookmarks) {
         BookmarksUI(bookmarks = bookmarks, onDismiss = { showBookmarks = false }, onOpenUrl = { url -> createForegroundTab(url) }, onDelete = { id -> bookmarks.removeAll { it.id == id }; showToast("Bookmark deleted") }, faviconBitmaps = faviconBitmaps, loadFavicon = { loadFavicon(it) })
-    }
-    if (showDownloadManager) {
-        DownloadManagerUI(
-            downloads = activeDownloads, currentDownloadId = currentDownloadId,
-            onDismiss = { showDownloadManager = false },
-            onStart = { startDownload(it) }, onPause = { pauseDownload(it) },
-            onResume = { resumeDownload(it) }, onDelete = { deleteDownload(it) },
-            networkLimiter = networkLimiter, updateTrigger = downloadUpdateTrigger
-        )
     }
 
     if (showContextMenu && contextMenuUri != null) {
@@ -1374,17 +1024,10 @@ fun GreyBrowser() {
     if (showTabManager) {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
         val sortedDomains = domainGroups.keys.sortedWith(compareByDescending<String> { pinnedDomains.contains(it) }.thenBy { d: String -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE })
-        val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }
-        val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
-        val highlightDomain = if (currentTab.isBlankTab && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url)
-        else if (!currentTab.isBlankTab) getDomainName(currentTab.url) else ""
+        val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }; val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
+        val highlightDomain = if (currentTab.isBlankTab && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url) else if (!currentTab.isBlankTab) getDomainName(currentTab.url) else ""
 
-        LaunchedEffect(Unit) {
-            selectedDomain = ""
-            if (highlightDomain.isNotBlank()) {
-                blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = ""
-            }
-        }
+        LaunchedEffect(Unit) { selectedDomain = ""; if (highlightDomain.isNotBlank()) { blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" } }
 
         Popup(alignment = Alignment.TopStart, onDismissRequest = { showTabManager = false }, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
             Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
@@ -1398,10 +1041,7 @@ fun GreyBrowser() {
                     Row(Modifier.weight(1f).fillMaxWidth().padding(top = 4.dp)) {
                         val groupListState = rememberLazyListState()
                         val allSidebarItems = listOf("__ALL__") + pinnedSorted + unpinnedSorted
-                        LaunchedEffect(allSidebarItems, selectedDomain) {
-                            val idx = if (selectedDomain.isBlank()) 0 else allSidebarItems.indexOf(selectedDomain)
-                            if (idx >= 0) groupListState.scrollToItem(idx)
-                        }
+                        LaunchedEffect(allSidebarItems, selectedDomain) { val idx = if (selectedDomain.isBlank()) 0 else allSidebarItems.indexOf(selectedDomain); if (idx >= 0) groupListState.scrollToItem(idx) }
 
                         LazyColumn(state = groupListState, modifier = Modifier.width(56.dp).fillMaxHeight().padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             item { AllGroupChip(isSelected = selectedDomain.isBlank(), tabCount = tabs.size, onClick = { selectedDomain = "" }) }
@@ -1417,18 +1057,11 @@ fun GreyBrowser() {
                         LaunchedEffect(selectedDomain) { val idx = tabsToShow.indexOf(scrollTarget); if (idx >= 0) tabListState.scrollToItem(idx) }
 
                         if (tabs.isEmpty()) {
-                            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("No open tabs", color = Color.Gray, fontSize = 16.sp)
-                                    Spacer(Modifier.height(8.dp))
-                                    Text("Tap 'New Tab' to start browsing", color = Color.Gray.copy(alpha = 0.7f), fontSize = 14.sp)
-                                }
-                            }
+                            Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("No open tabs", color = Color.Gray, fontSize = 16.sp); Spacer(Modifier.height(8.dp)); Text("Tap 'New Tab' to start browsing", color = Color.Gray.copy(alpha = 0.7f), fontSize = 14.sp) } }
                         } else {
                             LazyColumn(state = tabListState, modifier = Modifier.weight(1f).fillMaxHeight()) {
-                                if (tabsToShow.isEmpty()) {
-                                    item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No tabs in this group", color = Color.Gray, fontSize = 14.sp) } }
-                                } else {
+                                if (tabsToShow.isEmpty()) { item { Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No tabs in this group", color = Color.Gray, fontSize = 14.sp) } } }
+                                else {
                                     items(tabsToShow) { tab: TabState ->
                                         val tabIndex = tabs.indexOf(tab)
                                         val isHighlighted = tabIndex == currentTabIndex || (currentTabIndex == -1 && tabIndex == highlightedTabIndex)
@@ -1437,10 +1070,7 @@ fun GreyBrowser() {
                                         LaunchedEffect(tab.url) { loadTabFavicon(tabDomain) }
                                         val tabFav = tabFavicons[tabDomain]
 
-                                        Surface(
-                                            Modifier.fillMaxWidth().clickable(enabled = !isPending) { currentTabIndex = tabIndex; showTabManager = false }.border(0.5.dp, Color.DarkGray, RectangleShape),
-                                            color = if (isPending) Color.Red.copy(alpha = 0.3f) else if (isHighlighted) Color.White else Color.Transparent
-                                        ) {
+                                        Surface(Modifier.fillMaxWidth().clickable(enabled = !isPending) { currentTabIndex = tabIndex; showTabManager = false }.border(0.5.dp, Color.DarkGray, RectangleShape), color = if (isPending) Color.Red.copy(alpha = 0.3f) else if (isHighlighted) Color.White else Color.Transparent) {
                                             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 if (tabFav != null) Image(tabFav.asImageBitmap(), tabDomain, Modifier.size(16.dp).clip(CircleShape), contentScale = ContentScale.Fit)
                                                 else Box(Modifier.size(16.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(tabDomain.take(1).uppercase(), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold) }
@@ -1457,32 +1087,28 @@ fun GreyBrowser() {
                     }
 
                     Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                        OutlinedButton(onClick = { currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
-                            Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White)
-                        }
+                        OutlinedButton(onClick = { currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White) }
                         Spacer(Modifier.height(8.dp))
                         Row(Modifier.fillMaxWidth()) {
                             val hasSelection = selectedDomain.isNotBlank(); val isPinned = pinnedDomains.contains(selectedDomain)
                             val faintColor = Color.White.copy(alpha = 0.3f); val activeColor = Color.White
-                            OutlinedButton(
-                                onClick = { if (hasSelection) { confirmTitle = if (isPinned) "Unpin Group?" else "Pin Group?"; confirmMessage = "Are you sure?"; confirmAction = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) }; showConfirmDialog = true } },
-                                modifier = Modifier.weight(1f), shape = RectangleShape,
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor),
-                                border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)
-                            ) { Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor) }
+                            OutlinedButton(onClick = { if (hasSelection) { confirmTitle = if (isPinned) "Unpin Group?" else "Pin Group?"; confirmMessage = "Are you sure?"; confirmAction = { if (isPinned) pinnedDomains.remove(selectedDomain) else pinnedDomains.add(selectedDomain) }; showConfirmDialog = true } }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor), border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)) {
+                                Text(if (isPinned) "Unpin Group" else "Pin Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
+                            }
                             Spacer(Modifier.width(8.dp))
-                            OutlinedButton(
-                                onClick = { if (hasSelection) { confirmTitle = "Delete Group?"; confirmMessage = "All tabs in this group will be lost."; confirmAction = {
-                                    val toRemove = (domainGroups[selectedDomain] ?: emptyList()).toList()
-                                    toRemove.forEach { tab -> val idx = tabs.indexOf(tab); if (idx >= 0) pendingDeletions.remove(idx); tab.session?.setActive(false); tab.session?.close() }
-                                    tabs.removeAll(toRemove)
-                                    if (tabs.isEmpty()) { currentTabIndex = -1; highlightedTabIndex = -1; selectedDomain = "" }
-                                    else { currentTabIndex = currentTabIndex.coerceIn(0, tabs.lastIndex); selectedDomain = "" }
-                                }; showConfirmDialog = true } },
-                                modifier = Modifier.weight(1f), shape = RectangleShape,
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor),
-                                border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)
-                            ) { Text("Delete Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor) }
+                            OutlinedButton(onClick = { if (hasSelection) { confirmTitle = "Delete Group?"; confirmMessage = "All tabs in this group will be lost."; confirmAction = { 
+                                val toRemove = (domainGroups[selectedDomain] ?: emptyList()).toList()
+                                toRemove.forEach { tab ->
+                                    val idx = tabs.indexOf(tab)
+                                    if (idx >= 0) pendingDeletions.remove(idx)
+                                    tab.session?.setActive(false); tab.session?.close()
+                                }
+                                tabs.removeAll(toRemove)
+                                if (tabs.isEmpty()) { currentTabIndex = -1; highlightedTabIndex = -1; selectedDomain = "" }
+                                else { currentTabIndex = currentTabIndex.coerceIn(0, tabs.lastIndex); selectedDomain = "" }
+                            }; showConfirmDialog = true } }, modifier = Modifier.weight(1f), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = if (hasSelection) activeColor else faintColor), border = BorderStroke(1.dp, if (hasSelection) activeColor else faintColor)) {
+                                Text("Delete Group", fontSize = 13.sp, color = if (hasSelection) activeColor else faintColor)
+                            }
                         }
                     }
                 }
@@ -1494,9 +1120,7 @@ fun GreyBrowser() {
     var isUrlFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(currentTab, currentTab.url) {
-        if (!isUrlFocused) urlInput = TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url)
-    }
+    LaunchedEffect(currentTab, currentTab.url) { if (!isUrlFocused) { urlInput = TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url) } }
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
         Box(Modifier.fillMaxSize()) {
@@ -1515,23 +1139,6 @@ fun GreyBrowser() {
                         trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                     )
                     IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
-                    if (detectedVideos.isNotEmpty()) {
-                        Box {
-                            IconButton({ showVideoDropdown = !showVideoDropdown }) { Icon(Icons.Default.VideoLibrary, "Videos", tint = Color.White) }
-                            if (showVideoDropdown) {
-                                DropdownMenu(expanded = showVideoDropdown, onDismissRequest = { showVideoDropdown = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
-                                    detectedVideos.take(10).forEach { (url, _) ->
-                                        val shortName = url.substringAfterLast("/").substringBefore("?").take(50)
-                                        DropdownMenuItem(text = { Text(shortName, color = Color.White, fontSize = 13.sp) }, onClick = {
-                                            showVideoDropdown = false; downloadEditorUrl = url
-                                            downloadEditorName = currentTab.title; downloadEditorSize = "Unknown"
-                                            downloadEditorIsVideo = true; showDownloadEditor = true
-                                        })
-                                    }
-                                }
-                            }
-                        }
-                    }
                     Box {
                         IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
@@ -1541,13 +1148,13 @@ fun GreyBrowser() {
                                 if (url != "about:blank" && url.isNotBlank()) {
                                     bookmarks.removeAll { it.url == url }
                                     bookmarks.add(Bookmark(url = url, title = currentTab.title.ifBlank { url }))
+                                    log("Bookmark added: $url")
                                     showToast("Added to bookmarks")
                                 }
                             })
                             DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true })
-                            DropdownMenuItem(text = { Text("Downloads", color = Color.White) }, onClick = { showMenu = false; showDownloadManager = true })
                             DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
-                            DropdownMenuItem(text = { Text("Extensions", color = Color.White) }, onClick = { showMenu = false; showExtensions = true })
+                            DropdownMenuItem(text = { Text("Import/Export", color = Color.White) }, onClick = { showMenu = false; showImportExport = true })
                             DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
                             DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true })
                         }
@@ -1558,9 +1165,21 @@ fun GreyBrowser() {
 
             // ── Toast Overlay ──────────────────────────────────
             if (showToast) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                    Surface(modifier = Modifier.padding(bottom = 80.dp), color = Color.White.copy(alpha = 0.9f), shape = RectangleShape) {
-                        Text(toastMessage, color = Color.Black, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Surface(
+                        modifier = Modifier.padding(bottom = 80.dp),
+                        color = Color.White.copy(alpha = 0.9f),
+                        shape = RectangleShape
+                    ) {
+                        Text(
+                            toastMessage,
+                            color = Color.Black,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                        )
                     }
                 }
             }
@@ -1573,96 +1192,181 @@ fun GreyBrowser() {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 9/10 — DownloadManagerUI Composable ===
+// === PART 9/10 — ImportExportUI Composable ===
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-fun DownloadManagerUI(
-    downloads: List<DownloadItem>,
-    currentDownloadId: String?,
-    onDismiss: () -> Unit,
-    onStart: (String) -> Unit,
-    onPause: (String) -> Unit,
-    onResume: (String) -> Unit,
-    onDelete: (String) -> Unit,
-    networkLimiter: NetworkSpeedLimiter,
-    updateTrigger: Int
+fun ImportExportUI(
+    context: Context,
+    tabs: List<TabState>,
+    pinnedDomains: List<String>,
+    currentTabIndex: Int,
+    history: List<HistoryItem>,
+    bookmarks: List<Bookmark>,
+    createForegroundTab: (String) -> Unit,
+    onShowToast: (String) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-    var downloadToDelete by remember { mutableStateOf<String?>(null) }
-    var showSpeedMenu by remember { mutableStateOf(false) }
+    var exportTabs by remember { mutableStateOf(true) }
+    var exportHistory by remember { mutableStateOf(true) }
+    var exportBookmarks by remember { mutableStateOf(true) }
 
-    if (showDeleteConfirm && downloadToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false; downloadToDelete = null },
-            title = { Text("Delete Download?", color = Color.White, fontSize = 18.sp) },
-            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
-            confirmButton = { TextButton({ onDelete(downloadToDelete!!); showDeleteConfirm = false; downloadToDelete = null }) { Text("Delete", color = Color.White) } },
-            dismissButton = { TextButton({ showDeleteConfirm = false; downloadToDelete = null }) { Text("Cancel", color = Color.White) } },
-            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-        )
+    val importFilePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            onShowToast("Importing...")
+            importData(
+                context = context,
+                uri = uri,
+                tabs = tabs as MutableList<TabState>,
+                pinnedDomains = pinnedDomains as MutableList<String>,
+                history = history as MutableList<HistoryItem>,
+                bookmarks = bookmarks as MutableList<Bookmark>,
+                createForegroundTab = createForegroundTab
+            ) { success, msg ->
+                if (success) {
+                    onShowToast("Import complete: $msg")
+                } else {
+                    onShowToast("Import failed: $msg")
+                }
+            }
+        }
     }
 
-    Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp)); Text("Downloads", color = Color.White, fontSize = 18.sp)
-                    if (downloads.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${downloads.size})", color = Color.Gray, fontSize = 14.sp) }
-                    Spacer(Modifier.weight(1f))
-                    Box {
-                        TextButton({ showSpeedMenu = true }) { Text(formatSpeedLimit(networkLimiter.maxBytesPerSecond), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp) }
-                        DropdownMenu(expanded = showSpeedMenu, onDismissRequest = { showSpeedMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
-                            SPEED_LIMITS.forEach { limit ->
-                                DropdownMenuItem(text = { Text(formatSpeedLimit(limit), color = if (limit == networkLimiter.maxBytesPerSecond) Color.White else Color.Gray, fontSize = 13.sp) }, onClick = { networkLimiter.maxBytesPerSecond = limit; showSpeedMenu = false })
-                            }
-                        }
-                    }
+                    Spacer(Modifier.width(4.dp))
+                    Text("Import/Export", color = Color.White, fontSize = 18.sp)
                 }
 
-                if (downloads.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No downloads", color = Color.Gray, fontSize = 16.sp) }
-                } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(downloads) { item ->
-                            val currentState = remember(updateTrigger) { item.state }
-                            val currentProgress = remember(updateTrigger) { item.progress }
-                            val currentSpeed = remember(updateTrigger) { item.speed }
+                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    // ── Export Section ──────────────────────
+                    Text("Export:", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(12.dp))
 
-                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                    Text(item.fileName, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Spacer(Modifier.height(4.dp))
-                                    when (currentState) {
-                                        DownloadState.QUEUED -> Text("Queued", color = Color.Gray, fontSize = 12.sp)
-                                        DownloadState.DOWNLOADING -> {
-                                            LinearProgressIndicator(progress = { currentProgress / 100f }, modifier = Modifier.fillMaxWidth(), color = Color.White, trackColor = Color.DarkGray)
-                                            Spacer(Modifier.height(4.dp))
-                                            Text("${currentProgress}% · ${currentSpeed}", color = Color.White, fontSize = 12.sp)
-                                        }
-                                        DownloadState.PAUSED -> Text("Paused · ${currentProgress}%", color = Color(0xFFFFA500), fontSize = 12.sp)
-                                        DownloadState.COMPLETED -> Text("Completed", color = Color(0xFF4CAF50), fontSize = 12.sp)
-                                        DownloadState.FAILED -> Text("Failed", color = Color.Red, fontSize = 12.sp)
-                                    }
-                                    Spacer(Modifier.height(4.dp))
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                        when (currentState) {
-                                            DownloadState.QUEUED -> {
-                                                if (currentDownloadId == null) TextButton({ onStart(item.id) }) { Text("Start", color = Color.White, fontSize = 13.sp) }
-                                                else Text("In Queue", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
-                                            }
-                                            DownloadState.DOWNLOADING -> TextButton({ onPause(item.id) }) { Text("Pause", color = Color.White, fontSize = 13.sp) }
-                                            DownloadState.PAUSED -> TextButton({ onResume(item.id) }) { Text("Resume", color = Color.White, fontSize = 13.sp) }
-                                            else -> {}
-                                        }
-                                        Spacer(Modifier.width(4.dp))
-                                        TextButton({ downloadToDelete = item.id; showDeleteConfirm = true }) { Text("Delete", color = Color.Red, fontSize = 13.sp) }
-                                    }
-                                }
-                            }
-                        }
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = exportTabs,
+                            onCheckedChange = { exportTabs = it },
+                            colors = CheckboxDefaults.colors(checkedColor = Color.White, uncheckedColor = Color.Gray, checkmarkColor = Color.Black)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Tabs (groups, pins, position)", color = Color.White, fontSize = 14.sp)
                     }
+
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = exportHistory,
+                            onCheckedChange = { exportHistory = it },
+                            colors = CheckboxDefaults.colors(checkedColor = Color.White, uncheckedColor = Color.Gray, checkmarkColor = Color.Black)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("History (${history.size} entries)", color = Color.White, fontSize = 14.sp)
+                    }
+
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = exportBookmarks,
+                            onCheckedChange = { exportBookmarks = it },
+                            colors = CheckboxDefaults.colors(checkedColor = Color.White, uncheckedColor = Color.Gray, checkmarkColor = Color.Black)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Bookmarks (${bookmarks.size} entries)", color = Color.White, fontSize = 14.sp)
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                if (!exportTabs && !exportHistory && !exportBookmarks) {
+                                    onShowToast("Select at least one category")
+                                    return@OutlinedButton
+                                }
+                                onShowToast("Exporting...")
+                                exportData(
+                                    context = context,
+                                    exportTabs = exportTabs,
+                                    exportHistory = exportHistory,
+                                    exportBookmarks = exportBookmarks,
+                                    tabs = tabs,
+                                    pinnedDomains = pinnedDomains,
+                                    currentTabIndex = currentTabIndex,
+                                    history = history,
+                                    bookmarks = bookmarks,
+                                    exportAll = false,
+                                    onResult = { success, msg ->
+                                        if (success) {
+                                            onShowToast("Exported to /Download/Grey/")
+                                        } else {
+                                            onShowToast(msg)
+                                        }
+                                    }
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RectangleShape,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color.White)
+                        ) { Text("Export Selected", color = Color.White, fontSize = 13.sp) }
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                onShowToast("Exporting all...")
+                                exportData(
+                                    context = context,
+                                    exportTabs = true,
+                                    exportHistory = true,
+                                    exportBookmarks = true,
+                                    tabs = tabs,
+                                    pinnedDomains = pinnedDomains,
+                                    currentTabIndex = currentTabIndex,
+                                    history = history,
+                                    bookmarks = bookmarks,
+                                    exportAll = true,
+                                    onResult = { success, msg ->
+                                        if (success) {
+                                            onShowToast("Exported to /Download/Grey/")
+                                        } else {
+                                            onShowToast(msg)
+                                        }
+                                    }
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RectangleShape,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color.White)
+                        ) { Text("Export All", color = Color.White, fontSize = 13.sp) }
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+                    HorizontalDivider(color = Color.DarkGray)
+                    Spacer(Modifier.height(24.dp))
+
+                    // ── Import Section ──────────────────────
+                    Text("Import:", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = { importFilePicker.launch("application/json") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) {
+                        Text("Import File", color = Color.White)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text("Select a .json file — merges with existing data", color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp)
                 }
             }
         }
@@ -1674,93 +1378,55 @@ fun DownloadManagerUI(
 
 
 // ═══════════════════════════════════════════════════════════════════
-// === PART 10/10 — ExtensionsUI, LogcatUI, BookmarksUI, HistoryUI, Settings, Helpers ===
+// === PART 10/10 — BookmarksUI, LogcatUI, HistoryUI, Settings, Helpers ===
+// ═══════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+// ── BOOKMARKS UI ─────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-fun ExtensionsUI(
-    extensionManager: ExtensionManager,
-    extensions: MutableList<ExtensionItem>,
-    onShowToast: (String) -> Unit,
-    onDismiss: () -> Unit
+fun BookmarksUI(
+    bookmarks: List<Bookmark>,
+    onDismiss: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    faviconBitmaps: Map<String, Bitmap?>,
+    loadFavicon: (String) -> Unit
 ) {
-    val context = LocalContext.current
-    var filePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            val extName = uri.lastPathSegment?.substringBeforeLast(".xpi") ?: "Extension"
-            android.util.Log.d("GreyBrowser", "ExtensionsUI: File picked - $extName uri=$uri")
-            onShowToast("Installing $extName...")
-            extensionManager.installFromFile(uri) { success, msg ->
-                if (success) {
-                    extensions.add(ExtensionItem(id = msg, name = extName, enabled = true))
-                    onShowToast("$extName installed!")
-                } else {
-                    onShowToast("Install failed: $msg")
-                }
-            }
-        }
-    }
-
-    var showSettingsForExt by remember { mutableStateOf<String?>(null) }
-
-    Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp)); Text("Extensions", color = Color.White, fontSize = 18.sp)
-                    if (extensions.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${extensions.size})", color = Color.Gray, fontSize = 14.sp) }
+                    Spacer(Modifier.width(4.dp))
+                    Text("Bookmarks", color = Color.White, fontSize = 18.sp)
+                    if (bookmarks.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${bookmarks.size})", color = Color.Gray, fontSize = 14.sp) }
                 }
 
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    OutlinedButton(onClick = { filePickerLauncher.launch("*/*") }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) {
-                        Text("Install .xpi", color = Color.White)
-                    }
-                }
-
-                HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-
-                if (extensions.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No extensions installed", color = Color.Gray, fontSize = 14.sp) }
+                if (bookmarks.isEmpty()) {
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No bookmarks", color = Color.Gray, fontSize = 16.sp) }
                 } else {
                     LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(extensions.toList()) { ext ->
+                        items(bookmarks.reversed()) { item ->
+                            val domain = getDomainName(item.url)
+                            LaunchedEffect(item.url) { loadFavicon(domain) }
+                            val fav = faviconBitmaps[domain]
+
                             Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(ext.name, color = if (ext.enabled) Color.White else Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                                            if (ext.description.isNotBlank()) {
-                                                Text(ext.description.take(80), color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            }
-                                            // ── Show GeckoView extension ID in small text for debugging ──
-                                            Text("id: ${ext.id.take(40)}", color = Color.Gray.copy(alpha = 0.4f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        }
-                                        Switch(
-                                            checked = ext.enabled,
-                                            onCheckedChange = { enabled ->
-                                                val idx = extensions.indexOfFirst { it.id == ext.id }
-                                                if (idx >= 0) {
-                                                    extensions[idx] = ext.copy(enabled = enabled)
-                                                    extensionManager.setEnabled(ext.id, enabled)
-                                                }
-                                            },
-                                            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)),
-                                            modifier = Modifier.padding(end = 4.dp)
-                                        )
+                                Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
+                                    if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
+                                    else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(item.url, color = Color.Gray.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
-                                    Spacer(Modifier.height(4.dp))
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                        TextButton({ showSettingsForExt = ext.id }) { Text("Settings", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp) }
-                                        Spacer(Modifier.width(4.dp))
-                                        TextButton({
-                                            extensions.removeAll { it.id == ext.id }
-                                            extensionManager.uninstall(ext.id)
-                                            onShowToast("Extension uninstalled")
-                                        }) { Text("Uninstall", color = Color.Red.copy(alpha = 0.7f), fontSize = 12.sp) }
-                                    }
+                                    IconButton({ onDelete(item.id) }) { Icon(Icons.Default.Close, "Delete", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp)) }
                                 }
                             }
                         }
@@ -1768,24 +1434,6 @@ fun ExtensionsUI(
                 }
             }
         }
-    }
-
-    if (showSettingsForExt != null) {
-        val ext = extensions.find { it.id == showSettingsForExt }
-        AlertDialog(
-            onDismissRequest = { showSettingsForExt = null },
-            title = { Text(ext?.name ?: "Extension", color = Color.White, fontSize = 18.sp) },
-            text = {
-                Column {
-                    Text("Extension ID:", color = Color.Gray, fontSize = 12.sp)
-                    Text(showSettingsForExt ?: "", color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
-                    Spacer(Modifier.height(12.dp))
-                    Text("Extension settings are managed by the extension itself.", color = Color.Gray, fontSize = 14.sp)
-                }
-            },
-            confirmButton = { TextButton({ showSettingsForExt = null }) { Text("Close", color = Color.White) } },
-            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
-        )
     }
 }
 
@@ -1813,62 +1461,12 @@ fun LogcatUI(logLines: List<String>, onClear: () -> Unit, onDismiss: () -> Unit)
                     LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
                         items(logLines) { line ->
                             val lineColor = when {
-                                line.contains("✗") || line.contains("FAILED") || line.contains("Error") || line.contains("error") || line.contains("EXCEPTION") -> Color.Red
-                                line.contains("✓") || line.contains("installed") || line.contains("Install") -> Color(0xFF4CAF50)
-                                line.contains("⬇") || line.contains("Extension") -> Color(0xFFFFA500)
-                                line.contains("↳") -> Color.Gray
+                                line.contains("Error") || line.contains("FAILED") || line.contains("error") -> Color.Red
+                                line.contains("install") || line.contains("Import complete") -> Color(0xFF4CAF50)
+                                line.contains("Export") || line.contains("Import") -> Color(0xFFFFA500)
                                 else -> Color.White
                             }
                             Text(line, color = lineColor.copy(alpha = 0.9f), fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, modifier = Modifier.padding(vertical = 2.dp))
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// ── BOOKMARKS UI ─────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
-@Composable
-fun BookmarksUI(
-    bookmarks: List<Bookmark>,
-    onDismiss: () -> Unit,
-    onOpenUrl: (String) -> Unit,
-    onDelete: (String) -> Unit,
-    faviconBitmaps: Map<String, Bitmap?>,
-    loadFavicon: (String) -> Unit
-) {
-    Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
-        Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp)); Text("Bookmarks", color = Color.White, fontSize = 18.sp)
-                    if (bookmarks.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${bookmarks.size})", color = Color.Gray, fontSize = 14.sp) }
-                }
-                if (bookmarks.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No bookmarks", color = Color.Gray, fontSize = 16.sp) }
-                } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(bookmarks.reversed()) { item ->
-                            val domain = getDomainName(item.url)
-                            LaunchedEffect(item.url) { loadFavicon(domain) }
-                            val fav = faviconBitmaps[domain]
-                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
-                                    if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
-                                    else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(item.url, color = Color.Gray.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                    IconButton({ onDelete(item.id) }) { Icon(Icons.Default.Close, "Delete", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp)) }
-                                }
-                            }
                         }
                     }
                 }
@@ -1892,8 +1490,7 @@ fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsAp
         onSettingsApplied(); onDismiss()
     }
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
+        onDismissRequest = onDismiss, title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
                 SettingSwitch("JavaScript", js) { js = it }
@@ -2027,5 +1624,5 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
 }
 
 // END OF PART 10/10
-// END OF FILE - Grey Browser V2.1
+// END OF FILE - Grey Browser V3.0
 // ═══════════════════════════════════════════════════════════════════
