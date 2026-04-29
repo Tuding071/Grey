@@ -448,6 +448,7 @@ fun loadExtensions(context: Context): List<ExtensionItem> {
 // END OF PART 3/10
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 4/10 — Utility Functions, NetworkSpeedLimiter, ExtensionManager ===
 // ═══════════════════════════════════════════════════════════════════
@@ -518,22 +519,24 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
     
     private val installedExtensions = mutableMapOf<String, org.mozilla.geckoview.WebExtension>()
     
-    // ── Install from extracted extension folder (file:// URI) ──
-    fun installFromFolder(folderUri: String, onResult: (Boolean, String) -> Unit) {
-        android.util.Log.d("GreyBrowser", "ExtensionManager.installFromFolder: $folderUri")
+    // ── Install built-in extension from assets/extensions/{folderName}/ ──
+    fun installBuiltIn(folderName: String, onResult: (Boolean, String) -> Unit) {
+        val uri = "resource://android/assets/extensions/$folderName/"
+        android.util.Log.d("GreyBrowser", "ExtensionManager.installBuiltIn: $uri")
+        
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-            runtime.webExtensionController.installBuiltIn(folderUri).accept({ ext ->
+            runtime.webExtensionController.installBuiltIn(uri).accept({ ext ->
                 if (ext != null) {
-                    android.util.Log.d("GreyBrowser", "ExtensionManager: Folder install SUCCESS - id=${ext.id}")
+                    android.util.Log.d("GreyBrowser", "ExtensionManager: Built-in install SUCCESS - id=${ext.id}")
                     installedExtensions[ext.id] = ext
                     onResult(true, ext.id)
                 } else {
-                    android.util.Log.e("GreyBrowser", "ExtensionManager: Folder install returned NULL")
+                    android.util.Log.e("GreyBrowser", "ExtensionManager: Built-in install returned NULL")
                     onResult(false, "Install returned null")
                 }
             }, { error ->
                 val msg = error?.message ?: "unknown error"
-                android.util.Log.e("GreyBrowser", "ExtensionManager: Folder install ERROR - $msg")
+                android.util.Log.e("GreyBrowser", "ExtensionManager: Built-in install ERROR - $msg")
                 onResult(false, "GeckoView error: $msg")
             })
         }
@@ -654,68 +657,48 @@ fun GreyBrowser() {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    // ── Scan /Grey/Extensions/ folder for extensions on startup ──
+    // ── Built-in extension install from assets/extensions/ ──
     // ══════════════════════════════════════════════════════════════════
     LaunchedEffect(Unit) {
-        delay(3000) // Wait for GeckoRuntime to initialise
-
-        val extensionsDir = File(Environment.getExternalStorageDirectory(), "Grey/Extensions")
-        if (!extensionsDir.exists()) {
-            extensionsDir.mkdirs()
-            log("Created extensions directory: ${extensionsDir.absolutePath}")
-        }
+        delay(3000) // Wait for GeckoRuntime to fully initialise
 
         val installedKeys = tabPrefs
             .getStringSet(KEY_BUILTIN_INSTALLED, emptySet())
             ?.toMutableSet() ?: mutableSetOf()
 
-        val folders = extensionsDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
-        log("Scanning ${folders.size} folders in ${extensionsDir.absolutePath}")
+        // Folder names under assets/extensions/ (must match YML extraction)
+        val builtInExtensions = listOf(
+            Triple("ublock_origin",  "uBlock Origin",  "ublock_origin"),
+            Triple("tampermonkey",   "Tampermonkey",   "tampermonkey"),
+            Triple("privacy_badger", "Privacy Badger", "privacy_badger")
+        )
 
-        for (folder in folders.sortedBy { it.name }) {
-            val manifestFile = File(folder, "manifest.json")
-            if (!manifestFile.exists()) {
-                log("Skipping ${folder.name}: no manifest.json")
+        for ((folderName, name, key) in builtInExtensions) {
+            if (key in installedKeys) {
+                log("↳ $name already installed, skipping")
                 continue
             }
-
-            val folderName = folder.name
-            if (folderName in installedKeys) {
-                log("↳ $folderName already installed, skipping")
-                continue
-            }
-
-            // Read extension name from manifest.json
-            var extName = folderName
-            try {
-                val manifestJson = JSONObject(manifestFile.readText())
-                extName = manifestJson.optString("name", folderName)
-            } catch (e: Exception) {
-                log("Could not read manifest for $folderName: ${e.message}")
-            }
-
-            log("⬇ Installing: $extName from folder: $folderName")
-            val folderUri = Uri.fromFile(folder).toString()
-            extensionManager.installFromFolder(folderUri) { success, msg ->
+            log("⬇ Installing built-in: $name ($folderName)")
+            extensionManager.installBuiltIn(folderName) { success, msg ->
                 if (success) {
                     if (extensions.none { it.id == msg }) {
-                        extensions.add(ExtensionItem(id = msg, name = extName, enabled = true))
+                        extensions.add(ExtensionItem(id = msg, name = name, enabled = true))
                     }
-                    installedKeys.add(folderName)
+                    installedKeys.add(key)
                     tabPrefs.edit()
                         .putStringSet(KEY_BUILTIN_INSTALLED, installedKeys)
                         .apply()
                     saveExtensions(context, extensions.toList())
-                    log("✓ $extName installed (geckoId=$msg)")
-                    showToast("$extName installed")
+                    log("✓ $name installed (geckoId=$msg)")
+                    showToast("$name installed")
                 } else {
-                    log("✗ $extName FAILED: $msg")
-                    showToast("$extName failed — check Logcat")
+                    log("✗ $name FAILED: $msg")
+                    showToast("$name failed — check Logcat")
                 }
             }
             delay(5000) // 5-second gap between installs
         }
-        log("Extension folder scan complete. Installed: $installedKeys")
+        log("Built-in extension pass complete. Installed: $installedKeys")
     }
 
     val applySettingsToSession: (GeckoSession) -> Unit = { session ->
@@ -809,6 +792,7 @@ fun GreyBrowser() {
     }
 
 // END OF PART 5/10
+
 
 
 
