@@ -242,10 +242,12 @@ jobs:
           print('Patched manifest for ' + ext_id)
           PATCHPY
           
-          # uBlock Origin
-          echo "===== uBlock Origin ====="
+          # ══════════════════════════════════════════════════════
+          # uBlock Origin (Android version)
+          # ══════════════════════════════════════════════════════
+          echo "===== uBlock Origin (Android) ====="
           curl -L --retry 3 -o /tmp/ublock_origin.xpi \
-            "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi" \
+            "https://addons.mozilla.org/android/downloads/file/4721638/ublock_origin-1.70.0.xpi" \
             && echo "Downloaded uBlock" || echo "FAILED: uBlock download"
           rm -rf app/src/main/assets/extensions/ublock_origin
           mkdir -p app/src/main/assets/extensions/ublock_origin
@@ -256,11 +258,13 @@ jobs:
               || echo "FAILED: uBlock manifest patch"
           fi
           
-          # Tampermonkey
+          # ══════════════════════════════════════════════════════
+          # Tampermonkey (Android version)
+          # ══════════════════════════════════════════════════════
           echo ""
-          echo "===== Tampermonkey ====="
+          echo "===== Tampermonkey (Android) ====="
           curl -L --retry 3 -o /tmp/tampermonkey.xpi \
-            "https://addons.mozilla.org/firefox/downloads/latest/tampermonkey/latest.xpi" \
+            "https://addons.mozilla.org/android/downloads/file/4624137/tampermonkey-5.4.1.xpi" \
             && echo "Downloaded Tampermonkey" || echo "FAILED: Tampermonkey download"
           rm -rf app/src/main/assets/extensions/tampermonkey
           mkdir -p app/src/main/assets/extensions/tampermonkey
@@ -271,11 +275,13 @@ jobs:
               || echo "FAILED: Tampermonkey manifest patch"
           fi
           
-          # Privacy Badger
+          # ══════════════════════════════════════════════════════
+          # Privacy Badger (Android version)
+          # ══════════════════════════════════════════════════════
           echo ""
-          echo "===== Privacy Badger ====="
+          echo "===== Privacy Badger (Android) ====="
           curl -L --retry 3 -o /tmp/privacy_badger.xpi \
-            "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi" \
+            "https://addons.mozilla.org/android/downloads/file/4700632/privacy_badger17-2026.2.20.xpi" \
             && echo "Downloaded Privacy Badger" || echo "FAILED: Privacy Badger download"
           rm -rf app/src/main/assets/extensions/privacy_badger
           mkdir -p app/src/main/assets/extensions/privacy_badger
@@ -286,7 +292,9 @@ jobs:
               || echo "FAILED: Privacy Badger manifest patch"
           fi
           
+          # ══════════════════════════════════════════════════════
           # Verify
+          # ══════════════════════════════════════════════════════
           echo ""
           echo "===== Verification ====="
           for dir in app/src/main/assets/extensions/*/; do
