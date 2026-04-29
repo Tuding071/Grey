@@ -41,7 +41,6 @@ jobs:
           PKG=app/src/main/java/com/grey/browser
           mkdir -p $PKG
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/xml
           mkdir -p gradle/wrapper
 
           cp Browser.kt $PKG/
@@ -176,24 +175,8 @@ jobs:
                       android:name=".DownloadService"
                       android:foregroundServiceType="dataSync"
                       android:exported="false" />
-                  <provider
-                      android:name="androidx.core.content.FileProvider"
-                      android:authorities="${applicationId}.provider"
-                      android:exported="false"
-                      android:grantUriPermissions="true">
-                      <meta-data
-                          android:name="android.support.FILE_PROVIDER_PATHS"
-                          android:resource="@xml/file_paths" />
-                  </provider>
               </application>
           </manifest>
-          EOF
-
-          cat > app/src/main/res/xml/file_paths.xml << 'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <paths>
-              <cache-path name="ext_cache" path="." />
-          </paths>
           EOF
 
           cat > app/src/main/res/values/strings.xml << 'EOF'
@@ -233,21 +216,6 @@ jobs:
               icon.save(f'{path}/ic_launcher_round.png')
           print("Icons done.")
           PYEOF
-
-      - name: Download built-in extensions
-        run: |
-          mkdir -p app/src/main/assets/extensions
-          echo "Downloading uBlock Origin..."
-          curl -L -o app/src/main/assets/extensions/ublock_origin.xpi \
-            "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi" || echo "uBlock download failed"
-          echo "Downloading Tampermonkey..."
-          curl -L -o app/src/main/assets/extensions/tampermonkey.xpi \
-            "https://addons.mozilla.org/firefox/downloads/latest/tampermonkey/latest.xpi" || echo "Tampermonkey download failed"
-          echo "Downloading Privacy Badger..."
-          curl -L -o app/src/main/assets/extensions/privacy_badger.xpi \
-            "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi" || echo "Privacy Badger download failed"
-          echo "Extensions downloaded:"
-          ls -la app/src/main/assets/extensions/
 
       - name: Create Gradle Wrapper
         run: |
