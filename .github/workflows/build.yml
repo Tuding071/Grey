@@ -217,6 +217,44 @@ jobs:
           print("Icons done.")
           PYEOF
 
+      - name: Download and extract built-in extensions
+        run: |
+          mkdir -p app/src/main/assets/extensions
+          
+          # ----- uBlock Origin -----
+          echo "Downloading uBlock Origin..."
+          curl -L -o /tmp/ublock_origin.xpi \
+            "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi" || echo "uBlock download failed"
+          mkdir -p app/src/main/assets/extensions/ublock_origin
+          if [ -f /tmp/ublock_origin.xpi ]; then
+            unzip -o /tmp/ublock_origin.xpi -d app/src/main/assets/extensions/ublock_origin/ || echo "uBlock extract failed"
+          fi
+          
+          # ----- Tampermonkey -----
+          echo "Downloading Tampermonkey..."
+          curl -L -o /tmp/tampermonkey.xpi \
+            "https://addons.mozilla.org/firefox/downloads/latest/tampermonkey/latest.xpi" || echo "Tampermonkey download failed"
+          mkdir -p app/src/main/assets/extensions/tampermonkey
+          if [ -f /tmp/tampermonkey.xpi ]; then
+            unzip -o /tmp/tampermonkey.xpi -d app/src/main/assets/extensions/tampermonkey/ || echo "Tampermonkey extract failed"
+          fi
+          
+          # ----- Privacy Badger -----
+          echo "Downloading Privacy Badger..."
+          curl -L -o /tmp/privacy_badger.xpi \
+            "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi" || echo "Privacy Badger download failed"
+          mkdir -p app/src/main/assets/extensions/privacy_badger
+          if [ -f /tmp/privacy_badger.xpi ]; then
+            unzip -o /tmp/privacy_badger.xpi -d app/src/main/assets/extensions/privacy_badger/ || echo "Privacy Badger extract failed"
+          fi
+          
+          echo "Extension folders:"
+          ls -la app/src/main/assets/extensions/
+          for dir in app/src/main/assets/extensions/*/; do
+            echo "  $dir:"
+            ls -la "$dir" | head -5
+          done
+
       - name: Create Gradle Wrapper
         run: |
           sudo apt-get update -q && sudo apt-get install -y gradle
