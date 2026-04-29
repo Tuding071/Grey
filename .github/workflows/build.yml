@@ -41,6 +41,7 @@ jobs:
           PKG=app/src/main/java/com/grey/browser
           mkdir -p $PKG
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/xml
           mkdir -p gradle/wrapper
 
           cp Browser.kt $PKG/
@@ -175,8 +176,24 @@ jobs:
                       android:name=".DownloadService"
                       android:foregroundServiceType="dataSync"
                       android:exported="false" />
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="${applicationId}.provider"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths" />
+                  </provider>
               </application>
           </manifest>
+          EOF
+
+          cat > app/src/main/res/xml/file_paths.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <cache-path name="ext_cache" path="." />
+          </paths>
           EOF
 
           cat > app/src/main/res/values/strings.xml << 'EOF'
