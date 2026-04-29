@@ -580,7 +580,6 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 // END OF PART 4/10
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -643,6 +642,11 @@ fun GreyBrowser() {
         }
     }
 
+    fun showToast(msg: String) {
+        toastMessage = msg
+        showToast = true
+    }
+
     // ── Install hardcoded extensions on startup ──────────────────────
     LaunchedEffect(Unit) {
         val builtInExtensions = listOf(
@@ -687,11 +691,6 @@ fun GreyBrowser() {
             history.removeAt(0)
         }
         saveHistory(context, history)
-    }
-
-    fun showToast(msg: String) {
-        toastMessage = msg
-        showToast = true
     }
 
     val homeSession = remember {
