@@ -171,10 +171,6 @@ jobs:
                           <data android:scheme="https" />
                       </intent-filter>
                   </activity>
-                  <service
-                      android:name=".DownloadService"
-                      android:foregroundServiceType="dataSync"
-                      android:exported="false" />
               </application>
           </manifest>
           EOF
@@ -216,97 +212,6 @@ jobs:
               icon.save(f'{path}/ic_launcher_round.png')
           print("Icons done.")
           PYEOF
-
-      - name: Download, extract and patch built-in extensions
-        run: |
-          mkdir -p app/src/main/assets/extensions
-          
-          # Write patch script to temp file
-          cat > /tmp/patch_manifest.py << 'PATCHPY'
-          import json, sys
-          manifest_path = sys.argv[1]
-          ext_id = sys.argv[2]
-          with open(manifest_path, 'r') as f:
-              m = json.load(f)
-          if 'applications' not in m:
-              m['applications'] = {}
-          if 'gecko' not in m['applications']:
-              m['applications']['gecko'] = {}
-          m['applications']['gecko']['id'] = ext_id
-          if 'permissions' not in m:
-              m['permissions'] = []
-          if 'geckoViewAddons' not in m['permissions']:
-              m['permissions'].append('geckoViewAddons')
-          with open(manifest_path, 'w') as f:
-              json.dump(m, f, indent=2)
-          print('Patched manifest for ' + ext_id)
-          PATCHPY
-          
-          # ══════════════════════════════════════════════════════
-          # uBlock Origin (Android version)
-          # ══════════════════════════════════════════════════════
-          echo "===== uBlock Origin (Android) ====="
-          curl -L --retry 3 -o /tmp/ublock_origin.xpi \
-            "https://addons.mozilla.org/android/downloads/file/4721638/ublock_origin-1.70.0.xpi" \
-            && echo "Downloaded uBlock" || echo "FAILED: uBlock download"
-          rm -rf app/src/main/assets/extensions/ublock_origin
-          mkdir -p app/src/main/assets/extensions/ublock_origin
-          if [ -f /tmp/ublock_origin.xpi ]; then
-            unzip -o /tmp/ublock_origin.xpi -d app/src/main/assets/extensions/ublock_origin/ \
-              && echo "Extracted uBlock" || echo "FAILED: uBlock extract"
-            python3 /tmp/patch_manifest.py app/src/main/assets/extensions/ublock_origin/manifest.json "uBlock0@raymondhill.net" \
-              || echo "FAILED: uBlock manifest patch"
-          fi
-          
-          # ══════════════════════════════════════════════════════
-          # Tampermonkey (Android version)
-          # ══════════════════════════════════════════════════════
-          echo ""
-          echo "===== Tampermonkey (Android) ====="
-          curl -L --retry 3 -o /tmp/tampermonkey.xpi \
-            "https://addons.mozilla.org/android/downloads/file/4624137/tampermonkey-5.4.1.xpi" \
-            && echo "Downloaded Tampermonkey" || echo "FAILED: Tampermonkey download"
-          rm -rf app/src/main/assets/extensions/tampermonkey
-          mkdir -p app/src/main/assets/extensions/tampermonkey
-          if [ -f /tmp/tampermonkey.xpi ]; then
-            unzip -o /tmp/tampermonkey.xpi -d app/src/main/assets/extensions/tampermonkey/ \
-              && echo "Extracted Tampermonkey" || echo "FAILED: Tampermonkey extract"
-            python3 /tmp/patch_manifest.py app/src/main/assets/extensions/tampermonkey/manifest.json "firefox@tampermonkey.net" \
-              || echo "FAILED: Tampermonkey manifest patch"
-          fi
-          
-          # ══════════════════════════════════════════════════════
-          # Privacy Badger (Android version)
-          # ══════════════════════════════════════════════════════
-          echo ""
-          echo "===== Privacy Badger (Android) ====="
-          curl -L --retry 3 -o /tmp/privacy_badger.xpi \
-            "https://addons.mozilla.org/android/downloads/file/4700632/privacy_badger17-2026.2.20.xpi" \
-            && echo "Downloaded Privacy Badger" || echo "FAILED: Privacy Badger download"
-          rm -rf app/src/main/assets/extensions/privacy_badger
-          mkdir -p app/src/main/assets/extensions/privacy_badger
-          if [ -f /tmp/privacy_badger.xpi ]; then
-            unzip -o /tmp/privacy_badger.xpi -d app/src/main/assets/extensions/privacy_badger/ \
-              && echo "Extracted Privacy Badger" || echo "FAILED: Privacy Badger extract"
-            python3 /tmp/patch_manifest.py app/src/main/assets/extensions/privacy_badger/manifest.json "jid1-MnnxcxisBPnSXQ@jetpack" \
-              || echo "FAILED: Privacy Badger manifest patch"
-          fi
-          
-          # ══════════════════════════════════════════════════════
-          # Verify
-          # ══════════════════════════════════════════════════════
-          echo ""
-          echo "===== Verification ====="
-          for dir in app/src/main/assets/extensions/*/; do
-            name=$(basename "$dir")
-            if [ -f "$dir/manifest.json" ]; then
-              gid=$(python3 -c "import json; print(json.load(open('$dir/manifest.json')).get('applications',{}).get('gecko',{}).get('id','MISSING'))" 2>/dev/null || echo "PARSE_ERROR")
-              has_perm=$(python3 -c "import json; print('geckoViewAddons' in json.load(open('$dir/manifest.json')).get('permissions',[]))" 2>/dev/null || echo "PARSE_ERROR")
-              echo "  $name: gecko.id=$gid  geckoViewAddons=$has_perm"
-            else
-              echo "  $name: NO manifest.json!"
-            fi
-          done
 
       - name: Create Gradle Wrapper
         run: |
