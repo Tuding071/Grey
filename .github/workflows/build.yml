@@ -220,68 +220,45 @@ jobs:
       - name: Download, extract and patch built-in extensions
         run: |
           mkdir -p app/src/main/assets/extensions
-          pip install Pillow --quiet 2>/dev/null || true
           
-          # ══════════════════════════════════════════════════════
-          # Helper function to patch manifest.json for GeckoView
-          # ══════════════════════════════════════════════════════
-          patch_manifest() {
-            local dir="$1"
-            local ext_id="$2"
-            local manifest="$dir/manifest.json"
-            if [ ! -f "$manifest" ]; then
-              echo "WARNING: No manifest.json in $dir"
-              return 1
-            fi
-            python3 -c "
-import json, sys
-with open('$manifest', 'r') as f:
-    try:
-        m = json.load(f)
-    except Exception as e:
-        print(f'ERROR parsing manifest: {e}')
-        sys.exit(1)
-
-# Ensure applications.gecko.id is set (required for GeckoView)
-if 'applications' not in m:
-    m['applications'] = {}
-if 'gecko' not in m['applications']:
-    m['applications']['gecko'] = {}
-m['applications']['gecko']['id'] = '$ext_id'
-
-# Add geckoViewAddons permission if not present
-if 'permissions' not in m:
-    m['permissions'] = []
-if 'geckoViewAddons' not in m['permissions']:
-    m['permissions'].append('geckoViewAddons')
-
-with open('$manifest', 'w') as f:
-    json.dump(m, f, indent=2)
-print(f'Patched manifest for $ext_id')
-" 2>&1 || echo "ERROR: Failed to patch manifest for $ext_id"
-          }
+          # Write patch script to temp file
+          cat > /tmp/patch_manifest.py << 'PATCHPY'
+          import json, sys
+          manifest_path = sys.argv[1]
+          ext_id = sys.argv[2]
+          with open(manifest_path, 'r') as f:
+              m = json.load(f)
+          if 'applications' not in m:
+              m['applications'] = {}
+          if 'gecko' not in m['applications']:
+              m['applications']['gecko'] = {}
+          m['applications']['gecko']['id'] = ext_id
+          if 'permissions' not in m:
+              m['permissions'] = []
+          if 'geckoViewAddons' not in m['permissions']:
+              m['permissions'].append('geckoViewAddons')
+          with open(manifest_path, 'w') as f:
+              json.dump(m, f, indent=2)
+          print('Patched manifest for ' + ext_id)
+          PATCHPY
           
-          # ══════════════════════════════════════════════════════
           # uBlock Origin
-          # ══════════════════════════════════════════════════════
-          echo ""
-          echo "═════ uBlock Origin ═════"
+          echo "===== uBlock Origin ====="
           curl -L --retry 3 -o /tmp/ublock_origin.xpi \
             "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi" \
-            && echo "Downloaded uBlock Origin" || echo "FAILED: uBlock download"
+            && echo "Downloaded uBlock" || echo "FAILED: uBlock download"
           rm -rf app/src/main/assets/extensions/ublock_origin
           mkdir -p app/src/main/assets/extensions/ublock_origin
           if [ -f /tmp/ublock_origin.xpi ]; then
             unzip -o /tmp/ublock_origin.xpi -d app/src/main/assets/extensions/ublock_origin/ \
               && echo "Extracted uBlock" || echo "FAILED: uBlock extract"
-            patch_manifest "app/src/main/assets/extensions/ublock_origin" "uBlock0@raymondhill.net"
+            python3 /tmp/patch_manifest.py app/src/main/assets/extensions/ublock_origin/manifest.json "uBlock0@raymondhill.net" \
+              || echo "FAILED: uBlock manifest patch"
           fi
           
-          # ══════════════════════════════════════════════════════
           # Tampermonkey
-          # ══════════════════════════════════════════════════════
           echo ""
-          echo "═════ Tampermonkey ═════"
+          echo "===== Tampermonkey ====="
           curl -L --retry 3 -o /tmp/tampermonkey.xpi \
             "https://addons.mozilla.org/firefox/downloads/latest/tampermonkey/latest.xpi" \
             && echo "Downloaded Tampermonkey" || echo "FAILED: Tampermonkey download"
@@ -290,14 +267,13 @@ print(f'Patched manifest for $ext_id')
           if [ -f /tmp/tampermonkey.xpi ]; then
             unzip -o /tmp/tampermonkey.xpi -d app/src/main/assets/extensions/tampermonkey/ \
               && echo "Extracted Tampermonkey" || echo "FAILED: Tampermonkey extract"
-            patch_manifest "app/src/main/assets/extensions/tampermonkey" "firefox@tampermonkey.net"
+            python3 /tmp/patch_manifest.py app/src/main/assets/extensions/tampermonkey/manifest.json "firefox@tampermonkey.net" \
+              || echo "FAILED: Tampermonkey manifest patch"
           fi
           
-          # ══════════════════════════════════════════════════════
           # Privacy Badger
-          # ══════════════════════════════════════════════════════
           echo ""
-          echo "═════ Privacy Badger ═════"
+          echo "===== Privacy Badger ====="
           curl -L --retry 3 -o /tmp/privacy_badger.xpi \
             "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi" \
             && echo "Downloaded Privacy Badger" || echo "FAILED: Privacy Badger download"
@@ -306,32 +282,22 @@ print(f'Patched manifest for $ext_id')
           if [ -f /tmp/privacy_badger.xpi ]; then
             unzip -o /tmp/privacy_badger.xpi -d app/src/main/assets/extensions/privacy_badger/ \
               && echo "Extracted Privacy Badger" || echo "FAILED: Privacy Badger extract"
-            patch_manifest "app/src/main/assets/extensions/privacy_badger" "jid1-MnnxcxisBPnSXQ@jetpack"
+            python3 /tmp/patch_manifest.py app/src/main/assets/extensions/privacy_badger/manifest.json "jid1-MnnxcxisBPnSXQ@jetpack" \
+              || echo "FAILED: Privacy Badger manifest patch"
           fi
           
-          # ══════════════════════════════════════════════════════
           # Verify
-          # ══════════════════════════════════════════════════════
           echo ""
-          echo "═════ Verification ═════"
+          echo "===== Verification ====="
           for dir in app/src/main/assets/extensions/*/; do
-            echo "  $dir"
+            name=$(basename "$dir")
             if [ -f "$dir/manifest.json" ]; then
-              echo "    manifest.json: YES"
-              python3 -c "
-import json
-with open('$dir/manifest.json') as f:
-    m = json.load(f)
-    gid = m.get('applications',{}).get('gecko',{}).get('id','MISSING')
-    perms = m.get('permissions',[])
-    has_addon = 'geckoViewAddons' in perms
-    print(f'    gecko.id: {gid}')
-    print(f'    geckoViewAddons: {has_addon}')
-" 2>/dev/null || echo "    manifest.json: PARSE ERROR"
+              gid=$(python3 -c "import json; print(json.load(open('$dir/manifest.json')).get('applications',{}).get('gecko',{}).get('id','MISSING'))" 2>/dev/null || echo "PARSE_ERROR")
+              has_perm=$(python3 -c "import json; print('geckoViewAddons' in json.load(open('$dir/manifest.json')).get('permissions',[]))" 2>/dev/null || echo "PARSE_ERROR")
+              echo "  $name: gecko.id=$gid  geckoViewAddons=$has_perm"
             else
-              echo "    manifest.json: MISSING!"
+              echo "  $name: NO manifest.json!"
             fi
-            echo ""
           done
 
       - name: Create Gradle Wrapper
