@@ -445,8 +445,6 @@ fun loadExtensions(context: Context): List<ExtensionItem> {
 // END OF PART 3/10
 
 
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 4/10 — Utility Functions, NetworkSpeedLimiter, ExtensionManager ===
 // ═══════════════════════════════════════════════════════════════════
@@ -517,15 +515,33 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
     
     private val installedExtensions = mutableMapOf<String, org.mozilla.geckoview.WebExtension>()
     
+    fun installBuiltIn(assetPath: String, onResult: (Boolean, String) -> Unit) {
+        val xpiUri = "resource://android/assets/$assetPath"
+        android.util.Log.d("GreyBrowser", "ExtensionManager.installBuiltIn: $xpiUri")
+        
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            runtime.webExtensionController.install(xpiUri).accept({ ext ->
+                if (ext != null) {
+                    android.util.Log.d("GreyBrowser", "ExtensionManager: Built-in install SUCCESS - id=${ext.id}")
+                    installedExtensions[ext.id] = ext
+                    onResult(true, ext.id)
+                } else {
+                    android.util.Log.e("GreyBrowser", "ExtensionManager: Built-in install returned NULL")
+                    onResult(false, "Install returned null")
+                }
+            }, { error ->
+                android.util.Log.e("GreyBrowser", "ExtensionManager: Built-in install ERROR - ${error?.message}")
+                onResult(false, "Install failed: ${error?.message ?: "unknown"}")
+            })
+        }
+    }
+    
     fun installFromFile(uri: Uri, onResult: (Boolean, String) -> Unit) {
         val xpiUri = uri.toString()
         android.util.Log.d("GreyBrowser", "ExtensionManager.installFromFile: $xpiUri")
         
-        val controller = runtime.webExtensionController
-        
         android.os.Handler(android.os.Looper.getMainLooper()).post {
-            android.util.Log.d("GreyBrowser", "ExtensionManager: Calling controller.install() on main thread")
-            controller.install(xpiUri).accept({ ext ->
+            runtime.webExtensionController.install(xpiUri).accept({ ext ->
                 if (ext != null) {
                     android.util.Log.d("GreyBrowser", "ExtensionManager: Install SUCCESS - id=${ext.id}")
                     installedExtensions[ext.id] = ext
@@ -562,7 +578,6 @@ class ExtensionManager(private val runtime: GeckoRuntime) {
 }
 
 // END OF PART 4/10
-
 
 
 
@@ -625,6 +640,29 @@ fun GreyBrowser() {
         logLines.add("${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())} $msg")
         if (logLines.size > 500) {
             logLines.removeAt(0)
+        }
+    }
+
+    // ── Install hardcoded extensions on startup ──────────────────────
+    LaunchedEffect(Unit) {
+        val builtInExtensions = listOf(
+            Triple("extensions/ublock_origin.xpi", "uBlock Origin", "ublock_origin"),
+            Triple("extensions/tampermonkey.xpi", "Tampermonkey", "tampermonkey"),
+            Triple("extensions/privacy_badger.xpi", "Privacy Badger", "privacy_badger")
+        )
+        for ((assetPath, name, key) in builtInExtensions) {
+            // Skip if already installed
+            if (extensions.any { it.id.contains(key, ignoreCase = true) }) continue
+            log("Installing built-in extension: $name")
+            extensionManager.installBuiltIn(assetPath) { success, msg ->
+                if (success) {
+                    extensions.add(ExtensionItem(id = msg, name = name, enabled = true))
+                    log("$name installed successfully")
+                    showToast("$name installed")
+                } else {
+                    log("$name install failed: $msg")
+                }
+            }
         }
     }
 
@@ -729,7 +767,6 @@ fun GreyBrowser() {
     }
 
 // END OF PART 5/10
-
 
 
 // ═══════════════════════════════════════════════════════════════════
