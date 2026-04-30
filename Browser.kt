@@ -111,6 +111,7 @@ import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebResponse
+import org.mozilla.geckoview.GeckoResult
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -751,8 +752,6 @@ fun GreyBrowser() {
 // END OF PART 5/10
 
 
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -770,8 +769,6 @@ fun GreyBrowser() {
                     if (currentTabIndex >= 0 && currentTabIndex < tabs.size) {
                         highlightedTabIndex = currentTabIndex
                     }
-                    // Save to history when page starts loading
-                    addToHistory(url, tabState.title)
                 }
             }
             override fun onPageStop(s: GeckoSession, success: Boolean) {
@@ -819,6 +816,21 @@ fun GreyBrowser() {
                         tabState.isBlankTab = false
                     }
                 }
+            }
+        }
+        // ── FIX: Use GeckoView HistoryDelegate for proper history tracking ──
+        session.historyDelegate = object : GeckoSession.HistoryDelegate {
+            override fun onVisited(
+                s: GeckoSession,
+                url: String,
+                lastVisitedURL: String?,
+                flags: Int
+            ): GeckoResult<Boolean>? {
+                if (url != "about:blank" && url.isNotBlank()) {
+                    log("HistoryDelegate.onVisited: $url title=${tabState.title}")
+                    addToHistory(url, tabState.title.ifBlank { getDomainName(url) })
+                }
+                return GeckoResult.fromValue(true)
             }
         }
     }
@@ -965,7 +977,6 @@ fun GreyBrowser() {
     }
 
 // END OF PART 6/10
-
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1378,6 +1389,7 @@ fun ImportExportUI(
 
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 10/10 — BookmarksUI, LogcatUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1395,6 +1407,34 @@ fun BookmarksUI(
     faviconBitmaps: Map<String, Bitmap?>,
     loadFavicon: (String) -> Unit
 ) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var bookmarkToDelete by remember { mutableStateOf<String?>(null) }
+
+    if (showDeleteConfirm && bookmarkToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false; bookmarkToDelete = null },
+            title = { Text("Delete Bookmark?", color = Color.White, fontSize = 18.sp) },
+            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
+            confirmButton = {
+                TextButton({
+                    onDelete(bookmarkToDelete!!)
+                    showDeleteConfirm = false
+                    bookmarkToDelete = null
+                }) { Text("Delete", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton({ showDeleteConfirm = false; bookmarkToDelete = null }) {
+                    Text("Cancel", color = Color.White)
+                }
+            },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            shape = RectangleShape,
+            tonalElevation = 0.dp
+        )
+    }
+
     Popup(
         alignment = Alignment.TopStart,
         onDismissRequest = onDismiss,
@@ -1427,7 +1467,7 @@ fun BookmarksUI(
                                         Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(item.url, color = Color.Gray.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
-                                    IconButton({ onDelete(item.id) }) { Icon(Icons.Default.Close, "Delete", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp)) }
+                                    IconButton({ bookmarkToDelete = item.id; showDeleteConfirm = true }) { Icon(Icons.Default.Close, "Delete", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp)) }
                                 }
                             }
                         }
@@ -1463,7 +1503,7 @@ fun LogcatUI(logLines: List<String>, onClear: () -> Unit, onDismiss: () -> Unit)
                         items(logLines) { line ->
                             val lineColor = when {
                                 line.contains("Error") || line.contains("FAILED") || line.contains("error") -> Color.Red
-                                line.contains("install") || line.contains("Import complete") -> Color(0xFF4CAF50)
+                                line.contains("Import complete") -> Color(0xFF4CAF50)
                                 line.contains("Export") || line.contains("Import") -> Color(0xFFFFA500)
                                 else -> Color.White
                             }
@@ -1491,28 +1531,53 @@ fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsAp
         onSettingsApplied(); onDismiss()
     }
     AlertDialog(
-        onDismissRequest = onDismiss, title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
+        onDismissRequest = onDismiss,
+        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
-                SettingSwitch("JavaScript", js) { js = it }
-                SettingSwitch("Tracking Protection", tp) { tp = it }
-                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp)
+                // ── FIX: Settings with white border styling ──
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                        .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape)
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("JavaScript", color = Color.White, fontSize = 14.sp)
+                    Switch(checked = js, onCheckedChange = { js = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
+                }
+
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                        .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape)
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Tracking Protection", color = Color.White, fontSize = 14.sp)
+                    Switch(checked = tp, onCheckedChange = { tp = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
+                }
+
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                        .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape)
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Autoplay Media", color = Color.White, fontSize = 14.sp)
+                    Switch(checked = am, onCheckedChange = { am = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
                 CookieBehaviorSelector(cb) { cb = it }
-                SettingSwitch("Autoplay Media", am) { am = it }
             }
         },
         confirmButton = { TextButton(apply) { Text("OK", color = Color.White) } },
         dismissButton = { TextButton(onDismiss) { Text("Cancel", color = Color.White) } },
         containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
     )
-}
-
-@Composable
-fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-        Text(text = label, color = Color.White, fontSize = 14.sp)
-        Switch(checked = checked, onCheckedChange = onChange, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1522,7 +1587,20 @@ fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
     val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
     Box {
-        OutlinedTextField(value = st, onValueChange = {}, readOnly = true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)))
+        OutlinedTextField(
+            value = st, onValueChange = {}, readOnly = true,
+            trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape),
+            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+            shape = RectangleShape,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Color.White,
+                unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
+                focusedContainerColor = Color(0xFF1E1E1E),
+                unfocusedContainerColor = Color(0xFF1E1E1E)
+            )
+        )
         Box(Modifier.matchParentSize().clickable { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
             options.forEach { (label, value) -> DropdownMenuItem(text = { Text(text = label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
@@ -1627,3 +1705,4 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
 // END OF PART 10/10
 // END OF FILE - Grey Browser V3.0
 // ═══════════════════════════════════════════════════════════════════
+
