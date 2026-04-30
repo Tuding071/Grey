@@ -57,6 +57,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -72,6 +73,7 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -111,7 +113,6 @@ import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebResponse
-import org.mozilla.geckoview.GeckoResult
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -128,6 +129,11 @@ class MainActivity : ComponentActivity() {
 }
 
 // END OF PART 1/10
+
+
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 2/10 — FaviconCache, Constants ===
 // ═══════════════════════════════════════════════════════════════════
@@ -752,6 +758,9 @@ fun GreyBrowser() {
 // END OF PART 5/10
 
 
+
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -780,16 +789,33 @@ fun GreyBrowser() {
             }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
+            // ── FIX: History via onTitleChange (primary) ──
+            var historySaved = false
             override fun onTitleChange(s: GeckoSession, title: String?) {
                 if (!tabState.isBlankTab) {
                     val newTitle = title ?: tabState.url
-                    // ── FIX: Update history title when page title changes ──
-                    if (tabState.title == "New Tab" && newTitle != tabState.url) {
-                        log("onTitleChange: updating history title to $newTitle")
+                    tabState.title = newTitle
+                    log("onTitleChange: $newTitle")
+                    // Save history when title becomes meaningful
+                    if (!historySaved && newTitle != "New Tab" && newTitle != tabState.url && tabState.url.isNotBlank() && tabState.url != "about:blank") {
+                        historySaved = true
+                        log("History saved via onTitleChange: $newTitle")
                         addToHistory(tabState.url, newTitle)
                     }
-                    tabState.title = newTitle
-                    log("onTitleChange: ${tabState.title}")
+                }
+            }
+            // ── FIX: History fallback via onFirstComposite ──
+            override fun onFirstComposite(s: GeckoSession) {
+                log("onFirstComposite: ${tabState.url}")
+                if (!historySaved && tabState.url != "about:blank" && tabState.url.isNotBlank()) {
+                    historySaved = true
+                    val fallbackTitle = if (tabState.title == "New Tab" || tabState.title.isBlank()) {
+                        tabState.url.substringBefore("#")
+                    } else {
+                        tabState.title
+                    }
+                    log("History saved via onFirstComposite (fallback): $fallbackTitle")
+                    addToHistory(tabState.url, fallbackTitle)
                 }
             }
             override fun onContextMenu(
@@ -822,26 +848,6 @@ fun GreyBrowser() {
                         tabState.isBlankTab = false
                     }
                 }
-            }
-        }
-        session.historyDelegate = object : GeckoSession.HistoryDelegate {
-            override fun onVisited(
-                s: GeckoSession,
-                url: String,
-                lastVisitedURL: String?,
-                flags: Int
-            ): GeckoResult<Boolean>? {
-                if (url != "about:blank" && url.isNotBlank()) {
-                    // ── FIX: Use URL as fallback title (not domain) ──
-                    val title = if (tabState.title == "New Tab" || tabState.title.isBlank()) {
-                        url.substringBefore("#")
-                    } else {
-                        tabState.title
-                    }
-                    log("HistoryDelegate.onVisited: $url title=$title")
-                    addToHistory(url, title)
-                }
-                return GeckoResult.fromValue(true)
             }
         }
     }
@@ -990,6 +996,7 @@ fun GreyBrowser() {
 
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 7/10 — GreyBrowser() BackHandler, GeckoViewBox, Homepage ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1043,6 +1050,8 @@ fun GreyBrowser() {
 
 // END OF PART 7/10
 
+
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1078,7 +1087,6 @@ fun GreyBrowser() {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
         val sortedDomains = domainGroups.keys.sortedWith(compareByDescending<String> { pinnedDomains.contains(it) }.thenBy { d: String -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE })
         val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }; val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
-        // ── Highlight the active tab (highlightedTabIndex), even when homepage is showing ──
         val highlightDomain = if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.size) {
             getDomainName(tabs[highlightedTabIndex].url)
         } else ""
@@ -1120,14 +1128,22 @@ fun GreyBrowser() {
                                 else {
                                     items(tabsToShow) { tab: TabState ->
                                         val tabIndex = tabs.indexOf(tab)
-                                        // ── Highlight based on highlightedTabIndex (persists even when homepage is showing) ──
                                         val isHighlighted = tabIndex == highlightedTabIndex
                                         val isPending = pendingDeletions.containsKey(tabIndex)
                                         val tabDomain = getDomainName(tab.url)
                                         LaunchedEffect(tab.url) { loadTabFavicon(tabDomain) }
                                         val tabFav = tabFavicons[tabDomain]
 
-                                        Surface(Modifier.fillMaxWidth().clickable(enabled = !isPending) { currentTabIndex = tabIndex; showTabManager = false }.border(0.5.dp, Color.DarkGray, RectangleShape), color = if (isPending) Color.Red.copy(alpha = 0.3f) else if (isHighlighted) Color.White else Color.Transparent) {
+                                        Surface(
+                                            Modifier.fillMaxWidth()
+                                                .clickable(
+                                                    enabled = !isPending,
+                                                    interactionSource = remember { MutableInteractionSource() },
+                                                    indication = rememberRipple(color = Color.Gray)
+                                                ) { currentTabIndex = tabIndex; showTabManager = false }
+                                                .border(0.5.dp, Color.DarkGray, RectangleShape),
+                                            color = if (isPending) Color.Red.copy(alpha = 0.3f) else if (isHighlighted) Color.White else Color.Transparent
+                                        ) {
                                             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 if (tabFav != null) Image(tabFav.asImageBitmap(), tabDomain, Modifier.size(16.dp).clip(CircleShape), contentScale = ContentScale.Fit)
                                                 else Box(Modifier.size(16.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(tabDomain.take(1).uppercase(), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold) }
@@ -1187,9 +1203,9 @@ fun GreyBrowser() {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // ── Tab button ──
+                    // ── Tab button with grey ripple ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
-                        IconButton({ showTabManager = true; showToast("Tab manager opened") }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
+                        IconButton({ showTabManager = true; showToast("Tab manager opened") }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
                     }
                     
                     val isLoading = (currentTab?.progress ?: 100) in 1..99
@@ -1201,17 +1217,17 @@ fun GreyBrowser() {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); createForegroundTab(uri) } }),
                         colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
-                        trailingIcon = { if (isLoading) IconButton({ currentTab?.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
+                        trailingIcon = { if (isLoading) IconButton({ currentTab?.session?.stop() }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                     )
                     
-                    // ── Home button ──
+                    // ── Home button with grey ripple ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
-                        IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "Home", tint = Color.White) }
+                        IconButton({ currentTabIndex = -1 }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.Add, "Home", tint = Color.White) }
                     }
                     
-                    // ── Menu button ──
+                    // ── Menu button with grey ripple ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
-                        IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
+                        IconButton({ showMenu = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
                             if (currentTabIndex >= 0) {
                                 DropdownMenuItem(text = { Text("Add to Bookmark", color = Color.White) }, onClick = {
@@ -1223,13 +1239,13 @@ fun GreyBrowser() {
                                         log("Bookmark added: $url")
                                         showToast("Added to bookmarks")
                                     }
-                                })
+                                }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
                             }
-                            DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true })
-                            DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
-                            DropdownMenuItem(text = { Text("Import/Export", color = Color.White) }, onClick = { showMenu = false; showImportExport = true })
-                            DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
-                            DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true })
+                            DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
+                            DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
+                            DropdownMenuItem(text = { Text("Import/Export", color = Color.White) }, onClick = { showMenu = false; showImportExport = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
+                            DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
+                            DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
                         }
                     }
                 }
@@ -1261,6 +1277,8 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
+
+
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1320,7 +1338,6 @@ fun ImportExportUI(
                 }
 
                 Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    // ── Export Section ──────────────────────
                     Text("Export:", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                     Spacer(Modifier.height(12.dp))
 
@@ -1365,27 +1382,14 @@ fun ImportExportUI(
                                 }
                                 onShowToast("Exporting...")
                                 exportData(
-                                    context = context,
-                                    exportTabs = exportTabs,
-                                    exportHistory = exportHistory,
-                                    exportBookmarks = exportBookmarks,
-                                    tabs = tabs,
-                                    pinnedDomains = pinnedDomains,
-                                    currentTabIndex = currentTabIndex,
-                                    history = history,
-                                    bookmarks = bookmarks,
+                                    context = context, exportTabs = exportTabs, exportHistory = exportHistory,
+                                    exportBookmarks = exportBookmarks, tabs = tabs, pinnedDomains = pinnedDomains,
+                                    currentTabIndex = currentTabIndex, history = history, bookmarks = bookmarks,
                                     exportAll = false,
-                                    onResult = { success, msg ->
-                                        if (success) {
-                                            onShowToast("Exported to /Download/Grey/")
-                                        } else {
-                                            onShowToast(msg)
-                                        }
-                                    }
+                                    onResult = { success, msg -> if (success) onShowToast("Exported to /Download/Grey/") else onShowToast(msg) }
                                 )
                             },
-                            modifier = Modifier.weight(1f),
-                            shape = RectangleShape,
+                            modifier = Modifier.weight(1f), shape = RectangleShape,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                             border = BorderStroke(1.dp, Color.White)
                         ) { Text("Export Selected", color = Color.White, fontSize = 13.sp) }
@@ -1394,27 +1398,14 @@ fun ImportExportUI(
                             onClick = {
                                 onShowToast("Exporting all...")
                                 exportData(
-                                    context = context,
-                                    exportTabs = true,
-                                    exportHistory = true,
-                                    exportBookmarks = true,
-                                    tabs = tabs,
-                                    pinnedDomains = pinnedDomains,
-                                    currentTabIndex = currentTabIndex,
-                                    history = history,
-                                    bookmarks = bookmarks,
+                                    context = context, exportTabs = true, exportHistory = true,
+                                    exportBookmarks = true, tabs = tabs, pinnedDomains = pinnedDomains,
+                                    currentTabIndex = currentTabIndex, history = history, bookmarks = bookmarks,
                                     exportAll = true,
-                                    onResult = { success, msg ->
-                                        if (success) {
-                                            onShowToast("Exported to /Download/Grey/")
-                                        } else {
-                                            onShowToast(msg)
-                                        }
-                                    }
+                                    onResult = { success, msg -> if (success) onShowToast("Exported to /Download/Grey/") else onShowToast(msg) }
                                 )
                             },
-                            modifier = Modifier.weight(1f),
-                            shape = RectangleShape,
+                            modifier = Modifier.weight(1f), shape = RectangleShape,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                             border = BorderStroke(1.dp, Color.White)
                         ) { Text("Export All", color = Color.White, fontSize = 13.sp) }
@@ -1424,19 +1415,15 @@ fun ImportExportUI(
                     HorizontalDivider(color = Color.DarkGray)
                     Spacer(Modifier.height(24.dp))
 
-                    // ── Import Section ──────────────────────
                     Text("Import:", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                     Spacer(Modifier.height(12.dp))
 
                     OutlinedButton(
                         onClick = { importFilePicker.launch("application/json") },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RectangleShape,
+                        modifier = Modifier.fillMaxWidth(), shape = RectangleShape,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                         border = BorderStroke(1.dp, Color.White)
-                    ) {
-                        Text("Import File", color = Color.White)
-                    }
+                    ) { Text("Import File", color = Color.White) }
                     Spacer(Modifier.height(4.dp))
                     Text("Select a .json file — merges with existing data", color = Color.Gray.copy(alpha = 0.7f), fontSize = 12.sp)
                 }
@@ -1446,7 +1433,6 @@ fun ImportExportUI(
 }
 
 // END OF PART 9/10
-
 
 
 
@@ -1518,8 +1504,18 @@ fun BookmarksUI(
                             LaunchedEffect(item.url) { loadFavicon(domain) }
                             val fav = faviconBitmaps[domain]
 
-                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
+                                color = Color.Transparent
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(12.dp)
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = rememberRipple(color = Color.Gray)
+                                        ) { onOpenUrl(item.url); onDismiss() },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
                                     else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                                     Spacer(Modifier.width(10.dp))
@@ -1595,7 +1591,6 @@ fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsAp
         title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
         text = {
             Column {
-                // ── FIX: Settings with white border styling ──
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 8.dp)
                         .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape)
@@ -1696,8 +1691,18 @@ fun HistoryUI(
                             val domain = getDomainName(item.url)
                             LaunchedEffect(item.url) { loadFavicon(domain) }
                             val fav = faviconBitmaps[domain]
-                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
-                                Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
+                                color = Color.Transparent
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(12.dp)
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = rememberRipple(color = Color.Gray)
+                                        ) { onOpenUrl(item.url); onDismiss() },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
                                     else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                                     Spacer(Modifier.width(10.dp))
@@ -1724,7 +1729,15 @@ fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
     val bg = if (isSelected) Color.White else Color.Transparent
     val fg = if (isSelected) Color.Black else Color.White
     val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
+    Surface(
+        Modifier.padding(vertical = 4.dp).width(52.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(color = Color.Gray)
+            ) { onClick() }
+            .border(0.5.dp, borderColor, RectangleShape),
+        color = bg
+    ) {
         Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(2.dp))
@@ -1744,7 +1757,15 @@ fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick
     val bg = Color.White.copy(alpha = bgAlpha)
     val fg = if (isSelected) Color.Black else Color.White
     val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, borderColor, RectangleShape), color = bg) {
+    Surface(
+        Modifier.padding(vertical = 4.dp).width(52.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(color = Color.Gray)
+            ) { onClick() }
+            .border(0.5.dp, borderColor, RectangleShape),
+        color = bg
+    ) {
         Box(Modifier.padding(6.dp)) {
             if (isPinned) Icon(Icons.Default.PushPin, "Pinned", tint = fg, modifier = Modifier.size(12.dp).align(Alignment.TopStart))
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1759,10 +1780,17 @@ fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick
 
 @Composable
 fun ContextMenuItem(text: String, onClick: () -> Unit) {
-    Box(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) { Text(text, color = Color.White, fontSize = 16.sp) }
+    Box(
+        Modifier.fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(color = Color.Gray),
+                onClick = onClick
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) { Text(text, color = Color.White, fontSize = 16.sp) }
 }
 
 // END OF PART 10/10
 // END OF FILE - Grey Browser V3.0
 // ═══════════════════════════════════════════════════════════════════
-
