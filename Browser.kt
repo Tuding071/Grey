@@ -1014,8 +1014,6 @@ fun GreyBrowser() {
 
 // END OF PART 7/10
 
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1051,7 +1049,8 @@ fun GreyBrowser() {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
         val sortedDomains = domainGroups.keys.sortedWith(compareByDescending<String> { pinnedDomains.contains(it) }.thenBy { d: String -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE })
         val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }; val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
-        val highlightDomain = if (currentTabIndex == -1 && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url) else if (currentTabIndex >= 0) getDomainName(currentTab?.url ?: "") else ""
+        // ── FIX: Use currentTabIndex for highlight, not highlightedTabIndex ──
+        val highlightDomain = if (currentTabIndex >= 0) getDomainName(currentTab?.url ?: "") else ""
 
         LaunchedEffect(Unit) { selectedDomain = ""; if (highlightDomain.isNotBlank()) { blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" } }
 
@@ -1079,6 +1078,7 @@ fun GreyBrowser() {
 
                         val tabsToShow = if (selectedDomain.isBlank()) tabs.toList() else domainGroups[selectedDomain] ?: emptyList()
                         val tabListState = rememberLazyListState()
+                        // ── FIX: Scroll to current tab based on currentTabIndex ──
                         val scrollTarget = if (currentTabIndex >= 0) currentTab else if (highlightedTabIndex >= 0) tabs.getOrNull(highlightedTabIndex) else null
                         LaunchedEffect(selectedDomain) { val idx = tabsToShow.indexOf(scrollTarget); if (idx >= 0) tabListState.scrollToItem(idx) }
 
@@ -1090,6 +1090,7 @@ fun GreyBrowser() {
                                 else {
                                     items(tabsToShow) { tab: TabState ->
                                         val tabIndex = tabs.indexOf(tab)
+                                        // ── FIX: Highlight based on currentTabIndex ──
                                         val isHighlighted = tabIndex == currentTabIndex
                                         val isPending = pendingDeletions.containsKey(tabIndex)
                                         val tabDomain = getDomainName(tab.url)
@@ -1113,7 +1114,7 @@ fun GreyBrowser() {
                     }
 
                     Column(Modifier.fillMaxWidth().padding(12.dp).navigationBarsPadding()) {
-                        OutlinedButton(onClick = { currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White) }
+                        OutlinedButton(onClick = { /* Stay on homepage */ currentTabIndex = -1; showTabManager = false }, modifier = Modifier.fillMaxWidth(), shape = RectangleShape, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White), border = BorderStroke(1.dp, Color.White)) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(Modifier.width(8.dp)); Text("New Tab", color = Color.White) }
                         Spacer(Modifier.height(8.dp))
                         Row(Modifier.fillMaxWidth()) {
                             val hasSelection = selectedDomain.isNotBlank(); val isPinned = pinnedDomains.contains(selectedDomain)
@@ -1156,7 +1157,11 @@ fun GreyBrowser() {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton({ showTabManager = true; showToast("Tab manager opened") }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
+                    // ── FIX: Tab button with box border ──
+                    Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
+                        IconButton({ showTabManager = true; showToast("Tab manager opened") }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
+                    }
+                    
                     val isLoading = (currentTab?.progress ?: 100) in 1..99
                     OutlinedTextField(
                         value = urlInput, onValueChange = { urlInput = it }, singleLine = true,
@@ -1168,8 +1173,14 @@ fun GreyBrowser() {
                         colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
                         trailingIcon = { if (isLoading) IconButton({ currentTab?.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                     )
-                    IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
-                    Box {
+                    
+                    // ── FIX: New Tab button with box border ──
+                    Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
+                        IconButton({ createForegroundTab("about:blank"); highlightedTabIndex = currentTabIndex }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
+                    }
+                    
+                    // ── FIX: Menu button with box border ──
+                    Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
                         IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
                             if (currentTabIndex >= 0) {
@@ -1220,7 +1231,6 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
-
 
 
 
