@@ -678,16 +678,7 @@ fun GreyBrowser() {
         saveHistory(context, history)
     }
 
-    val homeSession = remember {
-        GeckoSession().apply {
-            applySettingsToSession(this); open(runtime); loadUri("about:blank")
-        }
-    }
-    val homeTab = remember {
-        TabState().apply {
-            session = homeSession; isBlankTab = true; title = "Home"
-        }
-    }
+    // ── No more homeSession — currentTabIndex = -1 means homepage ──
 
     val (savedTabs, savedPinned, savedLastActiveUrl) = remember { loadTabsData(context) }
     val tabs = remember {
@@ -720,7 +711,7 @@ fun GreyBrowser() {
     val faviconLoading = remember { mutableStateMapOf<String, Boolean>() }
     val tabFavicons = remember { mutableStateMapOf<String, Bitmap?>() }
     val tabFaviconLoading = remember { mutableStateMapOf<String, Boolean>() }
-    val currentTab = if (currentTabIndex == -1) homeTab else tabs.getOrNull(currentTabIndex) ?: homeTab
+    val currentTab = tabs.getOrNull(currentTabIndex)
 
     val pendingDeletions = remember { mutableStateMapOf<Int, Long>() }
     var showBlink by remember { mutableStateOf(false) }
@@ -818,7 +809,6 @@ fun GreyBrowser() {
                 }
             }
         }
-        // ── FIX: Use GeckoView HistoryDelegate for proper history tracking ──
         session.historyDelegate = object : GeckoSession.HistoryDelegate {
             override fun onVisited(
                 s: GeckoSession,
@@ -834,8 +824,6 @@ fun GreyBrowser() {
             }
         }
     }
-
-    homeTab.session?.let { setupDelegates(homeTab) }
 
     fun manageTabLifecycle(activeIndex: Int) {
         tabs.forEachIndexed { i, ts ->
@@ -933,9 +921,8 @@ fun GreyBrowser() {
 
     LaunchedEffect(showTabManager, currentTabIndex) {
         if (showTabManager) {
-            homeSession.setActive(false); tabs.forEach { it.session?.setActive(false) }
+            tabs.forEach { it.session?.setActive(false) }
         } else {
-            homeSession.setActive(currentTabIndex == -1)
             if (currentTabIndex >= 0) manageTabLifecycle(currentTabIndex)
         }
     }
@@ -979,22 +966,44 @@ fun GreyBrowser() {
 // END OF PART 6/10
 
 
+
 // ═══════════════════════════════════════════════════════════════════
-// === PART 7/10 — GreyBrowser() BackHandler, GeckoViewBox ===
+// === PART 7/10 — GreyBrowser() BackHandler, GeckoViewBox, Homepage ===
 // ═══════════════════════════════════════════════════════════════════
 
     BackHandler {
-        if (currentTab.isBlankTab) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() }
-        else currentTab.session?.goBack()
+        if (currentTabIndex == -1) { if (tabs.isNotEmpty()) currentTabIndex = tabs.lastIndex else activity?.finish() }
+        else currentTab?.session?.goBack()
     }
 
     @Composable
     fun GeckoViewBox() {
-        val s = currentTab.session
-        if (s != null) {
-            AndroidView(factory = { ctx -> GeckoView(ctx).apply { setSession(s) } }, update = { gv -> gv.setSession(s) }, modifier = Modifier.fillMaxSize())
+        if (currentTabIndex == -1) {
+            // ── Homepage (no session, pure Compose) ──
+            Box(
+                Modifier.fillMaxSize().background(Color(0xFF121212)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "Grey",
+                    color = Color.White.copy(alpha = 0.15f),
+                    fontSize = 48.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         } else {
-            Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color.White) }
+            val s = currentTab?.session
+            if (s != null) {
+                AndroidView(
+                    factory = { ctx -> GeckoView(ctx).apply { setSession(s) } },
+                    update = { gv -> gv.setSession(s) },
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(Modifier.fillMaxSize().background(Color(0xFF121212)), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = Color.White)
+                }
+            }
         }
     }
 
@@ -1010,7 +1019,7 @@ fun GreyBrowser() {
         AlertDialog(onDismissRequest = { showConfirmDialog = false; confirmAction = null }, title = { Text(confirmTitle, color = Color.White, fontSize = 18.sp) }, text = { Text(confirmMessage, color = Color.Gray, fontSize = 14.sp) }, confirmButton = { TextButton({ val a = confirmAction; showConfirmDialog = false; confirmAction = null; a?.invoke() }) { Text("Confirm", color = Color.White) } }, dismissButton = { TextButton({ showConfirmDialog = false; confirmAction = null }) { Text("Cancel", color = Color.White) } }, containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp)
     }
 
-    if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { applySettingsToSession(homeSession); tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
+    if (showSettings) { SettingsDialog(prefs, { showSettings = false }) { tabs.forEach { it.session?.let { s -> applySettingsToSession(s) } } } }
     if (showImportExport) { ImportExportUI(context = context, tabs = tabs, pinnedDomains = pinnedDomains, currentTabIndex = currentTabIndex, history = history, bookmarks = bookmarks, createForegroundTab = { url -> createForegroundTab(url) }, onShowToast = { msg -> showToast(msg) }, onDismiss = { showImportExport = false }) }
     if (showLogcat) { LogcatUI(logLines = logLines, onClear = { logLines.clear() }, onDismiss = { showLogcat = false }) }
 
@@ -1037,7 +1046,7 @@ fun GreyBrowser() {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
         val sortedDomains = domainGroups.keys.sortedWith(compareByDescending<String> { pinnedDomains.contains(it) }.thenBy { d: String -> domainGroups[d]?.firstOrNull()?.let { t -> tabs.indexOf(t) } ?: Int.MAX_VALUE })
         val pinnedSorted = sortedDomains.filter { pinnedDomains.contains(it) }; val unpinnedSorted = sortedDomains.filter { !pinnedDomains.contains(it) }
-        val highlightDomain = if (currentTab.isBlankTab && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url) else if (!currentTab.isBlankTab) getDomainName(currentTab.url) else ""
+        val highlightDomain = if (currentTabIndex == -1 && highlightedTabIndex >= 0) getDomainName(tabs[highlightedTabIndex].url) else if (currentTabIndex >= 0) getDomainName(currentTab?.url ?: "") else ""
 
         LaunchedEffect(Unit) { selectedDomain = ""; if (highlightDomain.isNotBlank()) { blinkTargetDomain.value = highlightDomain; showBlink = true; delay(1500); showBlink = false; blinkTargetDomain.value = "" } }
 
@@ -1076,7 +1085,7 @@ fun GreyBrowser() {
                                 else {
                                     items(tabsToShow) { tab: TabState ->
                                         val tabIndex = tabs.indexOf(tab)
-                                        val isHighlighted = tabIndex == currentTabIndex || (currentTabIndex == -1 && tabIndex == highlightedTabIndex)
+                                        val isHighlighted = tabIndex == currentTabIndex
                                         val isPending = pendingDeletions.containsKey(tabIndex)
                                         val tabDomain = getDomainName(tab.url)
                                         LaunchedEffect(tab.url) { loadTabFavicon(tabDomain) }
@@ -1128,42 +1137,48 @@ fun GreyBrowser() {
         }
     }
 
-    var urlInput by remember { mutableStateOf(TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url)) }
+    var urlInput by remember { mutableStateOf(TextFieldValue(if (currentTabIndex == -1) "" else currentTab?.url?.let { if (it == "about:blank") "" else it } ?: "")) }
     var isUrlFocused by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(currentTab, currentTab.url) { if (!isUrlFocused) { urlInput = TextFieldValue(if (currentTab.url == "about:blank") "" else currentTab.url) } }
+    LaunchedEffect(currentTabIndex, currentTab?.url) {
+        if (!isUrlFocused) {
+            urlInput = TextFieldValue(if (currentTabIndex == -1) "" else currentTab?.url?.let { if (it == "about:blank") "" else it } ?: "")
+        }
+    }
 
     Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton({ showTabManager = true; showToast("Tab manager opened") }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
-                    val isLoading = currentTab.progress in 1..99
+                    val isLoading = (currentTab?.progress ?: 100) in 1..99
                     OutlinedTextField(
                         value = urlInput, onValueChange = { urlInput = it }, singleLine = true,
-                        placeholder = { Text(if (currentTab.isBlankTab) "Search or enter URL" else currentTab.url.take(50), color = Color.White.copy(alpha = 0.5f), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        modifier = Modifier.weight(1f).padding(vertical = 8.dp).background(Color(0xFF1E1E1E)).focusRequester(focusRequester).onFocusChanged { isUrlFocused = it.isFocused }.drawBehind { if (isLoading) drawRect(Color.White, size = size.copy(width = size.width * currentTab.progress / 100f)) },
+                        placeholder = { Text(if (currentTabIndex == -1 || currentTab?.isBlankTab == true) "Search or enter URL" else currentTab?.url?.take(50) ?: "", color = Color.White.copy(alpha = 0.5f), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        modifier = Modifier.weight(1f).padding(vertical = 8.dp).background(Color(0xFF1E1E1E)).focusRequester(focusRequester).onFocusChanged { isUrlFocused = it.isFocused }.drawBehind { if (isLoading) drawRect(Color.White, size = size.copy(width = size.width * (currentTab?.progress ?: 100) / 100f)) },
                         textStyle = TextStyle(if (isLoading) Color.Gray else Color.White, 16.sp), shape = RectangleShape,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTab.isBlankTab) createForegroundTab(uri) else currentTab.session?.loadUri(uri) } }),
+                        keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); if (currentTabIndex == -1 || currentTab?.isBlankTab == true) createForegroundTab(uri) else currentTab?.session?.loadUri(uri) } }),
                         colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
-                        trailingIcon = { if (isLoading) IconButton({ currentTab.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
+                        trailingIcon = { if (isLoading) IconButton({ currentTab?.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                     )
                     IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "New Tab", tint = Color.White) }
                     Box {
                         IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
-                            DropdownMenuItem(text = { Text("Add to Bookmark", color = Color.White) }, onClick = {
-                                showMenu = false
-                                val url = currentTab.url
-                                if (url != "about:blank" && url.isNotBlank()) {
-                                    bookmarks.removeAll { it.url == url }
-                                    bookmarks.add(Bookmark(url = url, title = currentTab.title.ifBlank { url }))
-                                    log("Bookmark added: $url")
-                                    showToast("Added to bookmarks")
-                                }
-                            })
+                            if (currentTabIndex >= 0) {
+                                DropdownMenuItem(text = { Text("Add to Bookmark", color = Color.White) }, onClick = {
+                                    showMenu = false
+                                    val url = currentTab?.url ?: ""
+                                    if (url != "about:blank" && url.isNotBlank()) {
+                                        bookmarks.removeAll { it.url == url }
+                                        bookmarks.add(Bookmark(url = url, title = currentTab?.title?.ifBlank { url } ?: url))
+                                        log("Bookmark added: $url")
+                                        showToast("Added to bookmarks")
+                                    }
+                                })
+                            }
                             DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true })
                             DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
                             DropdownMenuItem(text = { Text("Import/Export", color = Color.White) }, onClick = { showMenu = false; showImportExport = true })
@@ -1200,6 +1215,8 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
+
+
 
 
 
