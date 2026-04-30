@@ -605,8 +605,6 @@ fun importData(
 
 // END OF PART 4/10
 
-
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 5/10 — GreyBrowser() State Declarations ===
 // ═══════════════════════════════════════════════════════════════════
@@ -668,9 +666,16 @@ fun GreyBrowser() {
     var confirmTitle by remember { mutableStateOf("") }
     var confirmMessage by remember { mutableStateOf("") }
 
+    // ── FIX: Deduplicate history by base URL (strip fragment) ──
     fun addToHistory(url: String, title: String) {
         if (url == "about:blank" || url.isBlank()) return
-        history.removeAll { it.url == url }
+        
+        // Strip fragment (#...) for deduplication
+        val baseUrl = url.substringBefore("#")
+        
+        // Remove existing entry with same base URL
+        history.removeAll { it.url.substringBefore("#") == baseUrl }
+        
         history.add(HistoryItem(url = url, title = title.ifBlank { url }, timestamp = System.currentTimeMillis()))
         if (history.size > MAX_HISTORY_ITEMS) {
             history.removeAt(0)
@@ -694,9 +699,11 @@ fun GreyBrowser() {
     // ── currentTabIndex = -1 means homepage overlay is showing ──
     // ── highlightedTabIndex points to the "active" tab underneath ──
     var currentTabIndex by remember { mutableIntStateOf(-1) }
+    // ── FIX: Match base URLs for tab restore (strip fragments) ──
     var highlightedTabIndex by remember {
         mutableIntStateOf(
-            tabs.indexOfFirst { it.url == savedLastActiveUrl }.let { if (it >= 0) it else -1 }
+            tabs.indexOfFirst { it.url.substringBefore("#") == savedLastActiveUrl.substringBefore("#") }
+                .let { if (it >= 0) it else if (tabs.isNotEmpty()) 0 else -1 }
         )
     }
     var lastActiveUrl by remember { mutableStateOf(savedLastActiveUrl) }
@@ -745,7 +752,6 @@ fun GreyBrowser() {
 // END OF PART 5/10
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -776,7 +782,13 @@ fun GreyBrowser() {
         session.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(s: GeckoSession, title: String?) {
                 if (!tabState.isBlankTab) {
-                    tabState.title = title ?: tabState.url
+                    val newTitle = title ?: tabState.url
+                    // ── FIX: Update history title when page title changes ──
+                    if (tabState.title == "New Tab" && newTitle != tabState.url) {
+                        log("onTitleChange: updating history title to $newTitle")
+                        addToHistory(tabState.url, newTitle)
+                    }
+                    tabState.title = newTitle
                     log("onTitleChange: ${tabState.title}")
                 }
             }
@@ -820,9 +832,9 @@ fun GreyBrowser() {
                 flags: Int
             ): GeckoResult<Boolean>? {
                 if (url != "about:blank" && url.isNotBlank()) {
-                    // ── FIX: Don't save "New Tab" as title ──
+                    // ── FIX: Use URL as fallback title (not domain) ──
                     val title = if (tabState.title == "New Tab" || tabState.title.isBlank()) {
-                        getDomainName(url).ifBlank { url }
+                        url.substringBefore("#")
                     } else {
                         tabState.title
                     }
@@ -973,6 +985,9 @@ fun GreyBrowser() {
     }
 
 // END OF PART 6/10
+
+
+
 
 
 // ═══════════════════════════════════════════════════════════════════
