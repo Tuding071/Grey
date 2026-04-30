@@ -742,7 +742,6 @@ fun GreyBrowser() {
 
 // END OF PART 5/10
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -817,8 +816,14 @@ fun GreyBrowser() {
                 flags: Int
             ): GeckoResult<Boolean>? {
                 if (url != "about:blank" && url.isNotBlank()) {
-                    log("HistoryDelegate.onVisited: $url title=${tabState.title}")
-                    addToHistory(url, tabState.title.ifBlank { getDomainName(url) })
+                    // ── FIX: Don't save "New Tab" as title ──
+                    val title = if (tabState.title == "New Tab" || tabState.title.isBlank()) {
+                        getDomainName(url).ifBlank { url }
+                    } else {
+                        tabState.title
+                    }
+                    log("HistoryDelegate.onVisited: $url title=$title")
+                    addToHistory(url, title)
                 }
                 return GeckoResult.fromValue(true)
             }
