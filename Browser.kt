@@ -1048,7 +1048,6 @@ fun GreyBrowser() {
 // END OF PART 7/10
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1136,7 +1135,7 @@ fun GreyBrowser() {
                                                 .clickable(
                                                     enabled = !isPending,
                                                     interactionSource = remember { MutableInteractionSource() },
-                                                    indication = rememberRipple(color = Color.Gray)
+                                                    indication = ripple(color = Color.Gray)
                                                 ) { currentTabIndex = tabIndex; showTabManager = false }
                                                 .border(0.5.dp, Color.DarkGray, RectangleShape),
                                             color = if (isPending) Color.Red.copy(alpha = 0.3f) else if (isHighlighted) Color.White else Color.Transparent
@@ -1200,9 +1199,9 @@ fun GreyBrowser() {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // ── Tab button with grey ripple ──
+                    // ── Tab button ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
-                        IconButton({ showTabManager = true; showToast("Tab manager opened") }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
+                        IconButton({ showTabManager = true; showToast("Tab manager opened") }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
                     }
                     
                     val isLoading = (currentTab?.progress ?: 100) in 1..99
@@ -1214,35 +1213,38 @@ fun GreyBrowser() {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = { val input = urlInput.text; if (input.isNotBlank()) { focusManager.clearFocus(); val uri = resolveUrl(input); createForegroundTab(uri) } }),
                         colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White, cursorColor = if (isLoading) Color.Gray else Color.White),
-                        trailingIcon = { if (isLoading) IconButton({ currentTab?.session?.stop() }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
+                        trailingIcon = { if (isLoading) IconButton({ currentTab?.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                     )
                     
-                    // ── Home button with grey ripple ──
+                    // ── Home button ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
-                        IconButton({ currentTabIndex = -1 }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.Add, "Home", tint = Color.White) }
+                        IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "Home", tint = Color.White) }
                     }
                     
-                    // ── Menu button with grey ripple ──
+                    // ── Menu button ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
-                        IconButton({ showMenu = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray))) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
+                        IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
                             if (currentTabIndex >= 0) {
-                                DropdownMenuItem(text = { Text("Add to Bookmark", color = Color.White) }, onClick = {
-                                    showMenu = false
-                                    val url = currentTab?.url ?: ""
-                                    if (url != "about:blank" && url.isNotBlank()) {
-                                        bookmarks.removeAll { it.url == url }
-                                        bookmarks.add(Bookmark(url = url, title = currentTab?.title?.ifBlank { url } ?: url))
-                                        log("Bookmark added: $url")
-                                        showToast("Added to bookmarks")
+                                DropdownMenuItem(
+                                    text = { Text("Add to Bookmark", color = Color.White) },
+                                    onClick = {
+                                        showMenu = false
+                                        val url = currentTab?.url ?: ""
+                                        if (url != "about:blank" && url.isNotBlank()) {
+                                            bookmarks.removeAll { it.url == url }
+                                            bookmarks.add(Bookmark(url = url, title = currentTab?.title?.ifBlank { url } ?: url))
+                                            log("Bookmark added: $url")
+                                            showToast("Added to bookmarks")
+                                        }
                                     }
-                                }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
+                                )
                             }
-                            DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
-                            DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
-                            DropdownMenuItem(text = { Text("Import/Export", color = Color.White) }, onClick = { showMenu = false; showImportExport = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
-                            DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
-                            DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true }, modifier = Modifier.indication(remember { MutableInteractionSource() }, rememberRipple(color = Color.Gray)))
+                            DropdownMenuItem(text = { Text("Bookmarks", color = Color.White) }, onClick = { showMenu = false; showBookmarks = true })
+                            DropdownMenuItem(text = { Text("History", color = Color.White) }, onClick = { showMenu = false; showHistory = true })
+                            DropdownMenuItem(text = { Text("Import/Export", color = Color.White) }, onClick = { showMenu = false; showImportExport = true })
+                            DropdownMenuItem(text = { Text("Settings", color = Color.White) }, onClick = { showMenu = false; showSettings = true })
+                            DropdownMenuItem(text = { Text("Logcat", color = Color.White) }, onClick = { showMenu = false; showLogcat = true })
                         }
                     }
                 }
@@ -1274,7 +1276,6 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
-
 
 
 
@@ -1509,7 +1510,7 @@ fun BookmarksUI(
                                     Modifier.fillMaxWidth().padding(12.dp)
                                         .clickable(
                                             interactionSource = remember { MutableInteractionSource() },
-                                            indication = rememberRipple(color = Color.Gray)
+                                            indication = ripple(color = Color.Gray)
                                         ) { onOpenUrl(item.url); onDismiss() },
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -1696,7 +1697,7 @@ fun HistoryUI(
                                     Modifier.fillMaxWidth().padding(12.dp)
                                         .clickable(
                                             interactionSource = remember { MutableInteractionSource() },
-                                            indication = rememberRipple(color = Color.Gray)
+                                            indication = ripple(color = Color.Gray)
                                         ) { onOpenUrl(item.url); onDismiss() },
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -1730,7 +1731,7 @@ fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
         Modifier.padding(vertical = 4.dp).width(52.dp)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = rememberRipple(color = Color.Gray)
+                indication = ripple(color = Color.Gray)
             ) { onClick() }
             .border(0.5.dp, borderColor, RectangleShape),
         color = bg
@@ -1758,7 +1759,7 @@ fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick
         Modifier.padding(vertical = 4.dp).width(52.dp)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = rememberRipple(color = Color.Gray)
+                indication = ripple(color = Color.Gray)
             ) { onClick() }
             .border(0.5.dp, borderColor, RectangleShape),
         color = bg
@@ -1781,7 +1782,7 @@ fun ContextMenuItem(text: String, onClick: () -> Unit) {
         Modifier.fillMaxWidth()
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = rememberRipple(color = Color.Gray),
+                indication = ripple(color = Color.Gray),
                 onClick = onClick
             )
             .padding(horizontal = 16.dp, vertical = 12.dp)
