@@ -73,7 +73,6 @@ import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Undo
-import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -129,8 +128,6 @@ class MainActivity : ComponentActivity() {
 }
 
 // END OF PART 1/10
-
-
 
 
 
