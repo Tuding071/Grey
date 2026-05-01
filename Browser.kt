@@ -757,7 +757,6 @@ fun GreyBrowser() {
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════
 // === PART 6/10 — GreyBrowser() Delegates, Lifecycle, Tab Functions ===
 // ═══════════════════════════════════════════════════════════════════
@@ -786,7 +785,6 @@ fun GreyBrowser() {
             }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
-            // ── FIX: History via onTitleChange (primary) ──
             var historySaved = false
             override fun onTitleChange(s: GeckoSession, title: String?) {
                 if (!tabState.isBlankTab) {
@@ -801,19 +799,8 @@ fun GreyBrowser() {
                     }
                 }
             }
-            // ── FIX: History fallback via onFirstComposite ──
             override fun onFirstComposite(s: GeckoSession) {
                 log("onFirstComposite: ${tabState.url}")
-                if (!historySaved && tabState.url != "about:blank" && tabState.url.isNotBlank()) {
-                    historySaved = true
-                    val fallbackTitle = if (tabState.title == "New Tab" || tabState.title.isBlank()) {
-                        tabState.url.substringBefore("#")
-                    } else {
-                        tabState.title
-                    }
-                    log("History saved via onFirstComposite (fallback): $fallbackTitle")
-                    addToHistory(tabState.url, fallbackTitle)
-                }
             }
             override fun onContextMenu(
                 session: GeckoSession, screenX: Int, screenY: Int,
@@ -1048,6 +1035,7 @@ fun GreyBrowser() {
 // END OF PART 7/10
 
 
+
 // ═══════════════════════════════════════════════════════════════════
 // === PART 8/10 — GreyBrowser() Dialogs, Context Menu, Tab Manager, URL Bar, Menu, Toast ===
 // ═══════════════════════════════════════════════════════════════════
@@ -1134,9 +1122,8 @@ fun GreyBrowser() {
                                             Modifier.fillMaxWidth()
                                                 .clickable(
                                                     enabled = !isPending,
-                                                    interactionSource = remember { MutableInteractionSource() },
-                                                    indication = ripple(color = Color.Gray)
-                                                ) { currentTabIndex = tabIndex; showTabManager = false }
+                                                    onClick = { currentTabIndex = tabIndex; showTabManager = false }
+                                                )
                                                 .border(0.5.dp, Color.DarkGray, RectangleShape),
                                             color = if (isPending) Color.Red.copy(alpha = 0.3f) else if (isHighlighted) Color.White else Color.Transparent
                                         ) {
@@ -1199,7 +1186,6 @@ fun GreyBrowser() {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // ── Tab button ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
                         IconButton({ showTabManager = true; showToast("Tab manager opened") }) { Icon(Icons.Default.Tab, "Tabs", tint = Color.White) }
                     }
@@ -1216,12 +1202,10 @@ fun GreyBrowser() {
                         trailingIcon = { if (isLoading) IconButton({ currentTab?.session?.stop() }) { Icon(Icons.Default.Close, "Stop", tint = Color.White) } else IconButton({ urlInput = urlInput.copy(selection = TextRange(0, urlInput.text.length)); focusRequester.requestFocus() }) { Icon(Icons.Default.SelectAll, "Select all", tint = Color.White) } }
                     )
                     
-                    // ── Home button ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
                         IconButton({ currentTabIndex = -1 }) { Icon(Icons.Default.Add, "Home", tint = Color.White) }
                     }
                     
-                    // ── Menu button ──
                     Box(Modifier.border(0.5.dp, Color.White.copy(alpha = 0.2f), RectangleShape)) {
                         IconButton({ showMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = Color.White) }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
@@ -1251,7 +1235,6 @@ fun GreyBrowser() {
                 Box(Modifier.weight(1f).fillMaxWidth()) { GeckoViewBox() }
             }
 
-            // ── Toast Overlay ──────────────────────────────────
             if (showToast) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -1276,6 +1259,7 @@ fun GreyBrowser() {
 }
 
 // END OF PART 8/10
+
 
 
 
@@ -1438,10 +1422,6 @@ fun ImportExportUI(
 // === PART 10/10 — BookmarksUI, LogcatUI, HistoryUI, Settings, Helpers ===
 // ═══════════════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════════════════════
-// ── BOOKMARKS UI ─────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
 @Composable
 fun BookmarksUI(
     bookmarks: List<Bookmark>,
@@ -1459,40 +1439,20 @@ fun BookmarksUI(
             onDismissRequest = { showDeleteConfirm = false; bookmarkToDelete = null },
             title = { Text("Delete Bookmark?", color = Color.White, fontSize = 18.sp) },
             text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
-            confirmButton = {
-                TextButton({
-                    onDelete(bookmarkToDelete!!)
-                    showDeleteConfirm = false
-                    bookmarkToDelete = null
-                }) { Text("Delete", color = Color.White) }
-            },
-            dismissButton = {
-                TextButton({ showDeleteConfirm = false; bookmarkToDelete = null }) {
-                    Text("Cancel", color = Color.White)
-                }
-            },
-            containerColor = Color(0xFF1E1E1E),
-            titleContentColor = Color.White,
-            textContentColor = Color.White,
-            shape = RectangleShape,
-            tonalElevation = 0.dp
+            confirmButton = { TextButton({ onDelete(bookmarkToDelete!!); showDeleteConfirm = false; bookmarkToDelete = null }) { Text("Delete", color = Color.White) } },
+            dismissButton = { TextButton({ showDeleteConfirm = false; bookmarkToDelete = null }) { Text("Cancel", color = Color.White) } },
+            containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
         )
     }
 
-    Popup(
-        alignment = Alignment.TopStart,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
-    ) {
+    Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
-                    Spacer(Modifier.width(4.dp))
-                    Text("Bookmarks", color = Color.White, fontSize = 18.sp)
+                    Spacer(Modifier.width(4.dp)); Text("Bookmarks", color = Color.White, fontSize = 18.sp)
                     if (bookmarks.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${bookmarks.size})", color = Color.Gray, fontSize = 14.sp) }
                 }
-
                 if (bookmarks.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No bookmarks", color = Color.Gray, fontSize = 16.sp) }
                 } else {
@@ -1501,19 +1461,8 @@ fun BookmarksUI(
                             val domain = getDomainName(item.url)
                             LaunchedEffect(item.url) { loadFavicon(domain) }
                             val fav = faviconBitmaps[domain]
-
-                            Surface(
-                                Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
-                                color = Color.Transparent
-                            ) {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(12.dp)
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = ripple(color = Color.Gray)
-                                        ) { onOpenUrl(item.url); onDismiss() },
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                            Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                                Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
                                     if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
                                     else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
                                     Spacer(Modifier.width(10.dp))
@@ -1532,37 +1481,22 @@ fun BookmarksUI(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// ── LOGCAT UI ────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
 @Composable
 fun LogcatUI(logLines: List<String>, onClear: () -> Unit, onDismiss: () -> Unit) {
     val listState = rememberLazyListState()
     LaunchedEffect(logLines.size) { if (logLines.isNotEmpty()) listState.animateScrollToItem(logLines.size - 1) }
-
     Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
                 Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp, top = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton({ onDismiss() }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
                     Spacer(Modifier.width(4.dp)); Text("Logcat", color = Color.White, fontSize = 18.sp)
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { onClear() }) { Text("Clear", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp) }
+                    Spacer(Modifier.weight(1f)); TextButton(onClick = { onClear() }) { Text("Clear", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp) }
                 }
-                if (logLines.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No logs yet.", color = Color.Gray, fontSize = 14.sp) }
-                } else {
-                    LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(logLines) { line ->
-                            val lineColor = when {
-                                line.contains("Error") || line.contains("FAILED") || line.contains("error") -> Color.Red
-                                line.contains("Import complete") -> Color(0xFF4CAF50)
-                                line.contains("Export") || line.contains("Import") -> Color(0xFFFFA500)
-                                else -> Color.White
-                            }
-                            Text(line, color = lineColor.copy(alpha = 0.9f), fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, modifier = Modifier.padding(vertical = 2.dp))
-                        }
+                if (logLines.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No logs yet.", color = Color.Gray, fontSize = 14.sp) }
+                else LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                    items(logLines) { line ->
+                        Text(line, color = when { line.contains("Error") || line.contains("FAILED") -> Color.Red; line.contains("Import complete") -> Color(0xFF4CAF50); line.contains("Export") || line.contains("Import") -> Color(0xFFFFA500); else -> Color.White }, fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, modifier = Modifier.padding(vertical = 2.dp))
                     }
                 }
             }
@@ -1570,64 +1504,21 @@ fun LogcatUI(logLines: List<String>, onClear: () -> Unit, onDismiss: () -> Unit)
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// ── SETTINGS ─────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
 @Composable
 fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsApplied: () -> Unit) {
     var js by remember { mutableStateOf(prefs.getBoolean("javascript.enabled", true)) }
     var tp by remember { mutableStateOf(prefs.getBoolean("privacy.trackingprotection.enabled", false)) }
     var cb by remember { mutableIntStateOf(prefs.getInt("network.cookie.cookieBehavior", 0)) }
     var am by remember { mutableStateOf(prefs.getBoolean("media.autoplay.enabled", true)) }
-    val apply = {
-        prefs.edit().putBoolean("javascript.enabled", js).putBoolean("privacy.trackingprotection.enabled", tp).putInt("network.cookie.cookieBehavior", cb).putBoolean("media.autoplay.enabled", am).apply()
-        onSettingsApplied(); onDismiss()
-    }
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
-        text = {
-            Column {
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
-                        .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape)
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("JavaScript", color = Color.White, fontSize = 14.sp)
-                    Switch(checked = js, onCheckedChange = { js = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
-                }
-
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
-                        .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape)
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Tracking Protection", color = Color.White, fontSize = 14.sp)
-                    Switch(checked = tp, onCheckedChange = { tp = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
-                }
-
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp)
-                        .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape)
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Autoplay Media", color = Color.White, fontSize = 14.sp)
-                    Switch(checked = am, onCheckedChange = { am = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444)))
-                }
-
-                Spacer(Modifier.height(12.dp))
-                Text("Cookie Behavior", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp))
-                CookieBehaviorSelector(cb) { cb = it }
-            }
-        },
-        confirmButton = { TextButton(apply) { Text("OK", color = Color.White) } },
+        onDismissRequest = onDismiss, title = { Text("Settings", color = Color.White, fontSize = 20.sp) },
+        text = { Column {
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("JavaScript", color = Color.White, fontSize = 14.sp); Switch(checked = js, onCheckedChange = { js = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444))) }
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Tracking Protection", color = Color.White, fontSize = 14.sp); Switch(checked = tp, onCheckedChange = { tp = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444))) }
+            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Autoplay Media", color = Color.White, fontSize = 14.sp); Switch(checked = am, onCheckedChange = { am = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = Color(0xFF444444), uncheckedThumbColor = Color.White, uncheckedTrackColor = Color(0xFF444444))) }
+            Spacer(Modifier.height(12.dp)); Text("Cookie Behavior", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(bottom = 4.dp)); CookieBehaviorSelector(cb) { cb = it }
+        } },
+        confirmButton = { TextButton({ prefs.edit().putBoolean("javascript.enabled", js).putBoolean("privacy.trackingprotection.enabled", tp).putInt("network.cookie.cookieBehavior", cb).putBoolean("media.autoplay.enabled", am).apply(); onSettingsApplied(); onDismiss() }) { Text("OK", color = Color.White) } },
         dismissButton = { TextButton(onDismiss) { Text("Cancel", color = Color.White) } },
         containerColor = Color(0xFF1E1E1E), titleContentColor = Color.White, textContentColor = Color.White, shape = RectangleShape, tonalElevation = 0.dp
     )
@@ -1637,42 +1528,17 @@ fun SettingsDialog(prefs: SharedPreferences, onDismiss: () -> Unit, onSettingsAp
 @Composable
 fun CookieBehaviorSelector(current: Int, onChange: (Int) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    val options = listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2)
-    val st = options.firstOrNull { it.second == current }?.first ?: "Accept all"
     Box {
-        OutlinedTextField(
-            value = st, onValueChange = {}, readOnly = true,
-            trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                .border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape),
-            textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-            shape = RectangleShape,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color.White,
-                unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
-                focusedContainerColor = Color(0xFF1E1E1E),
-                unfocusedContainerColor = Color(0xFF1E1E1E)
-            )
-        )
+        OutlinedTextField(value = listOf("Accept all", "Reject all", "Only from visited").getOrElse(current) { "Accept all" }, onValueChange = {}, readOnly = true, trailingIcon = { Icon(Icons.Default.Close, null, tint = Color.White) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).border(1.dp, Color.White.copy(alpha = 0.3f), RectangleShape), textStyle = TextStyle(color = Color.White, fontSize = 14.sp), shape = RectangleShape, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Color.White, unfocusedBorderColor = Color.White.copy(alpha = 0.3f), focusedContainerColor = Color(0xFF1E1E1E), unfocusedContainerColor = Color(0xFF1E1E1E)))
         Box(Modifier.matchParentSize().clickable { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, modifier = Modifier.border(1.dp, Color.White, RectangleShape), containerColor = Color(0xFF1E1E1E), shape = RectangleShape) {
-            options.forEach { (label, value) -> DropdownMenuItem(text = { Text(text = label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
+            listOf("Accept all" to 0, "Reject all" to 1, "Only from visited" to 2).forEach { (label, value) -> DropdownMenuItem(text = { Text(label, color = Color.White) }, onClick = { onChange(value); expanded = false }) }
         }
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// ── HISTORY UI ───────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
 @Composable
-fun HistoryUI(
-    history: List<HistoryItem>,
-    onDismiss: () -> Unit,
-    onOpenUrl: (String) -> Unit,
-    faviconBitmaps: Map<String, Bitmap?>,
-    loadFavicon: (String) -> Unit
-) {
+fun HistoryUI(history: List<HistoryItem>, onDismiss: () -> Unit, onOpenUrl: (String) -> Unit, faviconBitmaps: Map<String, Bitmap?>, loadFavicon: (String) -> Unit) {
     Popup(alignment = Alignment.TopStart, onDismissRequest = onDismiss, properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1E1E1E)), color = Color(0xFF1E1E1E)) {
             Column(Modifier.fillMaxSize()) {
@@ -1681,34 +1547,15 @@ fun HistoryUI(
                     Spacer(Modifier.width(4.dp)); Text("History", color = Color.White, fontSize = 18.sp)
                     if (history.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Text("(${history.size})", color = Color.Gray, fontSize = 14.sp) }
                 }
-                if (history.isEmpty()) {
-                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No history", color = Color.Gray, fontSize = 16.sp) }
-                } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(history.reversed()) { item ->
-                            val domain = getDomainName(item.url)
-                            LaunchedEffect(item.url) { loadFavicon(domain) }
-                            val fav = faviconBitmaps[domain]
-                            Surface(
-                                Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape),
-                                color = Color.Transparent
-                            ) {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(12.dp)
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = ripple(color = Color.Gray)
-                                        ) { onOpenUrl(item.url); onDismiss() },
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
-                                    else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(item.url, color = Color.Gray.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                }
+                if (history.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("No history", color = Color.Gray, fontSize = 16.sp) }
+                else LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
+                    items(history.reversed()) { item ->
+                        val domain = getDomainName(item.url); LaunchedEffect(item.url) { loadFavicon(domain) }; val fav = faviconBitmaps[domain]
+                        Surface(Modifier.fillMaxWidth().padding(vertical = 2.dp).border(0.5.dp, Color.DarkGray, RectangleShape), color = Color.Transparent) {
+                            Row(Modifier.fillMaxWidth().padding(12.dp).clickable { onOpenUrl(item.url); onDismiss() }, verticalAlignment = Alignment.CenterVertically) {
+                                if (fav != null) Image(fav.asImageBitmap(), domain, Modifier.size(20.dp).clip(CircleShape), contentScale = ContentScale.Fit)
+                                else Box(Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                                Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text(item.title.ifBlank { item.url }, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(item.url, color = Color.Gray.copy(alpha = 0.7f), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             }
                         }
                     }
@@ -1718,77 +1565,32 @@ fun HistoryUI(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// ── COMPOSABLE HELPERS ────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════
-
 @Composable
 fun AllGroupChip(isSelected: Boolean, tabCount: Int, onClick: () -> Unit) {
-    val bg = if (isSelected) Color.White else Color.Transparent
-    val fg = if (isSelected) Color.Black else Color.White
-    val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(
-        Modifier.padding(vertical = 4.dp).width(52.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = ripple(color = Color.Gray)
-            ) { onClick() }
-            .border(0.5.dp, borderColor, RectangleShape),
-        color = bg
-    ) {
-        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("All", color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(2.dp))
-            Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
-        }
+    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, if (isSelected) Color.White else Color.White.copy(alpha = 0.2f), RectangleShape), color = if (isSelected) Color.White else Color.Transparent) {
+        Column(Modifier.padding(6.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text("All", color = if (isSelected) Color.Black else Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(2.dp)); Box(Modifier.background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = if (isSelected) Color.Black else Color.White, fontSize = 9.sp) } }
     }
 }
 
 @Composable
 fun SidebarGroupChip(domain: String, isSelected: Boolean, tabCount: Int, onClick: () -> Unit, favicon: Bitmap?, onAppear: () -> Unit, isBlinking: Boolean, isPinned: Boolean) {
     LaunchedEffect(domain) { onAppear() }
-    val blinkAlpha = if (isBlinking) {
-        val t = rememberInfiniteTransition(label = "blink_$domain")
-        t.animateFloat(0.2f, 0.5f, infiniteRepeatable(tween(400), RepeatMode.Reverse), label = "blinkV")
-    } else null
-    val bgAlpha = if (isBlinking && blinkAlpha != null) blinkAlpha.value else if (isSelected) 1f else 0f
-    val bg = Color.White.copy(alpha = bgAlpha)
-    val fg = if (isSelected) Color.Black else Color.White
-    val borderColor = if (isSelected) Color.White else Color.White.copy(alpha = 0.2f)
-    Surface(
-        Modifier.padding(vertical = 4.dp).width(52.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = ripple(color = Color.Gray)
-            ) { onClick() }
-            .border(0.5.dp, borderColor, RectangleShape),
-        color = bg
-    ) {
+    val bg = if (isSelected) Color.White else Color.Transparent
+    Surface(Modifier.padding(vertical = 4.dp).width(52.dp).clickable { onClick() }.border(0.5.dp, if (isSelected) Color.White else Color.White.copy(alpha = 0.2f), RectangleShape), color = bg) {
         Box(Modifier.padding(6.dp)) {
-            if (isPinned) Icon(Icons.Default.PushPin, "Pinned", tint = fg, modifier = Modifier.size(12.dp).align(Alignment.TopStart))
-            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Spacer(Modifier.height(4.dp))
-                if (favicon != null) Image(favicon.asImageBitmap(), domain, Modifier.size(24.dp).clip(CircleShape), contentScale = ContentScale.Fit)
-                else Box(Modifier.size(24.dp).clip(CircleShape).background(if (isSelected) Color.LightGray else Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-            }
-            Box(Modifier.align(Alignment.BottomEnd).background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = fg, fontSize = 9.sp) }
+            if (isPinned) Icon(Icons.Default.PushPin, "Pinned", tint = if (isSelected) Color.Black else Color.White, modifier = Modifier.size(12.dp).align(Alignment.TopStart))
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) { Spacer(Modifier.height(4.dp)); if (favicon != null) Image(favicon.asImageBitmap(), domain, Modifier.size(24.dp).clip(CircleShape), contentScale = ContentScale.Fit) else Box(Modifier.size(24.dp).clip(CircleShape).background(if (isSelected) Color.LightGray else Color.DarkGray), contentAlignment = Alignment.Center) { Text(domain.take(1).uppercase(), color = if (isSelected) Color.Black else Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) } }
+            Box(Modifier.align(Alignment.BottomEnd).background(if (isSelected) Color.LightGray else Color.DarkGray).padding(horizontal = 4.dp, vertical = 1.dp)) { Text(tabCount.toString(), color = if (isSelected) Color.Black else Color.White, fontSize = 9.sp) }
         }
     }
 }
 
 @Composable
 fun ContextMenuItem(text: String, onClick: () -> Unit) {
-    Box(
-        Modifier.fillMaxWidth()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = ripple(color = Color.Gray),
-                onClick = onClick
-            )
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) { Text(text, color = Color.White, fontSize = 16.sp) }
+    Box(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)) { Text(text, color = Color.White, fontSize = 16.sp) }
 }
 
 // END OF PART 10/10
 // END OF FILE - Grey Browser V3.0
 // ═══════════════════════════════════════════════════════════════════
+
