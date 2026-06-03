@@ -107,9 +107,10 @@ fun GreyBrowser() {
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.2f)))
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (isBrowsing && session != null) {
+            val currentSession = session
+            if (isBrowsing && currentSession != null) {
                 AndroidView(
-                    factory = { ctx -> GeckoView(ctx).apply { setSession(session) } },
+                    factory = { ctx -> GeckoView(ctx).apply { setSession(currentSession) } },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
