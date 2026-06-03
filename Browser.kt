@@ -83,9 +83,6 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -135,7 +132,7 @@ fun GreyBrowser() {
     var isUrlFocused by remember { mutableStateOf(false) }
     var showTabManager by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
-    var showFilters by remember { mutableStateOf(false) }
+    var showExtensions by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val history = remember { mutableStateListOf<HistoryItem>() }
     var lastActiveUrl by remember { mutableStateOf("") }
@@ -153,6 +150,7 @@ fun GreyBrowser() {
     }
 
     LaunchedEffect(Unit) {
+        installExtensions(runtime)
         val data = importBackup()
         history.addAll(data.history)
         lastActiveUrl = data.lastActiveUrl
@@ -168,10 +166,6 @@ fun GreyBrowser() {
             val idx = tabs.indexOfFirst { it.url == lastActiveUrl }
             if (idx >= 0) currentTabIndex = idx
         }
-    }
-
-    LaunchedEffect(Unit) {
-        installUBlockOrigin(runtime)
     }
 
     LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
@@ -434,8 +428,8 @@ fun GreyBrowser() {
                         onClick = { showMenu = false; showHistory = true }
                     )
                     DropdownMenuItem(
-                        text = { Text("Filters", color = Color.White) },
-                        onClick = { showMenu = false; showFilters = true }
+                        text = { Text("Extensions", color = Color.White) },
+                        onClick = { showMenu = false; showExtensions = true }
                     )
                 }
             }
@@ -608,11 +602,11 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Filters ──────────────────────────────────────
-    if (showFilters) {
-        FiltersUI(
+    // ── Extensions ───────────────────────────────────
+    if (showExtensions) {
+        ExtensionsUI(
             runtime = runtime,
-            onDismiss = { showFilters = false }
+            onDismiss = { showExtensions = false }
         )
     }
 }
@@ -699,59 +693,91 @@ fun exportBackup(
 //PART 3 END
 
 //PART 4 START
-data class FilterInfo(
-    val name: String,
+data class ExtensionInfo(
+    val id: String = "",
+    val name: String = "",
     val enabled: Boolean = true,
-    val lastUpdated: Long = System.currentTimeMillis()
+    val installedAt: Long = System.currentTimeMillis()
 )
 
 private val EXTENSION_DIR = File(Environment.getExternalStorageDirectory(), "Grey/Extensions")
-private val UBLOCK_XPI = File(EXTENSION_DIR, "ublock_origin.xpi")
 
-suspend fun installUBlockOrigin(runtime: GeckoRuntime) = withContext(Dispatchers.IO) {
+suspend fun installExtensions(runtime: GeckoRuntime) = withContext(Dispatchers.IO) {
     try {
-        if (!EXTENSION_DIR.exists()) EXTENSION_DIR.mkdirs()
-        
-        if (UBLOCK_XPI.exists() && UBLOCK_XPI.length() > 1000) {
-            android.util.Log.d("GreyBrowser", "Installing uBlock from: ${UBLOCK_XPI.absolutePath}")
-            val uri = UBLOCK_XPI.toURI().toString()
-            
+        if (!EXTENSION_DIR.exists()) {
+            EXTENSION_DIR.mkdirs()
+            return@withContext
+        }
+
+        val xpiFiles = EXTENSION_DIR.listFiles { file -> file.extension == "xpi" }
+        if (xpiFiles == null || xpiFiles.isEmpty()) {
+            android.util.Log.d("GreyBrowser", "No XPI files found in ${EXTENSION_DIR.absolutePath}")
+            return@withContext
+        }
+
+        for (xpi in xpiFiles) {
+            if (xpi.length() < 1000) {
+                android.util.Log.d("GreyBrowser", "Skipping small file: ${xpi.name}")
+                continue
+            }
+            android.util.Log.d("GreyBrowser", "Installing: ${xpi.name} (${xpi.length()} bytes)")
+            val uri = xpi.toURI().toString()
+
             runtime.webExtensionController.install(uri).then<Any>(
                 { extension ->
-                    android.util.Log.d("GreyBrowser", "Extension install SUCCESS: ${extension?.id}")
+                    android.util.Log.d("GreyBrowser", "Install SUCCESS: ${extension?.id} - ${extension?.metaData}")
                     null
                 },
                 { error ->
-                    android.util.Log.e("GreyBrowser", "Extension install FAILED: ${error?.message}", error)
+                    android.util.Log.e("GreyBrowser", "Install FAILED for ${xpi.name}: ${error?.message}", error)
                     null
                 }
             )
-        } else {
-            android.util.Log.d("GreyBrowser", "No XPI found at: ${UBLOCK_XPI.absolutePath}")
         }
     } catch (e: Exception) {
-        android.util.Log.e("GreyBrowser", "Failed to install extension", e)
+        android.util.Log.e("GreyBrowser", "Failed to install extensions", e)
     }
+}
+
+fun getInstalledExtensions(runtime: GeckoRuntime, callback: (List<ExtensionInfo>) -> Unit) {
+    runtime.webExtensionController.list().then<Any>(
+        { extensions ->
+            val list = mutableListOf<ExtensionInfo>()
+            extensions?.forEach { ext ->
+                if (ext != null) {
+                    list.add(ExtensionInfo(
+                        id = ext.id ?: "",
+                        name = ext.metaData?.name ?: ext.id ?: "Unknown"
+                    ))
+                }
+            }
+            callback(list)
+            null
+        },
+        { error ->
+            android.util.Log.e("GreyBrowser", "Failed to list extensions: ${error?.message}")
+            callback(emptyList())
+            null
+        }
+    )
 }
 //PART 4 END
 
 //PART 5 START
 @Composable
-fun FiltersUI(
+fun ExtensionsUI(
     runtime: GeckoRuntime,
     onDismiss: () -> Unit
 ) {
-    var filterInfo by remember {
-        mutableStateOf(
-            FilterInfo(
-                name = "uBlock Origin",
-                url = UBLOCK_DOWNLOAD_URL,
-                enabled = UBLOCK_XPI.exists(),
-                lastUpdated = if (UBLOCK_XPI.exists()) UBLOCK_XPI.lastModified() else 0
-            )
-        )
-    }
+    val extensions = remember { mutableStateListOf<ExtensionInfo>() }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        getInstalledExtensions(runtime) { list ->
+            extensions.clear()
+            extensions.addAll(list)
+        }
+    }
 
     Popup(
         alignment = Alignment.TopStart,
@@ -770,95 +796,55 @@ fun FiltersUI(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, "Close", tint = Color.White)
                     }
-                    Text("Filters", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Extensions", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text("(${extensions.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
                 }
 
-                Spacer(Modifier.height(12.dp))
-
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                        .background(Color(0xFF292625))
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(filterInfo.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                if (extensions.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("No extensions installed", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                            Spacer(Modifier.height(8.dp))
                             Text(
-                                if (filterInfo.enabled) "Active" else "Not installed",
-                                color = if (filterInfo.enabled) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.5f),
-                                fontSize = 12.sp
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Blocks ads, trackers, and malware using uBlock Origin engine.",
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = 12.sp
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        if (filterInfo.lastUpdated > 0) {
-                            Text(
-                                "Installed: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(filterInfo.lastUpdated))}",
-                                color = Color.White.copy(alpha = 0.5f),
-                                fontSize = 11.sp
+                                "Place .xpi files in /Grey/Extensions/\nand restart the app",
+                                color = Color.White.copy(alpha = 0.3f),
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp
                             )
                         }
                     }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
-                        .background(Color(0xFF292625))
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Text("How to use", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "1. uBlock Origin installs automatically on first launch.\n" +
-                            "2. If installation fails, tap Reinstall below.\n" +
-                            "3. Filter lists are managed by uBlock internally.\n" +
-                            "4. No manual filter configuration needed.",
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = 12.sp,
-                            lineHeight = 20.sp
-                        )
-                    }
-                }
-
-                Spacer(Modifier.weight(1f))
-
-                androidx.compose.material3.OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            installUBlockOrigin(runtime)
-                            filterInfo = filterInfo.copy(
-                                enabled = UBLOCK_XPI.exists(),
-                                lastUpdated = if (UBLOCK_XPI.exists()) UBLOCK_XPI.lastModified() else 0
-                            )
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                        items(extensions) { ext ->
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .background(Color(0xFF292625))
+                                    .padding(12.dp)
+                            ) {
+                                Column {
+                                    Text(
+                                        ext.name,
+                                        color = Color.White,
+                                        fontSize = 14.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (ext.id.isNotBlank()) {
+                                        Text(
+                                            ext.id,
+                                            color = Color.White.copy(alpha = 0.5f),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
                         }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
-                        .navigationBarsPadding(),
-                    shape = androidx.compose.ui.graphics.RectangleShape,
-                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.White
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
-                ) {
-                    Text("Reinstall", color = Color.White)
+                    }
                 }
             }
         }
