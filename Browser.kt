@@ -11,6 +11,22 @@
 
 // SHAPES
 // No round corners. All UI elements use sharp corners.
+
+// FULL-SCREEN OVERLAY PATTERN
+// All secondary screens (Tab Manager, History, Settings, etc.) use:
+// Popup(
+//     alignment = Alignment.TopStart,
+//     onDismissRequest = { ... },
+//     properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+// ) {
+//     Surface(Modifier.fillMaxSize().statusBarsPadding().background(WarmGrey), color = WarmGrey) {
+//         Column(Modifier.fillMaxSize()) {
+//             // Header: Close button + title + count
+//             // Content: LazyColumn
+//             // Optional bottom button
+//         }
+//     }
+// }
 //PART 0 END
 
 //PART 1 START
@@ -37,6 +53,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -53,6 +70,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -270,20 +289,14 @@ fun GreyBrowser() {
     }
 
     BackHandler {
-        when {
-            showTabManager -> showTabManager = false
-            showHistory -> showHistory = false
-            showMenu -> showMenu = false
-            currentTabIndex >= 0 -> {
-                val tab = tabs[currentTabIndex]
-                if (tab.canGoBack) {
-                    tab.session?.goBack()
-                } else {
-                    currentTabIndex = -1
-                    urlInput = ""
-                }
+        if (currentTabIndex >= 0) {
+            val tab = tabs[currentTabIndex]
+            if (tab.canGoBack) {
+                tab.session?.goBack()
+            } else {
+                currentTabIndex = -1
+                urlInput = ""
             }
-            // homepage: do nothing
         }
     }
 
@@ -363,13 +376,7 @@ fun GreyBrowser() {
 
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.2f)))
 
-        Box(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .background(Color(0xFF1A1817))
-                .clickable { focusManager.clearFocus() }
-        ) {
+        Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFF1A1817))) {
             val tab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
             val activeSession = tab?.session
             if (tab != null && !tab.isBlank && activeSession != null) {
@@ -379,75 +386,84 @@ fun GreyBrowser() {
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clickable { focusManager.clearFocus() },
+                    contentAlignment = Alignment.Center
+                ) {
                     Text("GREY", color = Color.White, fontSize = 48.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
     }
 
-    // ── Tab Manager Overlay ──────────────────────────
+    // ── Tab Manager ──────────────────────────────────
     if (showTabManager) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color(0xFF1A1817))
-                .clickable(enabled = false) { }
+        Popup(
+            alignment = Alignment.TopStart,
+            onDismissRequest = { showTabManager = false },
+            properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
         ) {
-            Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = { showTabManager = false }) {
-                        Icon(Icons.Default.Close, "Close", tint = Color.White)
+            Surface(
+                Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1A1817)),
+                color = Color(0xFF1A1817)
+            ) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = { showTabManager = false }) {
+                            Icon(Icons.Default.Close, "Close", tint = Color.White)
+                        }
+                        Text("Tabs", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.width(8.dp))
+                        Text("(${tabs.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+                        Spacer(Modifier.weight(1f))
+                        IconButton(onClick = { newTab() }) {
+                            Icon(Icons.Default.Add, "New Tab", tint = Color.White)
+                        }
                     }
-                    Text("Tabs", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.width(8.dp))
-                    Text("(${tabs.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { newTab() }) {
-                        Icon(Icons.Default.Add, "New Tab", tint = Color.White)
-                    }
-                }
 
-                if (tabs.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No open tabs", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
-                    }
-                } else {
-                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(tabs.size) { index ->
-                            val t = tabs[index]
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp)
-                                    .background(Color(0xFF292625))
-                                    .clickable { switchToTab(index) }
-                                    .padding(12.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            t.title,
-                                            color = Color.White,
-                                            fontSize = 14.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        if (!t.isBlank) {
+                    if (tabs.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No open tabs", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+                        }
+                    } else {
+                        LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                            items(tabs.size) { index ->
+                                val t = tabs[index]
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp)
+                                        .background(Color(0xFF292625))
+                                        .clickable { switchToTab(index) }
+                                        .padding(12.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
                                             Text(
-                                                stripHttps(t.url),
-                                                color = Color.White.copy(alpha = 0.5f),
-                                                fontSize = 11.sp,
+                                                t.title,
+                                                color = Color.White,
+                                                fontSize = 14.sp,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
+                                            if (!t.isBlank) {
+                                                Text(
+                                                    stripHttps(t.url),
+                                                    color = Color.White.copy(alpha = 0.5f),
+                                                    fontSize = 11.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                         }
-                                    }
-                                    IconButton(onClick = { closeTab(index) }) {
-                                        Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+                                        IconButton(onClick = { closeTab(index) }) {
+                                            Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+                                        }
                                     }
                                 }
                             }
@@ -458,60 +474,64 @@ fun GreyBrowser() {
         }
     }
 
-    // ── History Overlay ──────────────────────────────
+    // ── History ──────────────────────────────────────
     if (showHistory) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color(0xFF1A1817))
-                .clickable(enabled = false) { }
+        Popup(
+            alignment = Alignment.TopStart,
+            onDismissRequest = { showHistory = false },
+            properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
         ) {
-            Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = { showHistory = false }) {
-                        Icon(Icons.Default.Close, "Close", tint = Color.White)
+            Surface(
+                Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1A1817)),
+                color = Color(0xFF1A1817)
+            ) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = { showHistory = false }) {
+                            Icon(Icons.Default.Close, "Close", tint = Color.White)
+                        }
+                        Text("History", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.width(8.dp))
+                        Text("(${history.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
                     }
-                    Text("History", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.width(8.dp))
-                    Text("(${history.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
-                }
 
-                if (history.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No history", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
-                    }
-                } else {
-                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(history.reversed()) { item ->
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp)
-                                    .background(Color(0xFF292625))
-                                    .clickable {
-                                        loadUrl(item.url)
-                                        showHistory = false
+                    if (history.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No history", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                        }
+                    } else {
+                        LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                            items(history.reversed()) { item ->
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp)
+                                        .background(Color(0xFF292625))
+                                        .clickable {
+                                            loadUrl(item.url)
+                                            showHistory = false
+                                        }
+                                        .padding(12.dp)
+                                ) {
+                                    Column {
+                                        Text(
+                                            item.title,
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            stripHttps(item.url),
+                                            color = Color.White.copy(alpha = 0.5f),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
-                                    .padding(12.dp)
-                            ) {
-                                Column {
-                                    Text(
-                                        item.title,
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        stripHttps(item.url),
-                                        color = Color.White.copy(alpha = 0.5f),
-                                        fontSize = 11.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
                                 }
                             }
                         }
