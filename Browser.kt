@@ -716,23 +716,68 @@ suspend fun installUBlockOrigin(runtime: GeckoRuntime) = withContext(Dispatchers
         if (!EXTENSION_DIR.exists()) EXTENSION_DIR.mkdirs()
 
         if (!UBLOCK_XPI.exists()) {
+            android.util.Log.d("GreyBrowser", "Downloading uBlock XPI from: $UBLOCK_DOWNLOAD_URL")
             val url = URL(UBLOCK_DOWNLOAD_URL)
             val conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 30000
             conn.readTimeout = 30000
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
             conn.connect()
 
-            if (conn.responseCode == 200) {
+            val responseCode = conn.responseCode
+            android.util.Log.d("GreyBrowser", "Download response code: $responseCode")
+            android.util.Log.d("GreyBrowser", "Content-Type: ${conn.contentType}")
+            android.util.Log.d("GreyBrowser", "Content-Length: ${conn.contentLength}")
+
+            if (responseCode == 200) {
                 FileOutputStream(UBLOCK_XPI).use { output ->
                     conn.inputStream.copyTo(output)
                 }
                 conn.inputStream.close()
+                android.util.Log.d("GreyBrowser", "XPI downloaded: ${UBLOCK_XPI.length()} bytes")
+            } else {
+                android.util.Log.e("GreyBrowser", "Download failed with code: $responseCode")
+                // Check if redirected
+                val location = conn.getHeaderField("Location")
+                android.util.Log.d("GreyBrowser", "Redirect location: $location")
             }
             conn.disconnect()
+        } else {
+            android.util.Log.d("GreyBrowser", "XPI already exists: ${UBLOCK_XPI.length()} bytes")
         }
 
-        if (UBLOCK_XPI.exists()) {
-            runtime.webExtensionController.install(UBLOCK_XPI.toURI().toString())
+        if (UBLOCK_XPI.exists() && UBLOCK_XPI.length() > 1000) {
+            android.util.Log.d("GreyBrowser", "Installing extension from: ${UBLOCK_XPI.absolutePath}")
+            val uri = UBLOCK_XPI.toURI().toString()
+            android.util.Log.d("GreyBrowser", "Extension URI: $uri")
+
+            val result = runtime.webExtensionController.install(uri)
+            result.then(
+                { extension ->
+                    android.util.Log.d("GreyBrowser", "Extension installed successfully!")
+                    android.util.Log.d("GreyBrowser", "  ID: ${extension.id}")
+                    android.util.Log.d("GreyBrowser", "  URL: ${extension.url}")
+                    android.util.Log.d("GreyBrowser", "  MetaData: ${extension.metaData}")
+                    android.util.Log.d("GreyBrowser", "  Is built-in: ${extension.isBuiltIn}")
+                    GeckoResult.fromValue(null)
+                },
+                { error ->
+                    android.util.Log.e("GreyBrowser", "Extension install FAILED", error)
+                    android.util.Log.e("GreyBrowser", "  Error message: ${error?.message}")
+                    GeckoResult.fromValue(null)
+                }
+            )
+
+            // List all installed extensions
+            runtime.webExtensionController.list().then { extensions ->
+                android.util.Log.d("GreyBrowser", "Installed extensions count: ${extensions.size}")
+                for (ext in extensions) {
+                    android.util.Log.d("GreyBrowser", "  - ${ext.id}: ${ext.metaData?.name}")
+                }
+                GeckoResult.fromValue(null)
+            }
+        } else {
+            android.util.Log.e("GreyBrowser", "XPI file invalid or too small: ${UBLOCK_XPI.length()} bytes")
         }
     } catch (e: Exception) {
         android.util.Log.e("GreyBrowser", "Failed to install uBlock Origin", e)
