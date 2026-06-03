@@ -79,9 +79,13 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,7 +119,13 @@ fun stripHttps(url: String): String {
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
-    val runtime = remember { GeckoRuntime.create(context) }
+    val runtime = remember {
+        val settings = GeckoRuntimeSettings.Builder()
+            .extensionsWebAPIEnabled(true)
+            .aboutConfigEnabled(true)
+            .build()
+        GeckoRuntime.create(context, settings)
+    }
     val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
 
@@ -125,6 +135,7 @@ fun GreyBrowser() {
     var isUrlFocused by remember { mutableStateOf(false) }
     var showTabManager by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
+    var showFilters by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val history = remember { mutableStateListOf<HistoryItem>() }
     var lastActiveUrl by remember { mutableStateOf("") }
@@ -157,6 +168,10 @@ fun GreyBrowser() {
             val idx = tabs.indexOfFirst { it.url == lastActiveUrl }
             if (idx >= 0) currentTabIndex = idx
         }
+    }
+
+    LaunchedEffect(Unit) {
+        installUBlockOrigin(runtime)
     }
 
     LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
@@ -418,6 +433,10 @@ fun GreyBrowser() {
                         text = { Text("History", color = Color.White) },
                         onClick = { showMenu = false; showHistory = true }
                     )
+                    DropdownMenuItem(
+                        text = { Text("Filters", color = Color.White) },
+                        onClick = { showMenu = false; showFilters = true }
+                    )
                 }
             }
         }
@@ -588,6 +607,14 @@ fun GreyBrowser() {
             }
         }
     }
+
+    // ── Filters ──────────────────────────────────────
+    if (showFilters) {
+        FiltersUI(
+            runtime = runtime,
+            onDismiss = { showFilters = false }
+        )
+    }
 }
 //PART 2 END
 
@@ -670,3 +697,176 @@ fun exportBackup(
     } catch (e: Exception) { }
 }
 //PART 3 END
+
+//PART 4 START
+data class FilterInfo(
+    val name: String,
+    val url: String,
+    val enabled: Boolean = true,
+    val ruleCount: Int = 0,
+    val lastUpdated: Long = System.currentTimeMillis()
+)
+
+private val EXTENSION_DIR = File(Environment.getExternalStorageDirectory(), "Grey/Extensions")
+private val UBLOCK_XPI = File(EXTENSION_DIR, "ublock_origin.xpi")
+private const val UBLOCK_DOWNLOAD_URL = "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/addon-607454-latest.xpi"
+
+suspend fun installUBlockOrigin(runtime: GeckoRuntime) = withContext(Dispatchers.IO) {
+    try {
+        if (!EXTENSION_DIR.exists()) EXTENSION_DIR.mkdirs()
+
+        if (!UBLOCK_XPI.exists()) {
+            val url = URL(UBLOCK_DOWNLOAD_URL)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
+            conn.connect()
+
+            if (conn.responseCode == 200) {
+                FileOutputStream(UBLOCK_XPI).use { output ->
+                    conn.inputStream.copyTo(output)
+                }
+                conn.inputStream.close()
+            }
+            conn.disconnect()
+        }
+
+        if (UBLOCK_XPI.exists()) {
+            runtime.webExtensionController.install(UBLOCK_XPI.toURI().toString())
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "Failed to install uBlock Origin", e)
+    }
+}
+//PART 4 END
+
+//PART 5 START
+@Composable
+fun FiltersUI(
+    runtime: GeckoRuntime,
+    onDismiss: () -> Unit
+) {
+    var filterInfo by remember {
+        mutableStateOf(
+            FilterInfo(
+                name = "uBlock Origin",
+                url = UBLOCK_DOWNLOAD_URL,
+                enabled = UBLOCK_XPI.exists(),
+                lastUpdated = if (UBLOCK_XPI.exists()) UBLOCK_XPI.lastModified() else 0
+            )
+        )
+    }
+    val scope = rememberCoroutineScope()
+
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
+        Surface(
+            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1A1817)),
+            color = Color(0xFF1A1817)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Close", tint = Color.White)
+                    }
+                    Text("Filters", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .background(Color(0xFF292625))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(filterInfo.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                if (filterInfo.enabled) "Active" else "Not installed",
+                                color = if (filterInfo.enabled) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.5f),
+                                fontSize = 12.sp
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Blocks ads, trackers, and malware using uBlock Origin engine.",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        if (filterInfo.lastUpdated > 0) {
+                            Text(
+                                "Installed: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(filterInfo.lastUpdated))}",
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                        .background(Color(0xFF292625))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Text("How to use", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "1. uBlock Origin installs automatically on first launch.\n" +
+                            "2. If installation fails, tap Reinstall below.\n" +
+                            "3. Filter lists are managed by uBlock internally.\n" +
+                            "4. No manual filter configuration needed.",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp,
+                            lineHeight = 20.sp
+                        )
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                androidx.compose.material3.OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            installUBlockOrigin(runtime)
+                            filterInfo = filterInfo.copy(
+                                enabled = UBLOCK_XPI.exists(),
+                                lastUpdated = if (UBLOCK_XPI.exists()) UBLOCK_XPI.lastModified() else 0
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .navigationBarsPadding(),
+                    shape = androidx.compose.ui.graphics.RectangleShape,
+                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.White
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
+                ) {
+                    Text("Reinstall", color = Color.White)
+                }
+            }
+        }
+    }
+}
+//PART 5 END
