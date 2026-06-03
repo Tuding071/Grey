@@ -18,6 +18,7 @@ package com.grey.browser
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -40,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
@@ -79,6 +81,10 @@ data class HistoryItem(val url: String, val title: String)
 
 const val MAX_WARM_TABS = 15
 
+fun stripHttps(url: String): String {
+    return url.removePrefix("https://").removePrefix("http://").removePrefix("www.")
+}
+
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
@@ -88,10 +94,13 @@ fun GreyBrowser() {
     val tabs = remember { mutableStateListOf<TabState>() }
     var currentTabIndex by remember { mutableIntStateOf(-1) }
     var urlInput by remember { mutableStateOf("") }
+    var isUrlFocused by remember { mutableStateOf(false) }
     var showTabManager by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val history = remember { mutableStateListOf<HistoryItem>() }
+
+    val activity = context as? ComponentActivity
 
     fun resolveUrl(input: String): String {
         if (input.isBlank()) return input
@@ -105,6 +114,23 @@ fun GreyBrowser() {
     fun setupDelegates(tab: TabState) {
         val s = tab.session ?: return
         var historySaved = false
+
+        s.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLocationChange(
+                session: GeckoSession, url: String?,
+                perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
+                hasUserGesture: Boolean
+            ) {
+                url?.let { newUrl ->
+                    tab.url = newUrl
+                    tab.isBlank = false
+                    if (tabs.indexOf(tab) == currentTabIndex) {
+                        urlInput = if (isUrlFocused) newUrl else stripHttps(newUrl)
+                    }
+                }
+            }
+        }
+
         s.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
                 val newTitle = title ?: tab.url
@@ -118,6 +144,7 @@ fun GreyBrowser() {
                 }
             }
         }
+
         s.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 tab.url = url
@@ -126,6 +153,9 @@ fun GreyBrowser() {
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 tab.lastUpdated = System.currentTimeMillis()
+                if (tabs.indexOf(tab) == currentTabIndex) {
+                    urlInput = if (isUrlFocused) tab.url else stripHttps(tab.url)
+                }
                 if (success && !historySaved && tab.title != "New Tab"
                     && tab.url.isNotBlank() && tab.url != "about:blank") {
                     historySaved = true
@@ -178,6 +208,12 @@ fun GreyBrowser() {
 
     fun loadUrl(url: String) {
         val resolved = resolveUrl(url)
+        val existingIndex = tabs.indexOfFirst { it.url == resolved && !it.isBlank }
+        if (existingIndex >= 0 && existingIndex != currentTabIndex) {
+            tabs[existingIndex].session?.close()
+            tabs.removeAt(existingIndex)
+            if (currentTabIndex > existingIndex) currentTabIndex--
+        }
         urlInput = resolved
         if (currentTabIndex == -1) {
             val newTab = TabState()
@@ -189,13 +225,14 @@ fun GreyBrowser() {
         s.loadUri(resolved)
         tab.url = resolved
         tab.isBlank = false
+        focusManager.clearFocus()
         manageWarmTabs(currentTabIndex)
     }
 
     fun switchToTab(index: Int) {
         currentTabIndex = index
         val tab = tabs[index]
-        urlInput = if (tab.isBlank) "" else tab.url
+        urlInput = if (tab.isBlank) "" else stripHttps(tab.url)
         showTabManager = false
         manageWarmTabs(index)
     }
@@ -208,7 +245,8 @@ fun GreyBrowser() {
             urlInput = ""
         } else if (currentTabIndex == index) {
             currentTabIndex = if (index >= tabs.size) tabs.lastIndex else index
-            urlInput = if (!tabs[currentTabIndex].isBlank) tabs[currentTabIndex].url else ""
+            val tab = tabs[currentTabIndex]
+            urlInput = if (!tab.isBlank) stripHttps(tab.url) else ""
         } else if (currentTabIndex > index) {
             currentTabIndex--
         }
@@ -224,8 +262,26 @@ fun GreyBrowser() {
     LaunchedEffect(currentTabIndex) {
         if (currentTabIndex >= 0) {
             val tab = tabs[currentTabIndex]
-            urlInput = if (tab.isBlank) "" else tab.url
+            urlInput = if (tab.isBlank) "" else stripHttps(tab.url)
             manageWarmTabs(currentTabIndex)
+        }
+    }
+
+    BackHandler {
+        when {
+            showTabManager -> showTabManager = false
+            showHistory -> showHistory = false
+            showMenu -> showMenu = false
+            currentTabIndex >= 0 -> {
+                val tab = tabs[currentTabIndex]
+                if (tab.session?.canGoBack() == true) {
+                    tab.session?.goBack()
+                } else {
+                    currentTabIndex = -1
+                    urlInput = ""
+                }
+            }
+            else -> activity?.finish()
         }
     }
 
@@ -254,7 +310,7 @@ fun GreyBrowser() {
                     .background(Color(0xFF292625))
                     .padding(horizontal = 12.dp, vertical = 14.dp)
             ) {
-                if (urlInput.isEmpty()) {
+                if (urlInput.isEmpty() && !isUrlFocused) {
                     Text("Search or enter URL", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
                 }
                 BasicTextField(
@@ -268,7 +324,17 @@ fun GreyBrowser() {
                         focusManager.clearFocus()
                         if (urlInput.isNotBlank()) loadUrl(urlInput)
                     }),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { focused ->
+                            isUrlFocused = focused.isFocused
+                            if (focused.isFocused && currentTabIndex >= 0) {
+                                urlInput = tabs[currentTabIndex].url
+                            }
+                            if (!focused.isFocused && currentTabIndex >= 0) {
+                                urlInput = stripHttps(tabs[currentTabIndex].url)
+                            }
+                        }
                 )
             }
 
@@ -295,12 +361,18 @@ fun GreyBrowser() {
 
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.2f)))
 
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .background(Color(0xFF1A1817))
+                .clickable { focusManager.clearFocus() }
+        ) {
             val tab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
             if (tab != null && !tab.isBlank && tab.session != null) {
-                val s = tab.session!!
                 AndroidView(
-                    factory = { ctx -> GeckoView(ctx).apply { setSession(s) } },
+                    factory = { ctx -> GeckoView(ctx) },
+                    update = { gv -> gv.setSession(tab.session) },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -330,20 +402,9 @@ fun GreyBrowser() {
                     Text("Tabs", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.width(8.dp))
                     Text("(${tabs.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
-                }
-
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                        .background(Color(0xFF292625))
-                        .clickable { newTab() }
-                        .padding(12.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("New Tab", color = Color.White, fontSize = 14.sp)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { newTab() }) {
+                        Icon(Icons.Default.Add, "New Tab", tint = Color.White)
                     }
                 }
 
@@ -374,7 +435,7 @@ fun GreyBrowser() {
                                         )
                                         if (!t.isBlank) {
                                             Text(
-                                                t.url,
+                                                stripHttps(t.url),
                                                 color = Color.White.copy(alpha = 0.5f),
                                                 fontSize = 11.sp,
                                                 maxLines = 1,
@@ -442,7 +503,7 @@ fun GreyBrowser() {
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        item.url,
+                                        stripHttps(item.url),
                                         color = Color.White.copy(alpha = 0.5f),
                                         fontSize = 11.sp,
                                         maxLines = 1,
