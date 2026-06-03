@@ -75,6 +75,7 @@ class TabState {
     var isBlank by mutableStateOf(true)
     var isDiscarded by mutableStateOf(false)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
+    var canGoBack by mutableStateOf(false)
 }
 
 data class HistoryItem(val url: String, val title: String)
@@ -99,8 +100,6 @@ fun GreyBrowser() {
     var showHistory by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val history = remember { mutableStateListOf<HistoryItem>() }
-
-    val activity = context as? ComponentActivity
 
     fun resolveUrl(input: String): String {
         if (input.isBlank()) return input
@@ -128,6 +127,9 @@ fun GreyBrowser() {
                         urlInput = if (isUrlFocused) newUrl else stripHttps(newUrl)
                     }
                 }
+            }
+            override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
+                tab.canGoBack = canGoBack
             }
         }
 
@@ -274,14 +276,14 @@ fun GreyBrowser() {
             showMenu -> showMenu = false
             currentTabIndex >= 0 -> {
                 val tab = tabs[currentTabIndex]
-                if (tab.session?.canGoBack() == true) {
+                if (tab.canGoBack) {
                     tab.session?.goBack()
                 } else {
                     currentTabIndex = -1
                     urlInput = ""
                 }
             }
-            else -> activity?.finish()
+            // homepage: do nothing
         }
     }
 
@@ -369,10 +371,11 @@ fun GreyBrowser() {
                 .clickable { focusManager.clearFocus() }
         ) {
             val tab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
-            if (tab != null && !tab.isBlank && tab.session != null) {
+            val activeSession = tab?.session
+            if (tab != null && !tab.isBlank && activeSession != null) {
                 AndroidView(
                     factory = { ctx -> GeckoView(ctx) },
-                    update = { gv -> gv.setSession(tab.session) },
+                    update = { gv -> gv.setSession(activeSession) },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
