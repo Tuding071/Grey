@@ -737,7 +737,6 @@ suspend fun installUBlockOrigin(runtime: GeckoRuntime) = withContext(Dispatchers
                 android.util.Log.d("GreyBrowser", "XPI downloaded: ${UBLOCK_XPI.length()} bytes")
             } else {
                 android.util.Log.e("GreyBrowser", "Download failed with code: $responseCode")
-                // Check if redirected
                 val location = conn.getHeaderField("Location")
                 android.util.Log.d("GreyBrowser", "Redirect location: $location")
             }
@@ -751,31 +750,36 @@ suspend fun installUBlockOrigin(runtime: GeckoRuntime) = withContext(Dispatchers
             val uri = UBLOCK_XPI.toURI().toString()
             android.util.Log.d("GreyBrowser", "Extension URI: $uri")
 
-            val result = runtime.webExtensionController.install(uri)
-            result.then(
+            runtime.webExtensionController.install(uri).then<Any>(
                 { extension ->
-                    android.util.Log.d("GreyBrowser", "Extension installed successfully!")
-                    android.util.Log.d("GreyBrowser", "  ID: ${extension.id}")
-                    android.util.Log.d("GreyBrowser", "  URL: ${extension.url}")
-                    android.util.Log.d("GreyBrowser", "  MetaData: ${extension.metaData}")
-                    android.util.Log.d("GreyBrowser", "  Is built-in: ${extension.isBuiltIn}")
-                    GeckoResult.fromValue(null)
+                    android.util.Log.d("GreyBrowser", "Extension install SUCCESS")
+                    android.util.Log.d("GreyBrowser", "  Extension: $extension")
+                    android.util.Log.d("GreyBrowser", "  ID: ${extension?.id}")
+                    android.util.Log.d("GreyBrowser", "  MetaData: ${extension?.metaData}")
+                    android.util.Log.d("GreyBrowser", "  Location: ${extension?.location}")
+                    android.util.Log.d("GreyBrowser", "  IsBuiltIn: ${extension?.isBuiltIn}")
+                    null
                 },
                 { error ->
-                    android.util.Log.e("GreyBrowser", "Extension install FAILED", error)
-                    android.util.Log.e("GreyBrowser", "  Error message: ${error?.message}")
-                    GeckoResult.fromValue(null)
+                    android.util.Log.e("GreyBrowser", "Extension install FAILED: ${error?.message}", error)
+                    null
                 }
             )
 
-            // List all installed extensions
-            runtime.webExtensionController.list().then { extensions ->
-                android.util.Log.d("GreyBrowser", "Installed extensions count: ${extensions.size}")
-                for (ext in extensions) {
-                    android.util.Log.d("GreyBrowser", "  - ${ext.id}: ${ext.metaData?.name}")
+            runtime.webExtensionController.list().then<Any>(
+                { extensions ->
+                    val extList = extensions ?: emptyList()
+                    android.util.Log.d("GreyBrowser", "Installed extensions count: ${extList.size}")
+                    for (ext in extList) {
+                        android.util.Log.d("GreyBrowser", "  Ext: id=${ext?.id} meta=${ext?.metaData} loc=${ext?.location}")
+                    }
+                    null
+                },
+                { error ->
+                    android.util.Log.e("GreyBrowser", "Failed to list extensions: ${error?.message}")
+                    null
                 }
-                GeckoResult.fromValue(null)
-            }
+            )
         } else {
             android.util.Log.e("GreyBrowser", "XPI file invalid or too small: ${UBLOCK_XPI.length()} bytes")
         }
