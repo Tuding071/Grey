@@ -1,3 +1,4 @@
+```
 //PART 0 START
 // GREY BROWSER — CORE DIRECTIVE
 // This browser uses Mozilla GeckoView as its rendering engine.
@@ -78,14 +79,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import java.io.File
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,7 +130,6 @@ fun GreyBrowser() {
     val history = remember { mutableStateListOf<HistoryItem>() }
     var lastActiveUrl by remember { mutableStateOf("") }
 
-    // ── Permission check ──
     LaunchedEffect(Unit) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             if (!android.os.Environment.isExternalStorageManager()) {
@@ -146,9 +142,8 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Import backup on start ──
     LaunchedEffect(Unit) {
-        val data = importBackup(runtime)
+        val data = importBackup()
         history.addAll(data.history)
         lastActiveUrl = data.lastActiveUrl
         for ((url, title) in data.tabs) {
@@ -165,9 +160,8 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Export on change ──
     LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
-        exportBackup(runtime, tabs, history, lastActiveUrl, currentTabIndex, scope)
+        exportBackup(tabs, history, lastActiveUrl)
     }
 
     fun resolveUrl(input: String): String {
@@ -602,23 +596,15 @@ fun GreyBrowser() {
 data class BackupData(
     val lastActiveUrl: String,
     val tabs: List<Pair<String, String>>,
-    val history: List<HistoryItem>,
-    val cookies: Map<String, String>
+    val history: List<HistoryItem>
 )
 
 private val BACKUP_DIR = File(Environment.getExternalStorageDirectory(), "Grey")
 private val BACKUP_FILE = File(BACKUP_DIR, "Grey-backup.json")
 
-suspend fun <T> GeckoResult<T>.await(): T = suspendCoroutine { cont ->
-    this@await.then(
-        { value -> cont.resume(value) },
-        { error -> cont.resumeWithException(Throwable(error)) }
-    )
-}
-
-suspend fun importBackup(runtime: GeckoRuntime): BackupData = withContext(Dispatchers.IO) {
-    if (!BACKUP_FILE.exists()) return@withContext BackupData("", emptyList(), emptyList(), emptyMap())
-    try {
+fun importBackup(): BackupData {
+    if (!BACKUP_FILE.exists()) return BackupData("", emptyList(), emptyList())
+    return try {
         val json = BACKUP_FILE.readText()
         val root = JSONObject(json)
         val lastActiveUrl = root.optString("lastActiveUrl", "")
@@ -642,85 +628,47 @@ suspend fun importBackup(runtime: GeckoRuntime): BackupData = withContext(Dispat
                 ))
             }
         }
-        val cookies = mutableMapOf<String, String>()
-        val cookieObj = root.optJSONObject("cookies")
-        if (cookieObj != null) {
-            val keys = cookieObj.keys()
-            while (keys.hasNext()) {
-                val domain = keys.next()
-                val cookieString = cookieObj.optString(domain, "")
-                if (cookieString.isNotBlank()) {
-                    runtime.storageController.addCookie(cookieString, "https://$domain")
-                    cookies[domain] = cookieString
-                }
-            }
-        }
-        BackupData(lastActiveUrl, tabs, history, cookies)
+        BackupData(lastActiveUrl, tabs, history)
     } catch (e: Exception) {
-        BackupData("", emptyList(), emptyList(), emptyMap())
+        BackupData("", emptyList(), emptyList())
     }
 }
 
-suspend fun exportBackup(
-    runtime: GeckoRuntime,
+fun exportBackup(
     tabs: List<TabState>,
     history: List<HistoryItem>,
-    lastActiveUrl: String,
-    currentTabIndex: Int,
-    scope: kotlinx.coroutines.CoroutineScope
+    lastActiveUrl: String
 ) {
-    scope.launch(Dispatchers.IO) {
-        try {
-            if (!BACKUP_DIR.exists()) BACKUP_DIR.mkdirs()
-            val root = JSONObject()
-            root.put("lastActiveUrl", lastActiveUrl)
+    try {
+        if (!BACKUP_DIR.exists()) BACKUP_DIR.mkdirs()
+        val root = JSONObject()
+        root.put("lastActiveUrl", lastActiveUrl)
 
-            val tabsArr = JSONArray()
-            for (tab in tabs) {
-                if (!tab.isBlank) {
-                    val obj = JSONObject()
-                    obj.put("url", tab.url)
-                    obj.put("title", tab.title)
-                    tabsArr.put(obj)
-                }
-            }
-            root.put("tabs", tabsArr)
-
-            val histArr = JSONArray()
-            for (h in history) {
+        val tabsArr = JSONArray()
+        for (tab in tabs) {
+            if (!tab.isBlank) {
                 val obj = JSONObject()
-                obj.put("url", h.url)
-                obj.put("title", h.title)
-                obj.put("timestamp", h.timestamp)
-                histArr.put(obj)
+                obj.put("url", tab.url)
+                obj.put("title", tab.title)
+                tabsArr.put(obj)
             }
-            root.put("history", histArr)
+        }
+        root.put("tabs", tabsArr)
 
-            val cookieObj = JSONObject()
-            val domains = (history.map { getDomain(it.url) } + tabs.map { getDomain(it.url) }).distinct()
-            for (domain in domains) {
-                if (domain.isBlank()) continue
-                try {
-                    val cookies = runtime.storageController.getCookies("https://$domain").await()
-                    if (cookies.isNotEmpty()) {
-                        cookieObj.put(domain, cookies.joinToString("; "))
-                    }
-                } catch (e: Exception) { }
-            }
-            root.put("cookies", cookieObj)
+        val histArr = JSONArray()
+        for (h in history) {
+            val obj = JSONObject()
+            obj.put("url", h.url)
+            obj.put("title", h.title)
+            obj.put("timestamp", h.timestamp)
+            histArr.put(obj)
+        }
+        root.put("history", histArr)
 
-            val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
-            tempFile.writeText(root.toString(2))
-            tempFile.renameTo(BACKUP_FILE)
-        } catch (e: Exception) { }
-    }
-}
-
-private fun getDomain(url: String): String {
-    if (url.isBlank()) return ""
-    return try {
-        val host = android.net.Uri.parse(url).host ?: return ""
-        host.removePrefix("www.")
-    } catch (e: Exception) { "" }
+        val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
+        tempFile.writeText(root.toString(2))
+        tempFile.renameTo(BACKUP_FILE)
+    } catch (e: Exception) { }
 }
 //PART 3 END
+```
