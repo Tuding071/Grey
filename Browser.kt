@@ -75,6 +75,8 @@ class TabState {
 
 data class HistoryItem(val url: String, val title: String)
 
+const val MAX_WARM_TABS = 15
+
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
@@ -117,12 +119,29 @@ fun GreyBrowser() {
         }
     }
 
-    fun ensureSession(tab: TabState) {
+    fun ensureSession(tab: TabState): GeckoSession {
         if (tab.session == null) {
             val s = GeckoSession()
             s.open(runtime)
             tab.session = s
             setupDelegates(tab)
+        }
+        return tab.session!!
+    }
+
+    fun manageWarmTabs(activeIndex: Int) {
+        tabs.forEachIndexed { i, tab ->
+            tab.session?.setActive(i == activeIndex)
+        }
+        val warmCount = tabs.count { it.session != null && tabs.indexOf(it) != activeIndex }
+        if (warmCount > MAX_WARM_TABS) {
+            val toMakeCold = tabs
+                .filter { it.session != null && tabs.indexOf(it) != activeIndex }
+                .take(warmCount - MAX_WARM_TABS)
+            for (tab in toMakeCold) {
+                tab.session?.close()
+                tab.session = null
+            }
         }
     }
 
@@ -131,15 +150,15 @@ fun GreyBrowser() {
         urlInput = resolved
         if (currentTabIndex == -1) {
             val newTab = TabState()
-            ensureSession(newTab)
             tabs.add(newTab)
             currentTabIndex = tabs.lastIndex
         }
         val tab = tabs[currentTabIndex]
-        ensureSession(tab)
-        tab.session?.loadUri(resolved)
+        val s = ensureSession(tab)
+        s.loadUri(resolved)
         tab.url = resolved
         tab.isBlank = false
+        manageWarmTabs(currentTabIndex)
     }
 
     fun switchToTab(index: Int) {
@@ -147,6 +166,8 @@ fun GreyBrowser() {
         val tab = tabs[index]
         urlInput = if (tab.isBlank) "" else tab.url
         showTabManager = false
+        ensureSession(tab)
+        manageWarmTabs(index)
     }
 
     fun closeTab(index: Int) {
@@ -165,6 +186,7 @@ fun GreyBrowser() {
                 currentTabIndex--
             }
         }
+        manageWarmTabs(currentTabIndex)
     }
 
     fun newTab() {
@@ -179,17 +201,15 @@ fun GreyBrowser() {
             val tab = tabs[currentTabIndex]
             urlInput = if (tab.isBlank) "" else tab.url
             ensureSession(tab)
+            manageWarmTabs(currentTabIndex)
         }
     }
 
-    // ── Main UI ──────────────────────────────────────
     Column(Modifier.fillMaxSize().background(Color(0xFF1A1817))) {
-        // Top Bar
         Row(
             Modifier.fillMaxWidth().padding(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Tab Manager Box
             Box(
                 Modifier
                     .background(Color(0xFF292625))
@@ -203,7 +223,6 @@ fun GreyBrowser() {
                 }
             }
 
-            // URL Field
             Box(
                 Modifier
                     .weight(1f)
@@ -229,12 +248,10 @@ fun GreyBrowser() {
                 )
             }
 
-            // New Tab Button
             IconButton(onClick = { newTab() }) {
                 Icon(Icons.Default.Add, "New Tab", tint = Color.White)
             }
 
-            // Menu Button
             Box {
                 IconButton(onClick = { showMenu = true }) {
                     Icon(Icons.Default.MoreVert, "Menu", tint = Color.White)
@@ -252,14 +269,12 @@ fun GreyBrowser() {
             }
         }
 
-        // Separator
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.2f)))
 
-        // Content
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val tab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
             if (tab != null && !tab.isBlank && tab.session != null) {
-                val s = tab.session
+                val s = tab.session!!
                 AndroidView(
                     factory = { ctx -> GeckoView(ctx).apply { setSession(s) } },
                     modifier = Modifier.fillMaxSize()
@@ -272,7 +287,6 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Tab Manager Overlay ──────────────────────────
     if (showTabManager) {
         Box(
             Modifier
@@ -280,7 +294,6 @@ fun GreyBrowser() {
                 .background(Color(0xFF1A1817))
         ) {
             Column(Modifier.fillMaxSize()) {
-                // Header
                 Row(
                     Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -293,7 +306,6 @@ fun GreyBrowser() {
                     Text("(${tabs.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
                 }
 
-                // New Tab item
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -309,7 +321,6 @@ fun GreyBrowser() {
                     }
                 }
 
-                // Tab list
                 LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
                     items(tabs.size) { index ->
                         val t = tabs[index]
@@ -351,7 +362,6 @@ fun GreyBrowser() {
         }
     }
 
-    // ── History Overlay ──────────────────────────────
     if (showHistory) {
         Box(
             Modifier
