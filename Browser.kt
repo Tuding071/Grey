@@ -33,6 +33,7 @@
 package com.grey.browser
 
 import android.os.Bundle
+import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -72,9 +73,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
+import java.io.File
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -97,7 +108,7 @@ class TabState {
     var canGoBack by mutableStateOf(false)
 }
 
-data class HistoryItem(val url: String, val title: String)
+data class HistoryItem(val url: String, val title: String, val timestamp: Long = System.currentTimeMillis())
 
 const val MAX_WARM_TABS = 15
 
@@ -110,6 +121,7 @@ fun GreyBrowser() {
     val context = LocalContext.current
     val runtime = remember { GeckoRuntime.create(context) }
     val focusManager = LocalFocusManager.current
+    val scope = rememberCoroutineScope()
 
     val tabs = remember { mutableStateListOf<TabState>() }
     var currentTabIndex by remember { mutableIntStateOf(-1) }
@@ -119,6 +131,44 @@ fun GreyBrowser() {
     var showHistory by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val history = remember { mutableStateListOf<HistoryItem>() }
+    var lastActiveUrl by remember { mutableStateOf("") }
+
+    // ── Permission check ──
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            if (!android.os.Environment.isExternalStorageManager()) {
+                val intent = android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    android.net.Uri.parse("package:${context.packageName}")
+                )
+                context.startActivity(intent)
+            }
+        }
+    }
+
+    // ── Import backup on start ──
+    LaunchedEffect(Unit) {
+        val data = importBackup(runtime)
+        history.addAll(data.history)
+        lastActiveUrl = data.lastActiveUrl
+        for ((url, title) in data.tabs) {
+            tabs.add(TabState().apply {
+                this.url = url
+                this.title = title
+                this.isBlank = false
+                this.isDiscarded = true
+            })
+        }
+        if (tabs.isNotEmpty() && lastActiveUrl.isNotBlank()) {
+            val idx = tabs.indexOfFirst { it.url == lastActiveUrl }
+            if (idx >= 0) currentTabIndex = idx
+        }
+    }
+
+    // ── Export on change ──
+    LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
+        exportBackup(runtime, tabs, history, lastActiveUrl, currentTabIndex, scope)
+    }
 
     fun resolveUrl(input: String): String {
         if (input.isBlank()) return input
@@ -144,6 +194,7 @@ fun GreyBrowser() {
                     tab.isBlank = false
                     if (tabs.indexOf(tab) == currentTabIndex) {
                         urlInput = if (isUrlFocused) newUrl else stripHttps(newUrl)
+                        lastActiveUrl = newUrl
                     }
                 }
             }
@@ -246,6 +297,7 @@ fun GreyBrowser() {
         s.loadUri(resolved)
         tab.url = resolved
         tab.isBlank = false
+        lastActiveUrl = resolved
         focusManager.clearFocus()
         manageWarmTabs(currentTabIndex)
     }
@@ -264,10 +316,12 @@ fun GreyBrowser() {
         if (tabs.isEmpty()) {
             currentTabIndex = -1
             urlInput = ""
+            lastActiveUrl = ""
         } else if (currentTabIndex == index) {
             currentTabIndex = if (index >= tabs.size) tabs.lastIndex else index
             val tab = tabs[currentTabIndex]
             urlInput = if (!tab.isBlank) stripHttps(tab.url) else ""
+            lastActiveUrl = tab.url
         } else if (currentTabIndex > index) {
             currentTabIndex--
         }
@@ -284,6 +338,7 @@ fun GreyBrowser() {
         if (currentTabIndex >= 0) {
             val tab = tabs[currentTabIndex]
             urlInput = if (tab.isBlank) "" else stripHttps(tab.url)
+            lastActiveUrl = tab.url
             manageWarmTabs(currentTabIndex)
         }
     }
@@ -542,3 +597,130 @@ fun GreyBrowser() {
     }
 }
 //PART 2 END
+
+//PART 3 START
+data class BackupData(
+    val lastActiveUrl: String,
+    val tabs: List<Pair<String, String>>,
+    val history: List<HistoryItem>,
+    val cookies: Map<String, String>
+)
+
+private val BACKUP_DIR = File(Environment.getExternalStorageDirectory(), "Grey")
+private val BACKUP_FILE = File(BACKUP_DIR, "Grey-backup.json")
+
+suspend fun <T> GeckoResult<T>.await(): T = suspendCoroutine { cont ->
+    this@await.then(
+        { value -> cont.resume(value) },
+        { error -> cont.resumeWithException(Throwable(error)) }
+    )
+}
+
+suspend fun importBackup(runtime: GeckoRuntime): BackupData = withContext(Dispatchers.IO) {
+    if (!BACKUP_FILE.exists()) return@withContext BackupData("", emptyList(), emptyList(), emptyMap())
+    try {
+        val json = BACKUP_FILE.readText()
+        val root = JSONObject(json)
+        val lastActiveUrl = root.optString("lastActiveUrl", "")
+        val tabs = mutableListOf<Pair<String, String>>()
+        val tabsArr = root.optJSONArray("tabs")
+        if (tabsArr != null) {
+            for (i in 0 until tabsArr.length()) {
+                val t = tabsArr.getJSONObject(i)
+                tabs.add(Pair(t.getString("url"), t.optString("title", "")))
+            }
+        }
+        val history = mutableListOf<HistoryItem>()
+        val histArr = root.optJSONArray("history")
+        if (histArr != null) {
+            for (i in 0 until histArr.length()) {
+                val h = histArr.getJSONObject(i)
+                history.add(HistoryItem(
+                    url = h.getString("url"),
+                    title = h.optString("title", ""),
+                    timestamp = h.optLong("timestamp", System.currentTimeMillis())
+                ))
+            }
+        }
+        val cookies = mutableMapOf<String, String>()
+        val cookieObj = root.optJSONObject("cookies")
+        if (cookieObj != null) {
+            val keys = cookieObj.keys()
+            while (keys.hasNext()) {
+                val domain = keys.next()
+                val cookieString = cookieObj.optString(domain, "")
+                if (cookieString.isNotBlank()) {
+                    runtime.storageController.addCookie(cookieString, "https://$domain")
+                    cookies[domain] = cookieString
+                }
+            }
+        }
+        BackupData(lastActiveUrl, tabs, history, cookies)
+    } catch (e: Exception) {
+        BackupData("", emptyList(), emptyList(), emptyMap())
+    }
+}
+
+suspend fun exportBackup(
+    runtime: GeckoRuntime,
+    tabs: List<TabState>,
+    history: List<HistoryItem>,
+    lastActiveUrl: String,
+    currentTabIndex: Int,
+    scope: kotlinx.coroutines.CoroutineScope
+) {
+    scope.launch(Dispatchers.IO) {
+        try {
+            if (!BACKUP_DIR.exists()) BACKUP_DIR.mkdirs()
+            val root = JSONObject()
+            root.put("lastActiveUrl", lastActiveUrl)
+
+            val tabsArr = JSONArray()
+            for (tab in tabs) {
+                if (!tab.isBlank) {
+                    val obj = JSONObject()
+                    obj.put("url", tab.url)
+                    obj.put("title", tab.title)
+                    tabsArr.put(obj)
+                }
+            }
+            root.put("tabs", tabsArr)
+
+            val histArr = JSONArray()
+            for (h in history) {
+                val obj = JSONObject()
+                obj.put("url", h.url)
+                obj.put("title", h.title)
+                obj.put("timestamp", h.timestamp)
+                histArr.put(obj)
+            }
+            root.put("history", histArr)
+
+            val cookieObj = JSONObject()
+            val domains = (history.map { getDomain(it.url) } + tabs.map { getDomain(it.url) }).distinct()
+            for (domain in domains) {
+                if (domain.isBlank()) continue
+                try {
+                    val cookies = runtime.storageController.getCookies("https://$domain").await()
+                    if (cookies.isNotEmpty()) {
+                        cookieObj.put(domain, cookies.joinToString("; "))
+                    }
+                } catch (e: Exception) { }
+            }
+            root.put("cookies", cookieObj)
+
+            val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
+            tempFile.writeText(root.toString(2))
+            tempFile.renameTo(BACKUP_FILE)
+        } catch (e: Exception) { }
+    }
+}
+
+private fun getDomain(url: String): String {
+    if (url.isBlank()) return ""
+    return try {
+        val host = android.net.Uri.parse(url).host ?: return ""
+        host.removePrefix("www.")
+    } catch (e: Exception) { "" }
+}
+//PART 3 END
