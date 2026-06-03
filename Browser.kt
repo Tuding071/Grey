@@ -21,16 +21,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
@@ -46,6 +46,8 @@ import org.mozilla.geckoview.GeckoView
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = android.graphics.Color.parseColor("#1A1817")
+        window.navigationBarColor = android.graphics.Color.parseColor("#1A1817")
         setContent { GreyBrowser() }
     }
 }
@@ -82,27 +84,34 @@ fun GreyBrowser() {
     }
 
     Column(Modifier.fillMaxSize().background(Color(0xFF1A1817))) {
-        OutlinedTextField(
-            value = urlInput,
-            onValueChange = { urlInput = it },
-            placeholder = { Text("Search or enter URL", color = Color.White.copy(alpha = 0.5f)) },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            textStyle = TextStyle(Color.White, 16.sp),
-            shape = RectangleShape,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-            keyboardActions = KeyboardActions(onGo = {
-                focusManager.clearFocus()
-                if (urlInput.isNotBlank()) loadUrl(urlInput)
-            }),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = Color(0xFF292625),
-                unfocusedContainerColor = Color(0xFF292625),
-                focusedBorderColor = Color.White,
-                unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
-                cursorColor = Color.White
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+                .background(Color(0xFF292625))
+                .padding(horizontal = 12.dp, vertical = 14.dp)
+        ) {
+            if (urlInput.isEmpty()) {
+                Text(
+                    "Search or enter URL",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 16.sp
+                )
+            }
+            BasicTextField(
+                value = urlInput,
+                onValueChange = { urlInput = it },
+                singleLine = true,
+                textStyle = TextStyle(Color.White, 16.sp),
+                cursorBrush = SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = {
+                    focusManager.clearFocus()
+                    if (urlInput.isNotBlank()) loadUrl(urlInput)
+                }),
+                modifier = Modifier.fillMaxWidth()
             )
-        )
+        }
 
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.2f)))
 
