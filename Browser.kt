@@ -71,6 +71,8 @@ class TabState {
     var title by mutableStateOf("New Tab")
     var url by mutableStateOf("")
     var isBlank by mutableStateOf(true)
+    var isDiscarded by mutableStateOf(false)
+    var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
 }
 
 data class HistoryItem(val url: String, val title: String)
@@ -83,7 +85,7 @@ fun GreyBrowser() {
     val runtime = remember { GeckoRuntime.create(context) }
     val focusManager = LocalFocusManager.current
 
-    val tabs = remember { mutableStateListOf(TabState()) }
+    val tabs = remember { mutableStateListOf<TabState>() }
     var currentTabIndex by remember { mutableIntStateOf(-1) }
     var urlInput by remember { mutableStateOf("") }
     var showTabManager by remember { mutableStateOf(false) }
@@ -102,18 +104,34 @@ fun GreyBrowser() {
 
     fun setupDelegates(tab: TabState) {
         val s = tab.session ?: return
+        var historySaved = false
         s.contentDelegate = object : GeckoSession.ContentDelegate {
             override fun onTitleChange(session: GeckoSession, title: String?) {
-                tab.title = title ?: tab.url
+                val newTitle = title ?: tab.url
+                tab.title = newTitle
+                if (!historySaved && newTitle != "New Tab" && newTitle != tab.url
+                    && tab.url.isNotBlank() && tab.url != "about:blank") {
+                    historySaved = true
+                    val baseUrl = tab.url.substringBefore("#")
+                    history.removeAll { it.url.substringBefore("#") == baseUrl }
+                    history.add(HistoryItem(tab.url, newTitle))
+                }
             }
         }
         s.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 tab.url = url
                 tab.isBlank = false
-                if (url.isNotBlank() && url != "about:blank") {
-                    history.removeAll { it.url == url }
-                    history.add(HistoryItem(url, tab.title))
+                tab.lastUpdated = System.currentTimeMillis()
+            }
+            override fun onPageStop(session: GeckoSession, success: Boolean) {
+                tab.lastUpdated = System.currentTimeMillis()
+                if (success && !historySaved && tab.title != "New Tab"
+                    && tab.url.isNotBlank() && tab.url != "about:blank") {
+                    historySaved = true
+                    val baseUrl = tab.url.substringBefore("#")
+                    history.removeAll { it.url.substringBefore("#") == baseUrl }
+                    history.add(HistoryItem(tab.url, tab.title))
                 }
             }
         }
@@ -124,23 +142,36 @@ fun GreyBrowser() {
             val s = GeckoSession()
             s.open(runtime)
             tab.session = s
+            tab.isDiscarded = false
             setupDelegates(tab)
         }
         return tab.session!!
     }
 
     fun manageWarmTabs(activeIndex: Int) {
-        tabs.forEachIndexed { i, tab ->
-            tab.session?.setActive(i == activeIndex)
+        tabs.forEachIndexed { i, ts ->
+            if (i == activeIndex && ts.session == null && ts.isDiscarded) {
+                val s = GeckoSession()
+                s.open(runtime)
+                ts.session = s
+                ts.isDiscarded = false
+                s.loadUri(ts.url)
+                setupDelegates(ts)
+                ts.lastUpdated = System.currentTimeMillis()
+            }
         }
-        val warmCount = tabs.count { it.session != null && tabs.indexOf(it) != activeIndex }
-        if (warmCount > MAX_WARM_TABS) {
-            val toMakeCold = tabs
-                .filter { it.session != null && tabs.indexOf(it) != activeIndex }
-                .take(warmCount - MAX_WARM_TABS)
+        tabs.forEachIndexed { i, ts -> ts.session?.setActive(i == activeIndex) }
+        val warmTabs = tabs.filter {
+            val idx = tabs.indexOf(it)
+            !it.isDiscarded && !it.isBlank && it.session != null && idx != activeIndex
+        }
+        if (warmTabs.size > MAX_WARM_TABS) {
+            val toMakeCold = warmTabs.sortedBy { it.lastUpdated }.take(warmTabs.size - MAX_WARM_TABS)
             for (tab in toMakeCold) {
+                tab.session?.setActive(false)
                 tab.session?.close()
                 tab.session = null
+                tab.isDiscarded = true
             }
         }
     }
@@ -166,31 +197,25 @@ fun GreyBrowser() {
         val tab = tabs[index]
         urlInput = if (tab.isBlank) "" else tab.url
         showTabManager = false
-        ensureSession(tab)
         manageWarmTabs(index)
     }
 
     fun closeTab(index: Int) {
-        if (tabs.size == 1) {
-            tabs[0].session?.close()
-            tabs[0] = TabState()
+        tabs[index].session?.close()
+        tabs.removeAt(index)
+        if (tabs.isEmpty()) {
             currentTabIndex = -1
             urlInput = ""
-        } else {
-            tabs[index].session?.close()
-            tabs.removeAt(index)
-            if (currentTabIndex == index) {
-                currentTabIndex = if (index >= tabs.size) tabs.lastIndex else index
-                urlInput = if (currentTabIndex >= 0 && !tabs[currentTabIndex].isBlank) tabs[currentTabIndex].url else ""
-            } else if (currentTabIndex > index) {
-                currentTabIndex--
-            }
+        } else if (currentTabIndex == index) {
+            currentTabIndex = if (index >= tabs.size) tabs.lastIndex else index
+            urlInput = if (!tabs[currentTabIndex].isBlank) tabs[currentTabIndex].url else ""
+        } else if (currentTabIndex > index) {
+            currentTabIndex--
         }
         manageWarmTabs(currentTabIndex)
     }
 
     fun newTab() {
-        tabs.add(TabState())
         currentTabIndex = -1
         urlInput = ""
         showTabManager = false
@@ -200,7 +225,6 @@ fun GreyBrowser() {
         if (currentTabIndex >= 0) {
             val tab = tabs[currentTabIndex]
             urlInput = if (tab.isBlank) "" else tab.url
-            ensureSession(tab)
             manageWarmTabs(currentTabIndex)
         }
     }
@@ -287,11 +311,13 @@ fun GreyBrowser() {
         }
     }
 
+    // ── Tab Manager Overlay ──────────────────────────
     if (showTabManager) {
         Box(
             Modifier
                 .fillMaxSize()
                 .background(Color(0xFF1A1817))
+                .clickable(enabled = false) { }
         ) {
             Column(Modifier.fillMaxSize()) {
                 Row(
@@ -321,38 +347,44 @@ fun GreyBrowser() {
                     }
                 }
 
-                LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                    items(tabs.size) { index ->
-                        val t = tabs[index]
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 2.dp)
-                                .background(Color(0xFF292625))
-                                .clickable { switchToTab(index) }
-                                .padding(12.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        t.title,
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    if (!t.isBlank) {
+                if (tabs.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No open tabs", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                        items(tabs.size) { index ->
+                            val t = tabs[index]
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .background(Color(0xFF292625))
+                                    .clickable { switchToTab(index) }
+                                    .padding(12.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
                                         Text(
-                                            t.url,
-                                            color = Color.White.copy(alpha = 0.5f),
-                                            fontSize = 11.sp,
+                                            t.title,
+                                            color = Color.White,
+                                            fontSize = 14.sp,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
+                                        if (!t.isBlank) {
+                                            Text(
+                                                t.url,
+                                                color = Color.White.copy(alpha = 0.5f),
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
-                                }
-                                IconButton(onClick = { closeTab(index) }) {
-                                    Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+                                    IconButton(onClick = { closeTab(index) }) {
+                                        Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+                                    }
                                 }
                             }
                         }
@@ -362,11 +394,13 @@ fun GreyBrowser() {
         }
     }
 
+    // ── History Overlay ──────────────────────────────
     if (showHistory) {
         Box(
             Modifier
                 .fillMaxSize()
                 .background(Color(0xFF1A1817))
+                .clickable(enabled = false) { }
         ) {
             Column(Modifier.fillMaxSize()) {
                 Row(
