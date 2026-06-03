@@ -118,7 +118,6 @@ fun GreyBrowser() {
     val context = LocalContext.current
     val runtime = remember {
         val settings = GeckoRuntimeSettings.Builder()
-            .extensionsWebAPIEnabled(true)
             .aboutConfigEnabled(true)
             .build()
         GeckoRuntime.create(context, settings)
@@ -132,10 +131,11 @@ fun GreyBrowser() {
     var isUrlFocused by remember { mutableStateOf(false) }
     var showTabManager by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
-    var showExtensions by remember { mutableStateOf(false) }
+    var showFilters by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val history = remember { mutableStateListOf<HistoryItem>() }
     var lastActiveUrl by remember { mutableStateOf("") }
+    val filterRules = remember { mutableStateListOf<String>() }
 
     LaunchedEffect(Unit) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -150,7 +150,12 @@ fun GreyBrowser() {
     }
 
     LaunchedEffect(Unit) {
-        installExtensions(runtime)
+        withContext(Dispatchers.IO) {
+            filterRules.addAll(loadFilterRules())
+        }
+    }
+
+    LaunchedEffect(Unit) {
         val data = importBackup()
         history.addAll(data.history)
         lastActiveUrl = data.lastActiveUrl
@@ -181,6 +186,16 @@ fun GreyBrowser() {
         }
     }
 
+    fun isUrlBlocked(url: String): Boolean {
+        if (filterRules.isEmpty()) return false
+        val host = try {
+            android.net.Uri.parse(url).host?.lowercase() ?: return false
+        } catch (e: Exception) { return false }
+        return filterRules.any { rule ->
+            host == rule || host.endsWith(".$rule") || url.lowercase().contains(rule)
+        }
+    }
+
     fun setupDelegates(tab: TabState) {
         val s = tab.session ?: return
         var historySaved = false
@@ -202,6 +217,15 @@ fun GreyBrowser() {
             }
             override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
                 tab.canGoBack = canGoBack
+            }
+            override fun onLoadRequest(
+                session: GeckoSession,
+                request: GeckoSession.NavigationDelegate.LoadRequest
+            ): GeckoResult<GeckoSession.NavigationDelegate.AllowOrDeny>? {
+                if (isUrlBlocked(request.uri)) {
+                    return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.DENY)
+                }
+                return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW)
             }
         }
 
@@ -428,8 +452,8 @@ fun GreyBrowser() {
                         onClick = { showMenu = false; showHistory = true }
                     )
                     DropdownMenuItem(
-                        text = { Text("Extensions", color = Color.White) },
-                        onClick = { showMenu = false; showExtensions = true }
+                        text = { Text("Filters", color = Color.White) },
+                        onClick = { showMenu = false; showFilters = true }
                     )
                 }
             }
@@ -602,11 +626,17 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Extensions ───────────────────────────────────
-    if (showExtensions) {
-        ExtensionsUI(
-            runtime = runtime,
-            onDismiss = { showExtensions = false }
+    // ── Filters ──────────────────────────────────────
+    if (showFilters) {
+        FiltersUI(
+            filterRules = filterRules,
+            onReload = {
+                scope.launch(Dispatchers.IO) {
+                    filterRules.clear()
+                    filterRules.addAll(loadFilterRules())
+                }
+            },
+            onDismiss = { showFilters = false }
         )
     }
 }
@@ -693,89 +723,79 @@ fun exportBackup(
 //PART 3 END
 
 //PART 4 START
-data class ExtensionInfo(
-    val id: String = "",
-    val name: String = "",
-    val enabled: Boolean = true,
-    val installedAt: Long = System.currentTimeMillis()
+data class FilterFile(
+    val name: String,
+    val ruleCount: Int,
+    val enabled: Boolean = true
 )
 
-private val EXTENSION_DIR = File(Environment.getExternalStorageDirectory(), "Grey/Extensions")
+private val FILTERS_DIR = File(Environment.getExternalStorageDirectory(), "Grey/Filters")
 
-suspend fun installExtensions(runtime: GeckoRuntime) = withContext(Dispatchers.IO) {
+fun loadFilterRules(): List<String> {
+    val rules = mutableListOf<String>()
     try {
-        if (!EXTENSION_DIR.exists()) {
-            EXTENSION_DIR.mkdirs()
-            return@withContext
+        if (!FILTERS_DIR.exists()) {
+            FILTERS_DIR.mkdirs()
+            return rules
         }
-
-        val xpiFiles = EXTENSION_DIR.listFiles { file -> file.extension == "xpi" }
-        if (xpiFiles == null || xpiFiles.isEmpty()) {
-            android.util.Log.d("GreyBrowser", "No XPI files found in ${EXTENSION_DIR.absolutePath}")
-            return@withContext
-        }
-
-        for (xpi in xpiFiles) {
-            if (xpi.length() < 1000) {
-                android.util.Log.d("GreyBrowser", "Skipping small file: ${xpi.name}")
-                continue
-            }
-            android.util.Log.d("GreyBrowser", "Installing: ${xpi.name} (${xpi.length()} bytes)")
-            val uri = xpi.toURI().toString()
-
-            runtime.webExtensionController.install(uri).then<Any>(
-                { extension ->
-                    android.util.Log.d("GreyBrowser", "Install SUCCESS: ${extension?.id} - ${extension?.metaData}")
-                    null
-                },
-                { error ->
-                    android.util.Log.e("GreyBrowser", "Install FAILED for ${xpi.name}: ${error?.message}", error)
-                    null
+        val txtFiles = FILTERS_DIR.listFiles { file -> file.extension == "txt" } ?: return rules
+        for (file in txtFiles) {
+            android.util.Log.d("GreyBrowser", "Loading filter: ${file.name}")
+            file.useLines { lines ->
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
+                    if (trimmed.startsWith("||") && trimmed.endsWith("^")) {
+                        val domain = trimmed.removePrefix("||").removeSuffix("^")
+                        rules.add(domain)
+                    }
                 }
-            )
+            }
         }
+        android.util.Log.d("GreyBrowser", "Loaded ${rules.size} filter rules")
     } catch (e: Exception) {
-        android.util.Log.e("GreyBrowser", "Failed to install extensions", e)
+        android.util.Log.e("GreyBrowser", "Failed to load filters", e)
     }
+    return rules
 }
 
-fun getInstalledExtensions(runtime: GeckoRuntime, callback: (List<ExtensionInfo>) -> Unit) {
-    runtime.webExtensionController.list().then<Any>(
-        { extensions ->
-            val list = mutableListOf<ExtensionInfo>()
-            extensions?.forEach { ext ->
-                if (ext != null) {
-                    list.add(ExtensionInfo(
-                        id = ext.id ?: "",
-                        name = ext.metaData?.name ?: ext.id ?: "Unknown"
-                    ))
+fun getFilterFiles(): List<FilterFile> {
+    val files = mutableListOf<FilterFile>()
+    try {
+        if (!FILTERS_DIR.exists()) return files
+        val txtFiles = FILTERS_DIR.listFiles { file -> file.extension == "txt" } ?: return files
+        for (file in txtFiles) {
+            var count = 0
+            file.useLines { lines ->
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
+                    if (trimmed.startsWith("||") && trimmed.endsWith("^")) count++
                 }
             }
-            callback(list)
-            null
-        },
-        { error ->
-            android.util.Log.e("GreyBrowser", "Failed to list extensions: ${error?.message}")
-            callback(emptyList())
-            null
+            files.add(FilterFile(name = file.name, ruleCount = count))
         }
-    )
+    } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "Failed to list filter files", e)
+    }
+    return files
 }
 //PART 4 END
 
 //PART 5 START
 @Composable
-fun ExtensionsUI(
-    runtime: GeckoRuntime,
+fun FiltersUI(
+    filterRules: List<String>,
+    onReload: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val extensions = remember { mutableStateListOf<ExtensionInfo>() }
-    val scope = rememberCoroutineScope()
+    val filterFiles = remember { mutableStateListOf<FilterFile>() }
 
     LaunchedEffect(Unit) {
-        getInstalledExtensions(runtime) { list ->
-            extensions.clear()
-            extensions.addAll(list)
+        withContext(Dispatchers.IO) {
+            val files = getFilterFiles()
+            filterFiles.clear()
+            filterFiles.addAll(files)
         }
     }
 
@@ -796,27 +816,49 @@ fun ExtensionsUI(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, "Close", tint = Color.White)
                     }
-                    Text("Extensions", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.width(8.dp))
-                    Text("(${extensions.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+                    Text("Filters", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "${filterRules.size} rules",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 14.sp
+                    )
                 }
 
-                if (extensions.isEmpty()) {
+                Spacer(Modifier.height(8.dp))
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                        .background(Color(0xFF292625))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Text(
+                            "Place .txt files in /Grey/Filters/",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Uses EasyList format (||domain.com^).\nReload after adding new files.",
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                if (filterFiles.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("No extensions installed", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Place .xpi files in /Grey/Extensions/\nand restart the app",
-                                color = Color.White.copy(alpha = 0.3f),
-                                fontSize = 12.sp,
-                                lineHeight = 18.sp
-                            )
-                        }
+                        Text("No filter files found", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
                     }
                 } else {
                     LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(extensions) { ext ->
+                        items(filterFiles) { file ->
                             Box(
                                 Modifier
                                     .fillMaxWidth()
@@ -824,27 +866,59 @@ fun ExtensionsUI(
                                     .background(Color(0xFF292625))
                                     .padding(12.dp)
                             ) {
-                                Column {
-                                    Text(
-                                        ext.name,
-                                        color = Color.White,
-                                        fontSize = 14.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    if (ext.id.isNotBlank()) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
                                         Text(
-                                            ext.id,
-                                            color = Color.White.copy(alpha = 0.5f),
-                                            fontSize = 11.sp,
+                                            file.name,
+                                            color = Color.White,
+                                            fontSize = 14.sp,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
+                                        Text(
+                                            "${file.ruleCount} rules",
+                                            color = Color.White.copy(alpha = 0.5f),
+                                            fontSize = 11.sp
+                                        )
                                     }
+                                    Text(
+                                        if (file.enabled) "ON" else "OFF",
+                                        color = if (file.enabled) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.3f),
+                                        fontSize = 12.sp
+                                    )
                                 }
                             }
                         }
                     }
+                }
+
+                androidx.compose.material3.OutlinedButton(
+                    onClick = {
+                        onReload()
+                        scope@ {
+                            val scope = rememberCoroutineScope()
+                            scope.launch(Dispatchers.IO) {
+                                val files = getFilterFiles()
+                                filterFiles.clear()
+                                filterFiles.addAll(files)
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .navigationBarsPadding(),
+                    shape = androidx.compose.ui.graphics.RectangleShape,
+                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color.White
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
+                ) {
+                    Text("Reload Filters", color = Color.White)
                 }
             }
         }
