@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Tab
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -56,6 +57,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +93,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +118,13 @@ class TabState {
 }
 
 data class HistoryItem(val url: String, val title: String, val timestamp: Long = System.currentTimeMillis())
+
+data class Bookmark(
+    val id: String = UUID.randomUUID().toString(),
+    val url: String,
+    val title: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 const val MAX_WARM_TABS = 15
 const val MAX_HISTORY_ITEMS = 250
@@ -149,9 +159,11 @@ fun GreyBrowser() {
     var isUrlFocused by remember { mutableStateOf(false) }
     var showTabManager by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
+    var showBookmarks by remember { mutableStateOf(false) }
     var showFilters by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     val history = remember { mutableStateListOf<HistoryItem>() }
+    val bookmarks = remember { mutableStateListOf<Bookmark>() }
     var lastActiveUrl by remember { mutableStateOf("") }
     val filterRules = remember { mutableStateListOf<String>() }
     val faviconBitmaps = remember { mutableStateMapOf<String, Bitmap?>() }
@@ -159,9 +171,18 @@ fun GreyBrowser() {
     val tabFavicons = remember { mutableStateMapOf<String, Bitmap?>() }
     val tabFaviconLoading = remember { mutableStateMapOf<String, Boolean>() }
     var backupLoaded by remember { mutableStateOf(false) }
+    var notificationMessage by remember { mutableStateOf("") }
+    var showNotification by remember { mutableStateOf(false) }
 
     val currentTab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
     val isLoading = currentTab != null && currentTab.progress in 1..99
+
+    LaunchedEffect(showNotification) {
+        if (showNotification) {
+            delay(2000)
+            showNotification = false
+        }
+    }
 
     LaunchedEffect(Unit) {
         var permissionRequested = false
@@ -189,6 +210,7 @@ fun GreyBrowser() {
                 withContext(Dispatchers.Main) {
                     filterRules.addAll(rules)
                     history.addAll(data.history)
+                    bookmarks.addAll(data.bookmarks)
                     lastActiveUrl = data.lastActiveUrl
                     for ((url, title) in data.tabs) {
                         tabs.add(TabState().apply {
@@ -204,10 +226,10 @@ fun GreyBrowser() {
         }
     }
 
-    LaunchedEffect(backupLoaded, history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
+    LaunchedEffect(backupLoaded, history.toList(), bookmarks.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
         if (!backupLoaded) return@LaunchedEffect
         scope.launch(Dispatchers.IO) {
-            exportBackup(tabs.toList(), history.toList(), lastActiveUrl)
+            exportBackup(tabs.toList(), history.toList(), bookmarks.toList(), lastActiveUrl)
         }
     }
 
@@ -531,9 +553,29 @@ fun GreyBrowser() {
                     onDismissRequest = { showMenu = false },
                     containerColor = Color(0xFF292625)
                 ) {
+                    if (currentTabIndex >= 0 && currentTab != null && !currentTab.isBlank) {
+                        DropdownMenuItem(
+                            text = { Text("Add to Bookmark", color = Color.White) },
+                            onClick = {
+                                showMenu = false
+                                val url = currentTab.url
+                                val title = currentTab.title
+                                if (url.isNotBlank() && url != "about:blank") {
+                                    bookmarks.removeAll { it.url == url }
+                                    bookmarks.add(Bookmark(url = url, title = title))
+                                    notificationMessage = "Added to bookmarks"
+                                    showNotification = true
+                                }
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("History", color = Color.White) },
                         onClick = { showMenu = false; showHistory = true }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Bookmarks", color = Color.White) },
+                        onClick = { showMenu = false; showBookmarks = true }
                     )
                     DropdownMenuItem(
                         text = { Text("Filters", color = Color.White) },
@@ -561,6 +603,19 @@ fun GreyBrowser() {
                     contentAlignment = Alignment.Center
                 ) {
                     Text("GREY", color = Color.White, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            if (showNotification) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, start = 16.dp, end = 16.dp)
+                        .background(Color(0xFF292625))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(notificationMessage, color = Color.White, fontSize = 13.sp)
                 }
             }
         }
@@ -759,6 +814,18 @@ fun GreyBrowser() {
         }
     }
 
+    // ── Bookmarks ────────────────────────────────────
+    if (showBookmarks) {
+        BookmarksUI(
+            bookmarks = bookmarks,
+            onOpenUrl = { url -> loadUrl(url); showBookmarks = false },
+            onDelete = { id -> bookmarks.removeAll { it.id == id }; notificationMessage = "Bookmark deleted"; showNotification = true },
+            faviconBitmaps = faviconBitmaps,
+            loadFavicon = { loadFavicon(it) },
+            onDismiss = { showBookmarks = false }
+        )
+    }
+
     // ── Filters ──────────────────────────────────────
     if (showFilters) {
         FiltersUI(
@@ -779,7 +846,8 @@ fun GreyBrowser() {
 data class BackupData(
     val lastActiveUrl: String,
     val tabs: List<Pair<String, String>>,
-    val history: List<HistoryItem>
+    val history: List<HistoryItem>,
+    val bookmarks: List<Bookmark>
 )
 
 private val BACKUP_DIR = File(Environment.getExternalStorageDirectory(), "Grey")
@@ -789,7 +857,7 @@ fun importBackup(): BackupData {
     android.util.Log.d("GreyBrowser", "importBackup: checking ${BACKUP_FILE.absolutePath}")
     if (!BACKUP_FILE.exists()) {
         android.util.Log.d("GreyBrowser", "importBackup: file not found")
-        return BackupData("", emptyList(), emptyList())
+        return BackupData("", emptyList(), emptyList(), emptyList())
     }
     return try {
         val json = BACKUP_FILE.readText()
@@ -816,17 +884,31 @@ fun importBackup(): BackupData {
                 ))
             }
         }
-        android.util.Log.d("GreyBrowser", "importBackup: ${tabs.size} tabs, ${history.size} history items")
-        BackupData(lastActiveUrl, tabs, history)
+        val bookmarks = mutableListOf<Bookmark>()
+        val bookArr = root.optJSONArray("bookmarks")
+        if (bookArr != null) {
+            for (i in 0 until bookArr.length()) {
+                val b = bookArr.getJSONObject(i)
+                bookmarks.add(Bookmark(
+                    id = b.optString("id", UUID.randomUUID().toString()),
+                    url = b.getString("url"),
+                    title = b.optString("title", ""),
+                    timestamp = b.optLong("timestamp", System.currentTimeMillis())
+                ))
+            }
+        }
+        android.util.Log.d("GreyBrowser", "importBackup: ${tabs.size} tabs, ${history.size} history, ${bookmarks.size} bookmarks")
+        BackupData(lastActiveUrl, tabs, history, bookmarks)
     } catch (e: Exception) {
         android.util.Log.e("GreyBrowser", "importBackup failed", e)
-        BackupData("", emptyList(), emptyList())
+        BackupData("", emptyList(), emptyList(), emptyList())
     }
 }
 
 fun exportBackup(
     tabs: List<TabState>,
     history: List<HistoryItem>,
+    bookmarks: List<Bookmark>,
     lastActiveUrl: String
 ) {
     try {
@@ -858,10 +940,21 @@ fun exportBackup(
         }
         root.put("history", histArr)
 
+        val bookArr = JSONArray()
+        for (b in bookmarks) {
+            val obj = JSONObject()
+            obj.put("id", b.id)
+            obj.put("url", b.url)
+            obj.put("title", b.title)
+            obj.put("timestamp", b.timestamp)
+            bookArr.put(obj)
+        }
+        root.put("bookmarks", bookArr)
+
         val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
         tempFile.writeText(root.toString(2))
         val renamed = tempFile.renameTo(BACKUP_FILE)
-        android.util.Log.d("GreyBrowser", "exportBackup: wrote ${tabsArr.length()} tabs, ${histArr.length()} history, rename=$renamed")
+        android.util.Log.d("GreyBrowser", "exportBackup: wrote ${tabsArr.length()} tabs, ${histArr.length()} history, ${bookArr.length()} bookmarks, rename=$renamed")
     } catch (e: Exception) {
         android.util.Log.e("GreyBrowser", "exportBackup failed", e)
     }
@@ -1191,3 +1284,134 @@ object FaviconCache {
     }
 }
 //PART 6 END
+
+//PART 7 START
+@Composable
+fun BookmarksUI(
+    bookmarks: List<Bookmark>,
+    onOpenUrl: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    faviconBitmaps: Map<String, Bitmap?>,
+    loadFavicon: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var bookmarkToDelete by remember { mutableStateOf<String?>(null) }
+
+    if (showDeleteConfirm && bookmarkToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false; bookmarkToDelete = null },
+            title = { Text("Delete Bookmark?", color = Color.White, fontSize = 18.sp) },
+            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
+            confirmButton = {
+                TextButton({
+                    onDelete(bookmarkToDelete!!)
+                    showDeleteConfirm = false
+                    bookmarkToDelete = null
+                }) { Text("Delete", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton({ showDeleteConfirm = false; bookmarkToDelete = null }) { Text("Cancel", color = Color.White) }
+            },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            shape = RectangleShape,
+            tonalElevation = 0.dp
+        )
+    }
+
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
+        Surface(
+            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1A1817)),
+            color = Color(0xFF1A1817)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Close", tint = Color.White)
+                    }
+                    Text("Bookmarks", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text("(${bookmarks.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+                }
+
+                if (bookmarks.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No bookmarks", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                        items(bookmarks.reversed()) { item ->
+                            val domain = getDomainName(item.url)
+                            LaunchedEffect(item.url) { loadFavicon(domain) }
+                            val fav = faviconBitmaps[domain]
+
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .background(Color(0xFF292625))
+                                    .clickable { onOpenUrl(item.url) }
+                                    .padding(12.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (fav != null) {
+                                        Image(
+                                            fav.asImageBitmap(), domain,
+                                            Modifier.size(20.dp).clip(CircleShape),
+                                            contentScale = ContentScale.Fit
+                                        )
+                                    } else {
+                                        Box(
+                                            Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                domain.take(1).uppercase(),
+                                                color = Color.White,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            item.title.ifBlank { item.url },
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            stripHttps(item.url),
+                                            color = Color.White.copy(alpha = 0.5f),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    IconButton(onClick = {
+                                        bookmarkToDelete = item.id
+                                        showDeleteConfirm = true
+                                    }) {
+                                        Icon(Icons.Default.Close, "Delete", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+//PART 7 END
