@@ -160,30 +160,32 @@ fun GreyBrowser() {
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            filterRules.addAll(loadFilterRules())
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        val data = importBackup()
-        history.addAll(data.history)
-        lastActiveUrl = data.lastActiveUrl
-        for ((url, title) in data.tabs) {
-            tabs.add(TabState().apply {
-                this.url = url
-                this.title = title
-                this.isBlank = false
-                this.isDiscarded = true
-            })
-        }
-        if (tabs.isNotEmpty() && lastActiveUrl.isNotBlank()) {
-            val idx = tabs.indexOfFirst { it.url == lastActiveUrl }
-            if (idx >= 0) currentTabIndex = idx
+            val rules = loadFilterRules()
+            val data = importBackup()
+            withContext(Dispatchers.Main) {
+                filterRules.addAll(rules)
+                history.addAll(data.history)
+                lastActiveUrl = data.lastActiveUrl
+                for ((url, title) in data.tabs) {
+                    tabs.add(TabState().apply {
+                        this.url = url
+                        this.title = title
+                        this.isBlank = false
+                        this.isDiscarded = true
+                    })
+                }
+                if (tabs.isNotEmpty() && lastActiveUrl.isNotBlank()) {
+                    val idx = tabs.indexOfFirst { it.url == lastActiveUrl }
+                    if (idx >= 0) currentTabIndex = idx
+                }
+            }
         }
     }
 
     LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
-        exportBackup(tabs, history, lastActiveUrl)
+        withContext(Dispatchers.IO) {
+            exportBackup(tabs, history, lastActiveUrl)
+        }
     }
 
     fun resolveUrl(input: String): String {
@@ -391,7 +393,6 @@ fun GreyBrowser() {
             Modifier.fillMaxWidth().padding(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Tab Manager button - no background
             IconButton(onClick = { showTabManager = true }) {
                 Icon(Icons.Default.Tab, null, tint = Color.White, modifier = Modifier.size(18.dp))
             }
@@ -402,7 +403,6 @@ fun GreyBrowser() {
                 modifier = Modifier.clickable { showTabManager = true }
             )
 
-            // URL Field with progress bar
             Box(
                 Modifier
                     .weight(1f)
@@ -410,12 +410,15 @@ fun GreyBrowser() {
                     .background(Color(0xFF292625))
             ) {
                 if (isLoading) {
-                    Box(
-                        Modifier
-                            .fillMaxHeight()
-                            .fillMaxWidth(fraction = currentTab!!.progress / 100f)
-                            .background(Color.White.copy(alpha = 0.15f))
-                    )
+                    androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+                        drawRect(
+                            color = Color.White.copy(alpha = 0.15f),
+                            size = androidx.compose.ui.geometry.Size(
+                                size.width * currentTab!!.progress / 100f,
+                                size.height
+                            )
+                        )
+                    }
                 }
                 Box(
                     Modifier
