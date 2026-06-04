@@ -368,7 +368,6 @@ fun GreyBrowser() {
         s.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
                 tab.url = url
-                tab.isBlank = false
                 tab.lastUpdated = System.currentTimeMillis()
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
@@ -488,9 +487,6 @@ fun GreyBrowser() {
     }
 
     fun newTab() {
-        val newTab = TabState()
-        tabs.add(0, newTab)
-        fixParentRefsAfterInsert(0)
         currentTabIndex = -1
         urlInput = ""
         showTabManager = false
@@ -940,7 +936,6 @@ fun SimpleTabRow(
     loadFavicon: (String) -> Unit
 ) {
     val domain = getDomainName(tab.url)
-    val isChild = tab.parentTabIndex >= 0
 
     LaunchedEffect(tab.url) { loadFavicon(domain) }
     val fav = tabFavicons[domain]
@@ -951,7 +946,7 @@ fun SimpleTabRow(
             .padding(vertical = 2.dp)
             .background(Color(0xFF292625))
             .clickable { onSwitch() }
-            .padding(start = if (isChild) 24.dp else 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp)
+            .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (fav != null) {
