@@ -771,11 +771,304 @@ fun GreyBrowser() {
 }
 //PART 2 END
 
+//PART 3 START
+data class BackupData(
+    val lastActiveUrl: String,
+    val tabs: List<Pair<String, String>>,
+    val history: List<HistoryItem>
+)
+
+private val BACKUP_DIR = File(Environment.getExternalStorageDirectory(), "Grey")
+private val BACKUP_FILE = File(BACKUP_DIR, "Grey-backup.json")
+
+fun importBackup(): BackupData {
+    android.util.Log.d("GreyBrowser", "importBackup: checking ${BACKUP_FILE.absolutePath}")
+    if (!BACKUP_FILE.exists()) {
+        android.util.Log.d("GreyBrowser", "importBackup: file not found")
+        return BackupData("", emptyList(), emptyList())
+    }
+    return try {
+        val json = BACKUP_FILE.readText()
+        android.util.Log.d("GreyBrowser", "importBackup: read ${json.length} chars")
+        val root = JSONObject(json)
+        val lastActiveUrl = root.optString("lastActiveUrl", "")
+        val tabs = mutableListOf<Pair<String, String>>()
+        val tabsArr = root.optJSONArray("tabs")
+        if (tabsArr != null) {
+            for (i in 0 until tabsArr.length()) {
+                val t = tabsArr.getJSONObject(i)
+                tabs.add(Pair(t.getString("url"), t.optString("title", "")))
+            }
+        }
+        val history = mutableListOf<HistoryItem>()
+        val histArr = root.optJSONArray("history")
+        if (histArr != null) {
+            for (i in 0 until histArr.length()) {
+                val h = histArr.getJSONObject(i)
+                history.add(HistoryItem(
+                    url = h.getString("url"),
+                    title = h.optString("title", ""),
+                    timestamp = h.optLong("timestamp", System.currentTimeMillis())
+                ))
+            }
+        }
+        android.util.Log.d("GreyBrowser", "importBackup: ${tabs.size} tabs, ${history.size} history items")
+        BackupData(lastActiveUrl, tabs, history)
+    } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "importBackup failed", e)
+        BackupData("", emptyList(), emptyList())
+    }
+}
+
+fun exportBackup(
+    tabs: List<TabState>,
+    history: List<HistoryItem>,
+    lastActiveUrl: String
+) {
+    try {
+        if (!BACKUP_DIR.exists()) {
+            val created = BACKUP_DIR.mkdirs()
+            android.util.Log.d("GreyBrowser", "exportBackup: mkdirs result=$created, path=${BACKUP_DIR.absolutePath}")
+        }
+        val root = JSONObject()
+        root.put("lastActiveUrl", lastActiveUrl)
+
+        val tabsArr = JSONArray()
+        for (tab in tabs) {
+            if (!tab.isBlank) {
+                val obj = JSONObject()
+                obj.put("url", tab.url)
+                obj.put("title", tab.title)
+                tabsArr.put(obj)
+            }
+        }
+        root.put("tabs", tabsArr)
+
+        val histArr = JSONArray()
+        for (h in history) {
+            val obj = JSONObject()
+            obj.put("url", h.url)
+            obj.put("title", h.title)
+            obj.put("timestamp", h.timestamp)
+            histArr.put(obj)
+        }
+        root.put("history", histArr)
+
+        val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
+        tempFile.writeText(root.toString(2))
+        val renamed = tempFile.renameTo(BACKUP_FILE)
+        android.util.Log.d("GreyBrowser", "exportBackup: wrote ${tabsArr.length()} tabs, ${histArr.length()} history, rename=$renamed")
+    } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "exportBackup failed", e)
+    }
+}
+//PART 3 END
+
+//PART 4 START
+data class FilterFile(
+    val name: String,
+    val ruleCount: Int,
+    val enabled: Boolean = true
+)
+
+private val FILTERS_DIR = File(Environment.getExternalStorageDirectory(), "Grey/Filters")
+
+fun loadFilterRules(): List<String> {
+    val rules = mutableListOf<String>()
+    try {
+        if (!FILTERS_DIR.exists()) {
+            FILTERS_DIR.mkdirs()
+            return rules
+        }
+        val txtFiles = FILTERS_DIR.listFiles { file -> file.extension == "txt" } ?: return rules
+        for (file in txtFiles) {
+            android.util.Log.d("GreyBrowser", "Loading filter: ${file.name}")
+            file.useLines { lines ->
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
+                    if (trimmed.startsWith("||") && trimmed.endsWith("^")) {
+                        val domain = trimmed.removePrefix("||").removeSuffix("^")
+                        rules.add(domain)
+                    }
+                }
+            }
+        }
+        android.util.Log.d("GreyBrowser", "Loaded ${rules.size} filter rules")
+    } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "Failed to load filters", e)
+    }
+    return rules
+}
+
+fun getFilterFiles(): List<FilterFile> {
+    val files = mutableListOf<FilterFile>()
+    try {
+        if (!FILTERS_DIR.exists()) return files
+        val txtFiles = FILTERS_DIR.listFiles { file -> file.extension == "txt" } ?: return files
+        for (file in txtFiles) {
+            var count = 0
+            file.useLines { lines ->
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
+                    if (trimmed.startsWith("||") && trimmed.endsWith("^")) count++
+                }
+            }
+            files.add(FilterFile(name = file.name, ruleCount = count))
+        }
+    } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "Failed to list filter files", e)
+    }
+    return files
+}
+//PART 4 END
+
+//PART 5 START
+@Composable
+fun FiltersUI(
+    filterRules: List<String>,
+    onReload: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val filterFiles = remember { mutableStateListOf<FilterFile>() }
+    val scope = rememberCoroutineScope()
+
+    fun reloadFiles() {
+        scope.launch(Dispatchers.IO) {
+            val files = getFilterFiles()
+            filterFiles.clear()
+            filterFiles.addAll(files)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        reloadFiles()
+    }
+
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
+        Surface(
+            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1A1817)),
+            color = Color(0xFF1A1817)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Close", tint = Color.White)
+                    }
+                    Text("Filters", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "${filterRules.size} rules",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 14.sp
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                        .background(Color(0xFF292625))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Text(
+                            "Place .txt files in /Grey/Filters/",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Uses EasyList format (||domain.com^).\nReload after adding new files.",
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                if (filterFiles.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("No filter files found", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                        items(filterFiles) { file ->
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .background(Color(0xFF292625))
+                                    .padding(12.dp)
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            file.name,
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            "${file.ruleCount} rules",
+                                            color = Color.White.copy(alpha = 0.5f),
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    Text(
+                                        if (file.enabled) "ON" else "OFF",
+                                        color = if (file.enabled) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.3f),
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onReload()
+                        reloadFiles()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .navigationBarsPadding(),
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    border = BorderStroke(1.dp, Color.White)
+                ) {
+                    Text("Reload Filters", color = Color.White)
+                }
+            }
+        }
+    }
+}
+//PART 5 END
+
 //PART 6 START
 object FaviconMemoryCache {
     private const val MAX_MEMORY_FAVICONS = 100
     private val cache = object : LinkedHashMap<String, Bitmap>(MAX_MEMORY_FAVICONS, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean {
+        override fun removeEldestEntry(eldest: Map.Entry<String, Bitmap>?): Boolean {
             return size > MAX_MEMORY_FAVICONS
         }
     }
@@ -806,12 +1099,12 @@ object FaviconCache {
         return try {
             val json = file.readText()
             val array = JSONArray(json)
-            mutableListOf<FaviconMeta>().apply {
-                for (i in 0 until array.length()) {
-                    val obj = array.getJSONObject(i)
-                    add(FaviconMeta(obj.getString("domain"), obj.getLong("lastAccessed")))
-                }
+            val list = mutableListOf<FaviconMeta>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(FaviconMeta(obj.getString("domain"), obj.getLong("lastAccessed")))
             }
+            list
         } catch (e: Exception) { mutableListOf() }
     }
 
