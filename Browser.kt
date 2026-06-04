@@ -108,6 +108,7 @@ class TabState {
     var isDiscarded by mutableStateOf(false)
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
     var canGoBack by mutableStateOf(false)
+    var progress by mutableIntStateOf(100)
 }
 
 data class HistoryItem(val url: String, val title: String, val timestamp: Long = System.currentTimeMillis())
@@ -141,6 +142,9 @@ fun GreyBrowser() {
     val history = remember { mutableStateListOf<HistoryItem>() }
     var lastActiveUrl by remember { mutableStateOf("") }
     val filterRules = remember { mutableStateListOf<String>() }
+
+    val currentTab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
+    val isLoading = currentTab != null && currentTab.progress in 1..99
 
     LaunchedEffect(Unit) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
@@ -246,6 +250,7 @@ fun GreyBrowser() {
                 tab.lastUpdated = System.currentTimeMillis()
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
+                tab.progress = 100
                 tab.lastUpdated = System.currentTimeMillis()
                 if (tabs.indexOf(tab) == currentTabIndex) {
                     urlInput = if (isUrlFocused) tab.url else stripHttps(tab.url)
@@ -257,6 +262,9 @@ fun GreyBrowser() {
                     history.removeAll { it.url.substringBefore("#") == baseUrl }
                     history.add(HistoryItem(tab.url, tab.title))
                 }
+            }
+            override fun onProgressChange(session: GeckoSession, progress: Int) {
+                tab.progress = progress
             }
         }
     }
@@ -383,52 +391,71 @@ fun GreyBrowser() {
             Modifier.fillMaxWidth().padding(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                Modifier
-                    .background(Color(0xFF292625))
-                    .clickable { showTabManager = true }
-                    .padding(horizontal = 10.dp, vertical = 12.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Tab, null, tint = Color.White, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(tabs.size.toString(), color = Color.White, fontSize = 14.sp)
-                }
+            // Tab Manager button - no background
+            IconButton(onClick = { showTabManager = true }) {
+                Icon(Icons.Default.Tab, null, tint = Color.White, modifier = Modifier.size(18.dp))
             }
+            Text(
+                tabs.size.toString(),
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier.clickable { showTabManager = true }
+            )
 
+            // URL Field with progress bar
             Box(
                 Modifier
                     .weight(1f)
                     .padding(horizontal = 4.dp)
                     .background(Color(0xFF292625))
-                    .padding(horizontal = 12.dp, vertical = 14.dp)
             ) {
-                if (urlInput.isEmpty() && !isUrlFocused) {
-                    Text("Search or enter URL", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                if (isLoading) {
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(fraction = currentTab!!.progress / 100f)
+                            .background(Color.White.copy(alpha = 0.15f))
+                    )
                 }
-                BasicTextField(
-                    value = urlInput,
-                    onValueChange = { urlInput = it },
-                    singleLine = true,
-                    textStyle = TextStyle(Color.White, 16.sp),
-                    cursorBrush = SolidColor(Color.White),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = {
-                        focusManager.clearFocus()
-                        if (urlInput.isNotBlank()) loadUrl(urlInput)
-                    }),
-                    modifier = Modifier
+                Box(
+                    Modifier
                         .fillMaxWidth()
-                        .onFocusChanged { focused ->
-                            isUrlFocused = focused.isFocused
-                            if (focused.isFocused && currentTabIndex >= 0) {
-                                urlInput = tabs[currentTabIndex].url
+                        .padding(horizontal = 12.dp, vertical = 14.dp)
+                ) {
+                    if (urlInput.isEmpty() && !isUrlFocused) {
+                        Text(
+                            "Search or enter URL",
+                            color = Color.White.copy(alpha = 0.5f),
+                            fontSize = 16.sp
+                        )
+                    }
+                    BasicTextField(
+                        value = urlInput,
+                        onValueChange = { urlInput = it },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            color = if (isLoading) Color.Gray else Color.White,
+                            fontSize = 16.sp
+                        ),
+                        cursorBrush = SolidColor(if (isLoading) Color.Gray else Color.White),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(onGo = {
+                            focusManager.clearFocus()
+                            if (urlInput.isNotBlank()) loadUrl(urlInput)
+                        }),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focused ->
+                                isUrlFocused = focused.isFocused
+                                if (focused.isFocused && currentTabIndex >= 0) {
+                                    urlInput = tabs[currentTabIndex].url
+                                }
+                                if (!focused.isFocused && currentTabIndex >= 0) {
+                                    urlInput = stripHttps(tabs[currentTabIndex].url)
+                                }
                             }
-                            if (!focused.isFocused && currentTabIndex >= 0) {
-                                urlInput = stripHttps(tabs[currentTabIndex].url)
-                            }
-                        }
-                )
+                    )
+                }
             }
 
             IconButton(onClick = { newTab() }) {
@@ -459,9 +486,8 @@ fun GreyBrowser() {
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color.White.copy(alpha = 0.2f)))
 
         Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFF1A1817))) {
-            val tab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
-            val activeSession = tab?.session
-            if (tab != null && !tab.isBlank && activeSession != null) {
+            if (currentTab != null && !currentTab.isBlank && currentTab.session != null) {
+                val activeSession = currentTab.session!!
                 AndroidView(
                     factory = { ctx -> GeckoView(ctx) },
                     update = { gv -> gv.setSession(activeSession) },
