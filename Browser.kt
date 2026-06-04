@@ -223,15 +223,6 @@ fun GreyBrowser() {
             override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
                 tab.canGoBack = canGoBack
             }
-            override fun onLoadRequest(
-                session: GeckoSession,
-                request: GeckoSession.NavigationDelegate.LoadRequest
-            ): GeckoResult<GeckoSession.NavigationDelegate.AllowOrDeny>? {
-                if (isUrlBlocked(request.uri)) {
-                    return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.DENY)
-                }
-                return GeckoResult.fromValue(GeckoSession.NavigationDelegate.AllowOrDeny.ALLOW)
-            }
         }
 
         s.contentDelegate = object : GeckoSession.ContentDelegate {
@@ -311,6 +302,7 @@ fun GreyBrowser() {
 
     fun loadUrl(url: String) {
         val resolved = resolveUrl(url)
+        if (isUrlBlocked(resolved)) return
         val existingIndex = tabs.indexOfFirst { it.url == resolved && !it.isBlank }
         if (existingIndex >= 0 && existingIndex != currentTabIndex) {
             tabs[existingIndex].session?.close()
