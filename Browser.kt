@@ -139,7 +139,7 @@ data class CosmeticRule(
     val id: String = UUID.randomUUID().toString(),
     val domain: String,
     val selector: String,
-    val enabled: Boolean = true,
+    var enabled: Boolean = true,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -158,7 +158,6 @@ fun getDomainName(url: String): String {
     } catch (e: Exception) { "" }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
@@ -282,7 +281,7 @@ fun GreyBrowser() {
                 }).observe(document.documentElement, { childList: true, subtree: true });
             })();
         """.trimIndent()
-        session.evaluatePromiseJS(js)
+        session.loadUri("javascript:$js")
     }
 
     fun enableSelectionMode(session: GeckoSession) {
@@ -310,7 +309,7 @@ fun GreyBrowser() {
                 document.body.appendChild(overlay);
             })();
         """.trimIndent()
-        session.evaluatePromiseJS(js)
+        session.loadUri("javascript:$js")
     }
 
     fun disableSelectionMode(session: GeckoSession) {
@@ -326,7 +325,7 @@ fun GreyBrowser() {
                 window.__greySelected = null;
             })();
         """.trimIndent()
-        session.evaluatePromiseJS(js)
+        session.loadUri("javascript:$js")
     }
 
     fun selectParentElement(session: GeckoSession) {
@@ -345,7 +344,7 @@ fun GreyBrowser() {
                 }
             })();
         """.trimIndent()
-        session.evaluatePromiseJS(js)
+        session.loadUri("javascript:$js")
     }
 
     fun selectChildElement(session: GeckoSession) {
@@ -364,7 +363,7 @@ fun GreyBrowser() {
                 }
             })();
         """.trimIndent()
-        session.evaluatePromiseJS(js)
+        session.loadUri("javascript:$js")
     }
 
     fun hideSelectedElement(session: GeckoSession) {
@@ -380,7 +379,7 @@ fun GreyBrowser() {
                 });
             })();
         """.trimIndent()
-        session.evaluatePromiseJS(js)
+        session.loadUri("javascript:$js")
         notificationMessage = "Element hidden: $selectedElementSelector"
         showNotification = true
         disableSelectionMode(session)
