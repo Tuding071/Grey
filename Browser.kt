@@ -127,7 +127,7 @@ data class Bookmark(
 )
 
 const val MAX_WARM_TABS = 15
-const val MAX_HISTORY_ITEMS = 250
+const val MAX_HISTORY_ITEMS = 500
 
 fun stripHttps(url: String): String {
     return url.removePrefix("https://").removePrefix("http://").removePrefix("www.")
@@ -302,7 +302,6 @@ fun GreyBrowser() {
 
     fun setupDelegates(tab: TabState) {
         val s = tab.session ?: return
-        var historySaved = false
 
         s.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
@@ -317,6 +316,9 @@ fun GreyBrowser() {
                         urlInput = if (isUrlFocused) newUrl else stripHttps(newUrl)
                         lastActiveUrl = newUrl
                     }
+                    if (newUrl.isNotBlank() && newUrl != "about:blank") {
+                        addToHistory(newUrl, tab.title)
+                    }
                 }
             }
             override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
@@ -328,11 +330,6 @@ fun GreyBrowser() {
             override fun onTitleChange(session: GeckoSession, title: String?) {
                 val newTitle = title ?: tab.url
                 tab.title = newTitle
-                if (!historySaved && newTitle != "New Tab" && newTitle != tab.url
-                    && tab.url.isNotBlank() && tab.url != "about:blank") {
-                    historySaved = true
-                    addToHistory(tab.url, newTitle)
-                }
             }
         }
 
@@ -347,11 +344,6 @@ fun GreyBrowser() {
                 tab.lastUpdated = System.currentTimeMillis()
                 if (tabs.indexOf(tab) == currentTabIndex) {
                     urlInput = if (isUrlFocused) tab.url else stripHttps(tab.url)
-                }
-                if (success && !historySaved && tab.title != "New Tab"
-                    && tab.url.isNotBlank() && tab.url != "about:blank") {
-                    historySaved = true
-                    addToHistory(tab.url, tab.title)
                 }
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
@@ -495,7 +487,7 @@ fun GreyBrowser() {
                 if (isLoading) {
                     androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
                         drawRect(
-                            color = Color.White.copy(alpha = 0.15f),
+                            color = Color.White,
                             size = androidx.compose.ui.geometry.Size(
                                 size.width * currentTab!!.progress / 100f,
                                 size.height
@@ -509,17 +501,21 @@ fun GreyBrowser() {
                         .padding(horizontal = 12.dp, vertical = 14.dp)
                 ) {
                     if (urlInput.isEmpty() && !isUrlFocused) {
-                        Text("Search or enter URL", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                        Text(
+                            "Search or enter URL",
+                            color = if (isLoading) Color.Black.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.5f),
+                            fontSize = 16.sp
+                        )
                     }
                     BasicTextField(
                         value = urlInput,
                         onValueChange = { urlInput = it },
                         singleLine = true,
                         textStyle = TextStyle(
-                            color = if (isLoading) Color.Gray else Color.White,
+                            color = if (isLoading) Color.Black else Color.White,
                             fontSize = 16.sp
                         ),
-                        cursorBrush = SolidColor(if (isLoading) Color.Gray else Color.White),
+                        cursorBrush = SolidColor(if (isLoading) Color.Black else Color.White),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = {
                             focusManager.clearFocus()
@@ -611,11 +607,11 @@ fun GreyBrowser() {
                     Modifier
                         .fillMaxWidth()
                         .padding(top = 8.dp, start = 16.dp, end = 16.dp)
-                        .background(Color(0xFF292625))
+                        .background(Color.White)
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(notificationMessage, color = Color.White, fontSize = 13.sp)
+                    Text(notificationMessage, color = Color.Black, fontSize = 13.sp)
                 }
             }
         }
@@ -1415,3 +1411,35 @@ fun BookmarksUI(
     }
 }
 //PART 7 END
+
+//PART 8 START
+// Reserved for future use
+//PART 8 END
+
+//PART 9 START
+// Reserved for future use
+//PART 9 END
+
+//PART 10 START
+// Reserved for future use
+//PART 10 END
+
+//PART 11 START
+// Reserved for future use
+//PART 11 END
+
+//PART 12 START
+// Reserved for future use
+//PART 12 END
+
+//PART 13 START
+// Reserved for future use
+//PART 13 END
+
+//PART 14 START
+// Reserved for future use
+//PART 14 END
+
+//PART 15 START
+// Reserved for future use
+//PART 15 END
