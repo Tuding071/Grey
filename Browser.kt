@@ -37,6 +37,7 @@ import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -50,10 +51,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Tab
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -61,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -78,6 +82,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
@@ -790,13 +795,18 @@ fun FiltersUI(
     onDismiss: () -> Unit
 ) {
     val filterFiles = remember { mutableStateListOf<FilterFile>() }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
+    fun reloadFiles() {
+        scope.launch(Dispatchers.IO) {
             val files = getFilterFiles()
             filterFiles.clear()
             filterFiles.addAll(files)
         }
+    }
+
+    LaunchedEffect(Unit) {
+        reloadFiles()
     }
 
     Popup(
@@ -896,27 +906,18 @@ fun FiltersUI(
                     }
                 }
 
-                androidx.compose.material3.OutlinedButton(
+                OutlinedButton(
                     onClick = {
                         onReload()
-                        scope@ {
-                            val scope = rememberCoroutineScope()
-                            scope.launch(Dispatchers.IO) {
-                                val files = getFilterFiles()
-                                filterFiles.clear()
-                                filterFiles.addAll(files)
-                            }
-                        }
+                        reloadFiles()
                     },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(12.dp)
                         .navigationBarsPadding(),
-                    shape = androidx.compose.ui.graphics.RectangleShape,
-                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.White
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White)
+                    shape = RectangleShape,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    border = BorderStroke(1.dp, Color.White)
                 ) {
                     Text("Reload Filters", color = Color.White)
                 }
