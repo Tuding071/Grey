@@ -33,9 +33,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -68,8 +70,10 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -115,6 +119,8 @@ class TabState {
     var lastUpdated by mutableLongStateOf(System.currentTimeMillis())
     var canGoBack by mutableStateOf(false)
     var progress by mutableIntStateOf(100)
+    var parentTabIndex by mutableIntStateOf(-1)
+    val id: String = UUID.randomUUID().toString()
 }
 
 data class HistoryItem(val url: String, val title: String, val timestamp: Long = System.currentTimeMillis())
@@ -141,9 +147,11 @@ fun getDomainName(url: String): String {
     } catch (e: Exception) { "" }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GreyBrowser() {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val runtime = remember {
         val settings = GeckoRuntimeSettings.Builder()
             .aboutConfigEnabled(true)
@@ -397,14 +405,17 @@ fun GreyBrowser() {
         val existingIndex = tabs.indexOfFirst { it.url == resolved && !it.isBlank }
         if (existingIndex >= 0 && existingIndex != currentTabIndex) {
             tabs[existingIndex].session?.close()
+            val oldParent = tabs[existingIndex].parentTabIndex
             tabs.removeAt(existingIndex)
+            fixParentRefs(existingIndex)
             if (currentTabIndex > existingIndex) currentTabIndex--
         }
         urlInput = resolved
         if (currentTabIndex == -1) {
             val newTab = TabState()
-            tabs.add(newTab)
-            currentTabIndex = tabs.lastIndex
+            tabs.add(0, newTab)
+            currentTabIndex = 0
+            fixParentRefsAfterInsert(0)
         }
         val tab = tabs[currentTabIndex]
         val s = ensureSession(tab)
@@ -414,6 +425,29 @@ fun GreyBrowser() {
         lastActiveUrl = resolved
         focusManager.clearFocus()
         manageWarmTabs(currentTabIndex)
+    }
+
+    fun createChildTab(parentIndex: Int) {
+        val newTab = TabState().apply { parentTabIndex = parentIndex }
+        val insertAt = parentIndex + 1
+        tabs.add(insertAt, newTab)
+        fixParentRefsAfterInsert(insertAt)
+        currentTabIndex = insertAt
+        urlInput = ""
+        showTabManager = false
+    }
+
+    fun fixParentRefs(removedIndex: Int) {
+        for (t in tabs) {
+            if (t.parentTabIndex == removedIndex) t.parentTabIndex = -1
+            else if (t.parentTabIndex > removedIndex) t.parentTabIndex--
+        }
+    }
+
+    fun fixParentRefsAfterInsert(insertIndex: Int) {
+        for (t in tabs) {
+            if (t.parentTabIndex >= insertIndex && tabs.indexOf(t) != insertIndex) t.parentTabIndex++
+        }
     }
 
     fun switchToTab(index: Int) {
@@ -427,6 +461,7 @@ fun GreyBrowser() {
     fun closeTab(index: Int) {
         tabs[index].session?.close()
         tabs.removeAt(index)
+        fixParentRefs(index)
         if (tabs.isEmpty()) {
             currentTabIndex = -1
             urlInput = ""
@@ -443,6 +478,9 @@ fun GreyBrowser() {
     }
 
     fun newTab() {
+        val newTab = TabState()
+        tabs.add(0, newTab)
+        fixParentRefsAfterInsert(0)
         currentTabIndex = -1
         urlInput = ""
         showTabManager = false
@@ -463,8 +501,10 @@ fun GreyBrowser() {
             if (tab.canGoBack) {
                 tab.session?.goBack()
             } else {
-                currentTabIndex = -1
-                urlInput = ""
+                val parentIdx = tab.parentTabIndex
+                closeTab(currentTabIndex)
+                currentTabIndex = if (parentIdx >= 0 && parentIdx < tabs.size) parentIdx else -1
+                urlInput = if (currentTabIndex >= 0 && !tabs[currentTabIndex].isBlank) stripHttps(tabs[currentTabIndex].url) else ""
             }
         }
     }
@@ -619,6 +659,9 @@ fun GreyBrowser() {
 
     // ── Tab Manager ──────────────────────────────────
     if (showTabManager) {
+        val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() || tabs.any { t -> t.isBlank } }
+        val ungrouped = tabs.filter { getDomainName(it.url).isBlank() }
+
         Popup(
             alignment = Alignment.TopStart,
             onDismissRequest = { showTabManager = false },
@@ -651,64 +694,56 @@ fun GreyBrowser() {
                         }
                     } else {
                         LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                            items(tabs.size) { index ->
-                                val t = tabs[index]
-                                val domain = getDomainName(t.url)
-                                LaunchedEffect(t.url) { loadTabFavicon(domain) }
-                                val fav = tabFavicons[domain]
-
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 2.dp)
-                                        .background(Color(0xFF292625))
-                                        .clickable { switchToTab(index) }
-                                        .padding(12.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (fav != null) {
-                                            Image(
-                                                fav.asImageBitmap(), domain,
-                                                Modifier.size(32.dp).clip(CircleShape),
-                                                contentScale = ContentScale.Fit
-                                            )
-                                        } else {
-                                            Box(
-                                                Modifier.size(32.dp).clip(CircleShape).background(Color.DarkGray),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    domain.take(1).uppercase(),
-                                                    color = Color.White,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                        }
-                                        Spacer(Modifier.width(10.dp))
-                                        Column(Modifier.weight(1f)) {
-                                            Text(
-                                                t.title,
-                                                color = Color.White,
-                                                fontSize = 14.sp,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            if (!t.isBlank) {
-                                                Text(
-                                                    domain.ifBlank { "..." },
-                                                    color = Color.White.copy(alpha = 0.5f),
-                                                    fontSize = 11.sp,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-                                        }
-                                        IconButton(onClick = { closeTab(index) }) {
-                                            Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
-                                        }
-                                    }
+                            // Ungrouped (blank/new tabs) first
+                            if (ungrouped.isNotEmpty()) {
+                                item {
+                                    Text(
+                                        "NEW TABS",
+                                        color = Color.White.copy(alpha = 0.4f),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp)
+                                    )
                                 }
+                                items(ungrouped.size) { i ->
+                                    val t = ungrouped[i]
+                                    val realIndex = tabs.indexOf(t)
+                                    TabRow(t, realIndex, tabs, currentTabIndex, tabFavicons, clipboardManager,
+                                        onSwitch = { switchToTab(realIndex) },
+                                        onClose = { closeTab(realIndex) },
+                                        onNewChild = { createChildTab(realIndex) },
+                                        loadFavicon = { loadTabFavicon(it) }
+                                    )
+                                }
+                                item { Spacer(Modifier.height(32.dp)) }
+                            }
+
+                            // Grouped by domain
+                            val sortedDomains = domainGroups.keys.sortedBy { d ->
+                                domainGroups[d]?.firstOrNull()?.let { tabs.indexOf(it) } ?: Int.MAX_VALUE
+                            }
+                            for (domain in sortedDomains) {
+                                val groupTabs = domainGroups[domain] ?: continue
+                                item {
+                                    Text(
+                                        domain.uppercase(),
+                                        color = Color.White.copy(alpha = 0.4f),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp)
+                                    )
+                                }
+                                items(groupTabs.size) { i ->
+                                    val t = groupTabs[i]
+                                    val realIndex = tabs.indexOf(t)
+                                    TabRow(t, realIndex, tabs, currentTabIndex, tabFavicons, clipboardManager,
+                                        onSwitch = { switchToTab(realIndex) },
+                                        onClose = { closeTab(realIndex) },
+                                        onNewChild = { createChildTab(realIndex) },
+                                        loadFavicon = { loadTabFavicon(it) }
+                                    )
+                                }
+                                item { Spacer(Modifier.height(32.dp)) }
                             }
                         }
                     }
@@ -834,6 +869,104 @@ fun GreyBrowser() {
             },
             onDismiss = { showFilters = false }
         )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun TabRow(
+    tab: TabState,
+    index: Int,
+    tabs: List<TabState>,
+    currentTabIndex: Int,
+    tabFavicons: Map<String, Bitmap?>,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+    onSwitch: () -> Unit,
+    onClose: () -> Unit,
+    onNewChild: () -> Unit,
+    loadFavicon: (String) -> Unit
+) {
+    var showContextMenu by remember { mutableStateOf(false) }
+    val domain = getDomainName(tab.url)
+    val isChild = tab.parentTabIndex >= 0
+
+    LaunchedEffect(tab.url) { loadFavicon(domain) }
+    val fav = tabFavicons[domain]
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .background(Color(0xFF292625))
+            .combinedClickable(
+                onClick = onSwitch,
+                onLongClick = { showContextMenu = true }
+            )
+            .padding(start = if (isChild) 24.dp else 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (fav != null) {
+                Image(
+                    fav.asImageBitmap(), domain,
+                    Modifier.size(32.dp).clip(CircleShape),
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                Box(
+                    Modifier.size(32.dp).clip(CircleShape).background(Color.DarkGray),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        domain.take(1).uppercase(),
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tab.title,
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!tab.isBlank) {
+                    Text(
+                        domain.ifBlank { "..." },
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        DropdownMenu(
+            expanded = showContextMenu,
+            onDismissRequest = { showContextMenu = false },
+            containerColor = Color(0xFF292625)
+        ) {
+            DropdownMenuItem(
+                text = { Text("New Tab", color = Color.White) },
+                onClick = { showContextMenu = false; onNewChild() }
+            )
+            if (!tab.isBlank) {
+                DropdownMenuItem(
+                    text = { Text("Copy link", color = Color.White) },
+                    onClick = {
+                        showContextMenu = false
+                        clipboardManager.setText(AnnotatedString(tab.url))
+                    }
+                )
+            }
+        }
     }
 }
 //PART 2 END
