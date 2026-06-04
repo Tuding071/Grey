@@ -33,11 +33,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -52,6 +51,8 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -69,6 +70,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -89,6 +91,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
@@ -279,7 +282,7 @@ fun GreyBrowser() {
                 }).observe(document.documentElement, { childList: true, subtree: true });
             })();
         """.trimIndent()
-        session.evaluateJS(js)
+        session.evaluatePromiseJS(js)
     }
 
     fun enableSelectionMode(session: GeckoSession) {
@@ -307,7 +310,7 @@ fun GreyBrowser() {
                 document.body.appendChild(overlay);
             })();
         """.trimIndent()
-        session.evaluateJS(js)
+        session.evaluatePromiseJS(js)
     }
 
     fun disableSelectionMode(session: GeckoSession) {
@@ -323,7 +326,7 @@ fun GreyBrowser() {
                 window.__greySelected = null;
             })();
         """.trimIndent()
-        session.evaluateJS(js)
+        session.evaluatePromiseJS(js)
     }
 
     fun selectParentElement(session: GeckoSession) {
@@ -342,7 +345,7 @@ fun GreyBrowser() {
                 }
             })();
         """.trimIndent()
-        session.evaluateJS(js)
+        session.evaluatePromiseJS(js)
     }
 
     fun selectChildElement(session: GeckoSession) {
@@ -361,7 +364,7 @@ fun GreyBrowser() {
                 }
             })();
         """.trimIndent()
-        session.evaluateJS(js)
+        session.evaluatePromiseJS(js)
     }
 
     fun hideSelectedElement(session: GeckoSession) {
@@ -377,7 +380,7 @@ fun GreyBrowser() {
                 });
             })();
         """.trimIndent()
-        session.evaluateJS(js)
+        session.evaluatePromiseJS(js)
         notificationMessage = "Element hidden: $selectedElementSelector"
         showNotification = true
         disableSelectionMode(session)
@@ -505,16 +508,19 @@ fun GreyBrowser() {
                     showContextMenu = true
                 }
             }
-            override fun onPrompt(
+        }
+
+        s.promptDelegate = object : GeckoSession.PromptDelegate {
+            override fun onTextPrompt(
                 session: GeckoSession,
-                prompt: GeckoSession.ContentDelegate.Prompt
-            ): GeckoResult<GeckoSession.ContentDelegate.PromptResponse>? {
+                prompt: GeckoSession.PromptDelegate.TextPrompt
+            ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
                 if (prompt.message?.startsWith("GREY_ELEMENT:") == true) {
                     val selector = prompt.message!!.removePrefix("GREY_ELEMENT:")
                     selectedElementSelector = selector
                     selectedElementTag = selector
                 }
-                return null
+                return GeckoResult.fromValue(prompt.dismiss())
             }
         }
 
