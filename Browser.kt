@@ -13,36 +13,33 @@
 // No round corners. All UI elements use sharp corners.
 
 // FULL-SCREEN OVERLAY PATTERN
-// All secondary screens (Tab Manager, History, Settings, etc.) use:
-// Popup(
-//     alignment = Alignment.TopStart,
-//     onDismissRequest = { ... },
-//     properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
-// ) {
-//     Surface(Modifier.fillMaxSize().statusBarsPadding().background(WarmGrey), color = WarmGrey) {
-//         Column(Modifier.fillMaxSize()) {
-//             // Header: Close button + title + count
-//             // Content: LazyColumn
-//             // Optional bottom button
-//         }
-//     }
-// }
+// All secondary screens use Popup + Surface + Column structure.
+// PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+
+// BACKUP SYSTEM
+// Single JSON file on external storage. Import on start, export on state change.
+// Atomic write: temp file then rename. Handles all data types added in future parts.
 //PART 0 END
 
 //PART 1 START
 package com.grey.browser
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -62,10 +59,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
@@ -88,6 +88,9 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -114,9 +117,18 @@ class TabState {
 data class HistoryItem(val url: String, val title: String, val timestamp: Long = System.currentTimeMillis())
 
 const val MAX_WARM_TABS = 15
+const val MAX_HISTORY_ITEMS = 250
 
 fun stripHttps(url: String): String {
     return url.removePrefix("https://").removePrefix("http://").removePrefix("www.")
+}
+
+fun getDomainName(url: String): String {
+    if (url.isBlank()) return ""
+    return try {
+        val host = android.net.Uri.parse(url).host?.removePrefix("www.") ?: return ""
+        host
+    } catch (e: Exception) { "" }
 }
 
 @Composable
@@ -142,6 +154,10 @@ fun GreyBrowser() {
     val history = remember { mutableStateListOf<HistoryItem>() }
     var lastActiveUrl by remember { mutableStateOf("") }
     val filterRules = remember { mutableStateListOf<String>() }
+    val faviconBitmaps = remember { mutableStateMapOf<String, Bitmap?>() }
+    val faviconLoading = remember { mutableStateMapOf<String, Boolean>() }
+    val tabFavicons = remember { mutableStateMapOf<String, Bitmap?>() }
+    val tabFaviconLoading = remember { mutableStateMapOf<String, Boolean>() }
 
     val currentTab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
     val isLoading = currentTab != null && currentTab.progress in 1..99
@@ -181,10 +197,6 @@ fun GreyBrowser() {
                         this.isDiscarded = true
                     })
                 }
-                if (tabs.isNotEmpty() && lastActiveUrl.isNotBlank()) {
-                    val idx = tabs.indexOfFirst { it.url == lastActiveUrl }
-                    if (idx >= 0) currentTabIndex = idx
-                }
             }
         }
     }
@@ -192,6 +204,44 @@ fun GreyBrowser() {
     LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
         scope.launch(Dispatchers.IO) {
             exportBackup(tabs.toList(), history.toList(), lastActiveUrl)
+        }
+    }
+
+    fun loadFavicon(domain: String) {
+        if (domain.isBlank()) return
+        if (faviconBitmaps.containsKey(domain) || faviconLoading[domain] == true) return
+        faviconLoading[domain] = true
+        scope.launch {
+            val cached = FaviconMemoryCache.get(domain)
+            if (cached != null) {
+                faviconBitmaps[domain] = cached
+                faviconLoading[domain] = false
+                return@launch
+            }
+            val bitmap = FaviconCache.getFaviconBitmap(context, domain)
+                ?: FaviconCache.downloadAndCacheFavicon(context, domain)
+            if (bitmap != null) FaviconMemoryCache.put(domain, bitmap)
+            faviconBitmaps[domain] = bitmap
+            faviconLoading[domain] = false
+        }
+    }
+
+    fun loadTabFavicon(domain: String) {
+        if (domain.isBlank()) return
+        if (tabFavicons.containsKey(domain) || tabFaviconLoading[domain] == true) return
+        tabFaviconLoading[domain] = true
+        scope.launch {
+            val cached = FaviconMemoryCache.get(domain)
+            if (cached != null) {
+                tabFavicons[domain] = cached
+                tabFaviconLoading[domain] = false
+                return@launch
+            }
+            val bitmap = FaviconCache.getFaviconBitmap(context, domain)
+                ?: FaviconCache.downloadAndCacheFavicon(context, domain)
+            if (bitmap != null) FaviconMemoryCache.put(domain, bitmap)
+            tabFavicons[domain] = bitmap
+            tabFaviconLoading[domain] = false
         }
     }
 
@@ -211,6 +261,16 @@ fun GreyBrowser() {
         } catch (e: Exception) { return false }
         return filterRules.any { rule ->
             host == rule || host.endsWith(".$rule") || url.lowercase().contains(rule)
+        }
+    }
+
+    fun addToHistory(url: String, title: String) {
+        if (url.isBlank() || url == "about:blank") return
+        val baseUrl = url.substringBefore("#")
+        history.removeAll { it.url.substringBefore("#") == baseUrl }
+        history.add(HistoryItem(url = url, title = title.ifBlank { url }))
+        if (history.size > MAX_HISTORY_ITEMS) {
+            history.removeAt(0)
         }
     }
 
@@ -245,9 +305,7 @@ fun GreyBrowser() {
                 if (!historySaved && newTitle != "New Tab" && newTitle != tab.url
                     && tab.url.isNotBlank() && tab.url != "about:blank") {
                     historySaved = true
-                    val baseUrl = tab.url.substringBefore("#")
-                    history.removeAll { it.url.substringBefore("#") == baseUrl }
-                    history.add(HistoryItem(tab.url, newTitle))
+                    addToHistory(tab.url, newTitle)
                 }
             }
         }
@@ -267,9 +325,7 @@ fun GreyBrowser() {
                 if (success && !historySaved && tab.title != "New Tab"
                     && tab.url.isNotBlank() && tab.url != "about:blank") {
                     historySaved = true
-                    val baseUrl = tab.url.substringBefore("#")
-                    history.removeAll { it.url.substringBefore("#") == baseUrl }
-                    history.add(HistoryItem(tab.url, tab.title))
+                    addToHistory(tab.url, tab.title)
                 }
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
@@ -427,11 +483,7 @@ fun GreyBrowser() {
                         .padding(horizontal = 12.dp, vertical = 14.dp)
                 ) {
                     if (urlInput.isEmpty() && !isUrlFocused) {
-                        Text(
-                            "Search or enter URL",
-                            color = Color.White.copy(alpha = 0.5f),
-                            fontSize = 16.sp
-                        )
+                        Text("Search or enter URL", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
                     }
                     BasicTextField(
                         value = urlInput,
@@ -546,6 +598,10 @@ fun GreyBrowser() {
                         LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
                             items(tabs.size) { index ->
                                 val t = tabs[index]
+                                val domain = getDomainName(t.url)
+                                LaunchedEffect(t.url) { loadTabFavicon(domain) }
+                                val fav = tabFavicons[domain]
+
                                 Box(
                                     Modifier
                                         .fillMaxWidth()
@@ -555,6 +611,26 @@ fun GreyBrowser() {
                                         .padding(12.dp)
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (fav != null) {
+                                            Image(
+                                                fav.asImageBitmap(), domain,
+                                                Modifier.size(32.dp).clip(CircleShape),
+                                                contentScale = ContentScale.Fit
+                                            )
+                                        } else {
+                                            Box(
+                                                Modifier.size(32.dp).clip(CircleShape).background(Color.DarkGray),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    domain.take(1).uppercase(),
+                                                    color = Color.White,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.width(10.dp))
                                         Column(Modifier.weight(1f)) {
                                             Text(
                                                 t.title,
@@ -565,7 +641,7 @@ fun GreyBrowser() {
                                             )
                                             if (!t.isBlank) {
                                                 Text(
-                                                    stripHttps(t.url),
+                                                    domain.ifBlank { "..." },
                                                     color = Color.White.copy(alpha = 0.5f),
                                                     fontSize = 11.sp,
                                                     maxLines = 1,
@@ -617,6 +693,10 @@ fun GreyBrowser() {
                     } else {
                         LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
                             items(history.reversed()) { item ->
+                                val domain = getDomainName(item.url)
+                                LaunchedEffect(item.url) { loadFavicon(domain) }
+                                val fav = faviconBitmaps[domain]
+
                                 Box(
                                     Modifier
                                         .fillMaxWidth()
@@ -628,21 +708,43 @@ fun GreyBrowser() {
                                         }
                                         .padding(12.dp)
                                 ) {
-                                    Column {
-                                        Text(
-                                            item.title,
-                                            color = Color.White,
-                                            fontSize = 14.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            stripHttps(item.url),
-                                            color = Color.White.copy(alpha = 0.5f),
-                                            fontSize = 11.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (fav != null) {
+                                            Image(
+                                                fav.asImageBitmap(), domain,
+                                                Modifier.size(20.dp).clip(CircleShape),
+                                                contentScale = ContentScale.Fit
+                                            )
+                                        } else {
+                                            Box(
+                                                Modifier.size(20.dp).clip(CircleShape).background(Color.DarkGray),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    domain.take(1).uppercase(),
+                                                    color = Color.White,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.width(10.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                item.title,
+                                                color = Color.White,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                stripHttps(item.url),
+                                                color = Color.White.copy(alpha = 0.5f),
+                                                fontSize = 11.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -669,295 +771,126 @@ fun GreyBrowser() {
 }
 //PART 2 END
 
-//PART 3 START
-data class BackupData(
-    val lastActiveUrl: String,
-    val tabs: List<Pair<String, String>>,
-    val history: List<HistoryItem>
-)
-
-private val BACKUP_DIR = File(Environment.getExternalStorageDirectory(), "Grey")
-private val BACKUP_FILE = File(BACKUP_DIR, "Grey-backup.json")
-
-fun importBackup(): BackupData {
-    android.util.Log.d("GreyBrowser", "importBackup: checking ${BACKUP_FILE.absolutePath}")
-    if (!BACKUP_FILE.exists()) {
-        android.util.Log.d("GreyBrowser", "importBackup: file not found")
-        return BackupData("", emptyList(), emptyList())
-    }
-    return try {
-        val json = BACKUP_FILE.readText()
-        android.util.Log.d("GreyBrowser", "importBackup: read ${json.length} chars")
-        val root = JSONObject(json)
-        val lastActiveUrl = root.optString("lastActiveUrl", "")
-        val tabs = mutableListOf<Pair<String, String>>()
-        val tabsArr = root.optJSONArray("tabs")
-        if (tabsArr != null) {
-            for (i in 0 until tabsArr.length()) {
-                val t = tabsArr.getJSONObject(i)
-                tabs.add(Pair(t.getString("url"), t.optString("title", "")))
-            }
+//PART 6 START
+object FaviconMemoryCache {
+    private const val MAX_MEMORY_FAVICONS = 100
+    private val cache = object : LinkedHashMap<String, Bitmap>(MAX_MEMORY_FAVICONS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean {
+            return size > MAX_MEMORY_FAVICONS
         }
-        val history = mutableListOf<HistoryItem>()
-        val histArr = root.optJSONArray("history")
-        if (histArr != null) {
-            for (i in 0 until histArr.length()) {
-                val h = histArr.getJSONObject(i)
-                history.add(HistoryItem(
-                    url = h.getString("url"),
-                    title = h.optString("title", ""),
-                    timestamp = h.optLong("timestamp", System.currentTimeMillis())
-                ))
-            }
-        }
-        android.util.Log.d("GreyBrowser", "importBackup: ${tabs.size} tabs, ${history.size} history items")
-        BackupData(lastActiveUrl, tabs, history)
-    } catch (e: Exception) {
-        android.util.Log.e("GreyBrowser", "importBackup failed", e)
-        BackupData("", emptyList(), emptyList())
     }
+
+    fun get(domain: String): Bitmap? = cache[domain]
+    fun put(domain: String, bitmap: Bitmap) { cache[domain] = bitmap }
+    fun clear() = cache.clear()
 }
 
-fun exportBackup(
-    tabs: List<TabState>,
-    history: List<HistoryItem>,
-    lastActiveUrl: String
-) {
-    try {
-        if (!BACKUP_DIR.exists()) {
-            val created = BACKUP_DIR.mkdirs()
-            android.util.Log.d("GreyBrowser", "exportBackup: mkdirs result=$created, path=${BACKUP_DIR.absolutePath}")
-        }
-        val root = JSONObject()
-        root.put("lastActiveUrl", lastActiveUrl)
+object FaviconCache {
+    private const val MAX_FAVICONS = 50
+    private const val FAVICON_DIR = "favicons"
+    private const val META_FILE = "favicon_meta.json"
 
-        val tabsArr = JSONArray()
-        for (tab in tabs) {
-            if (!tab.isBlank) {
-                val obj = JSONObject()
-                obj.put("url", tab.url)
-                obj.put("title", tab.title)
-                tabsArr.put(obj)
+    data class FaviconMeta(val domain: String, val lastAccessed: Long = System.currentTimeMillis())
+
+    private fun getFaviconDir(context: Context): File {
+        val dir = File(context.filesDir, FAVICON_DIR)
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun getMetaFile(context: Context) = File(context.filesDir, META_FILE)
+
+    private fun loadMeta(context: Context): MutableList<FaviconMeta> {
+        val file = getMetaFile(context)
+        if (!file.exists()) return mutableListOf()
+        return try {
+            val json = file.readText()
+            val array = JSONArray(json)
+            mutableListOf<FaviconMeta>().apply {
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    add(FaviconMeta(obj.getString("domain"), obj.getLong("lastAccessed")))
+                }
             }
-        }
-        root.put("tabs", tabsArr)
+        } catch (e: Exception) { mutableListOf() }
+    }
 
-        val histArr = JSONArray()
-        for (h in history) {
+    private fun saveMeta(context: Context, meta: List<FaviconMeta>) {
+        val array = JSONArray()
+        for (item in meta) {
             val obj = JSONObject()
-            obj.put("url", h.url)
-            obj.put("title", h.title)
-            obj.put("timestamp", h.timestamp)
-            histArr.put(obj)
+            obj.put("domain", item.domain)
+            obj.put("lastAccessed", item.lastAccessed)
+            array.put(obj)
         }
-        root.put("history", histArr)
-
-        val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
-        tempFile.writeText(root.toString(2))
-        val renamed = tempFile.renameTo(BACKUP_FILE)
-        android.util.Log.d("GreyBrowser", "exportBackup: wrote ${tabsArr.length()} tabs, ${histArr.length()} history, rename=$renamed")
-    } catch (e: Exception) {
-        android.util.Log.e("GreyBrowser", "exportBackup failed", e)
+        getMetaFile(context).writeText(array.toString())
     }
-}
-//PART 3 END
 
-//PART 4 START
-data class FilterFile(
-    val name: String,
-    val ruleCount: Int,
-    val enabled: Boolean = true
-)
+    fun getFaviconFile(context: Context, domain: String) =
+        File(getFaviconDir(context), domain.replace(".", "_").replace("/", "_") + ".png")
 
-private val FILTERS_DIR = File(Environment.getExternalStorageDirectory(), "Grey/Filters")
-
-fun loadFilterRules(): List<String> {
-    val rules = mutableListOf<String>()
-    try {
-        if (!FILTERS_DIR.exists()) {
-            FILTERS_DIR.mkdirs()
-            return rules
+    fun getFaviconBitmap(context: Context, domain: String): Bitmap? {
+        val file = getFaviconFile(context, domain)
+        if (!file.exists()) return null
+        val meta = loadMeta(context)
+        val existing = meta.find { it.domain == domain }
+        if (existing != null) {
+            meta.remove(existing)
+            meta.add(existing.copy(lastAccessed = System.currentTimeMillis()))
+        } else {
+            meta.add(FaviconMeta(domain, System.currentTimeMillis()))
         }
-        val txtFiles = FILTERS_DIR.listFiles { file -> file.extension == "txt" } ?: return rules
-        for (file in txtFiles) {
-            android.util.Log.d("GreyBrowser", "Loading filter: ${file.name}")
-            file.useLines { lines ->
-                for (line in lines) {
-                    val trimmed = line.trim()
-                    if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
-                    if (trimmed.startsWith("||") && trimmed.endsWith("^")) {
-                        val domain = trimmed.removePrefix("||").removeSuffix("^")
-                        rules.add(domain)
-                    }
+        saveMeta(context, meta)
+        return BitmapFactory.decodeFile(file.absolutePath)
+    }
+
+    private fun tryDownload(urlStr: String): Bitmap? {
+        return try {
+            val url = URL(urlStr)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 4000
+            conn.readTimeout = 4000
+            conn.connect()
+            if (conn.responseCode == 200) {
+                val b = BitmapFactory.decodeStream(conn.inputStream)
+                conn.inputStream.close()
+                conn.disconnect()
+                b
+            } else {
+                conn.disconnect()
+                null
+            }
+        } catch (e: Exception) { null }
+    }
+
+    suspend fun downloadAndCacheFavicon(context: Context, domain: String): Bitmap? = withContext(Dispatchers.IO) {
+        val sources = listOf(
+            "https://www.google.com/s2/favicons?domain=$domain&sz=64",
+            "https://$domain/favicon.ico",
+            "https://$domain/favicon.png"
+        )
+        var bitmap: Bitmap? = null
+        for (src in sources) {
+            bitmap = tryDownload(src)
+            if (bitmap != null) break
+        }
+        if (bitmap != null) {
+            FileOutputStream(getFaviconFile(context, domain)).use {
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            val meta = loadMeta(context)
+            meta.removeAll { it.domain == domain }
+            meta.add(FaviconMeta(domain, System.currentTimeMillis()))
+            if (meta.size > MAX_FAVICONS) {
+                val oldest = meta.minByOrNull { it.lastAccessed }
+                if (oldest != null) {
+                    meta.remove(oldest)
+                    getFaviconFile(context, oldest.domain).delete()
                 }
             }
+            saveMeta(context, meta)
         }
-        android.util.Log.d("GreyBrowser", "Loaded ${rules.size} filter rules")
-    } catch (e: Exception) {
-        android.util.Log.e("GreyBrowser", "Failed to load filters", e)
-    }
-    return rules
-}
-
-fun getFilterFiles(): List<FilterFile> {
-    val files = mutableListOf<FilterFile>()
-    try {
-        if (!FILTERS_DIR.exists()) return files
-        val txtFiles = FILTERS_DIR.listFiles { file -> file.extension == "txt" } ?: return files
-        for (file in txtFiles) {
-            var count = 0
-            file.useLines { lines ->
-                for (line in lines) {
-                    val trimmed = line.trim()
-                    if (trimmed.isEmpty() || trimmed.startsWith("!") || trimmed.startsWith("[")) continue
-                    if (trimmed.startsWith("||") && trimmed.endsWith("^")) count++
-                }
-            }
-            files.add(FilterFile(name = file.name, ruleCount = count))
-        }
-    } catch (e: Exception) {
-        android.util.Log.e("GreyBrowser", "Failed to list filter files", e)
-    }
-    return files
-}
-//PART 4 END
-
-//PART 5 START
-@Composable
-fun FiltersUI(
-    filterRules: List<String>,
-    onReload: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val filterFiles = remember { mutableStateListOf<FilterFile>() }
-    val scope = rememberCoroutineScope()
-
-    fun reloadFiles() {
-        scope.launch(Dispatchers.IO) {
-            val files = getFilterFiles()
-            filterFiles.clear()
-            filterFiles.addAll(files)
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        reloadFiles()
-    }
-
-    Popup(
-        alignment = Alignment.TopStart,
-        onDismissRequest = onDismiss,
-        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
-    ) {
-        Surface(
-            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1A1817)),
-            color = Color(0xFF1A1817)
-        ) {
-            Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, "Close", tint = Color.White)
-                    }
-                    Text("Filters", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "${filterRules.size} rules",
-                        color = Color.White.copy(alpha = 0.5f),
-                        fontSize = 14.sp
-                    )
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp)
-                        .background(Color(0xFF292625))
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Text(
-                            "Place .txt files in /Grey/Filters/",
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = 12.sp
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Uses EasyList format (||domain.com^).\nReload after adding new files.",
-                            color = Color.White.copy(alpha = 0.5f),
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                if (filterFiles.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No filter files found", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
-                    }
-                } else {
-                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                        items(filterFiles) { file ->
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp)
-                                    .background(Color(0xFF292625))
-                                    .padding(12.dp)
-                            ) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            file.name,
-                                            color = Color.White,
-                                            fontSize = 14.sp,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            "${file.ruleCount} rules",
-                                            color = Color.White.copy(alpha = 0.5f),
-                                            fontSize = 11.sp
-                                        )
-                                    }
-                                    Text(
-                                        if (file.enabled) "ON" else "OFF",
-                                        color = if (file.enabled) Color(0xFF4CAF50) else Color.White.copy(alpha = 0.3f),
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        onReload()
-                        reloadFiles()
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
-                        .navigationBarsPadding(),
-                    shape = RectangleShape,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = BorderStroke(1.dp, Color.White)
-                ) {
-                    Text("Reload Filters", color = Color.White)
-                }
-            }
-        }
+        bitmap
     }
 }
-//PART 5 END
+//PART 6 END
