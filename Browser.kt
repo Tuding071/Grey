@@ -158,50 +158,54 @@ fun GreyBrowser() {
     val faviconLoading = remember { mutableStateMapOf<String, Boolean>() }
     val tabFavicons = remember { mutableStateMapOf<String, Bitmap?>() }
     val tabFaviconLoading = remember { mutableStateMapOf<String, Boolean>() }
+    var backupLoaded by remember { mutableStateOf(false) }
 
     val currentTab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
     val isLoading = currentTab != null && currentTab.progress in 1..99
 
     LaunchedEffect(Unit) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-            if (!android.os.Environment.isExternalStorageManager()) {
-                val intent = android.content.Intent(
-                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    android.net.Uri.parse("package:${context.packageName}")
-                )
-                context.startActivity(intent)
-            }
-        }
-    }
+        var permissionRequested = false
+        while (!backupLoaded) {
+            val hasPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                android.os.Environment.isExternalStorageManager()
+            } else { true }
 
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            val rules = loadFilterRules()
-            withContext(Dispatchers.Main) {
-                filterRules.addAll(rules)
+            if (!hasPermission) {
+                if (!permissionRequested) {
+                    val intent = android.content.Intent(
+                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        android.net.Uri.parse("package:${context.packageName}")
+                    )
+                    context.startActivity(intent)
+                    permissionRequested = true
+                }
+                delay(500)
+                continue
             }
-        }
-    }
 
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            val data = importBackup()
-            withContext(Dispatchers.Main) {
-                history.addAll(data.history)
-                lastActiveUrl = data.lastActiveUrl
-                for ((url, title) in data.tabs) {
-                    tabs.add(TabState().apply {
-                        this.url = url
-                        this.title = title
-                        this.isBlank = false
-                        this.isDiscarded = true
-                    })
+            withContext(Dispatchers.IO) {
+                val rules = loadFilterRules()
+                val data = importBackup()
+                withContext(Dispatchers.Main) {
+                    filterRules.addAll(rules)
+                    history.addAll(data.history)
+                    lastActiveUrl = data.lastActiveUrl
+                    for ((url, title) in data.tabs) {
+                        tabs.add(TabState().apply {
+                            this.url = url
+                            this.title = title
+                            this.isBlank = false
+                            this.isDiscarded = true
+                        })
+                    }
                 }
             }
+            backupLoaded = true
         }
     }
 
-    LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
+    LaunchedEffect(backupLoaded, history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
+        if (!backupLoaded) return@LaunchedEffect
         scope.launch(Dispatchers.IO) {
             exportBackup(tabs.toList(), history.toList(), lastActiveUrl)
         }
@@ -636,7 +640,7 @@ fun GreyBrowser() {
                                                 t.title,
                                                 color = Color.White,
                                                 fontSize = 14.sp,
-                                                maxLines = 1,
+                                                maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             if (!t.isBlank) {
