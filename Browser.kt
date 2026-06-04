@@ -170,6 +170,8 @@ fun GreyBrowser() {
     var showBookmarks by remember { mutableStateOf(false) }
     var showFilters by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var showContextMenu by remember { mutableStateOf(false) }
+    var contextMenuUri by remember { mutableStateOf<String?>(null) }
     val history = remember { mutableStateListOf<HistoryItem>() }
     val bookmarks = remember { mutableStateListOf<Bookmark>() }
     var lastActiveUrl by remember { mutableStateOf("") }
@@ -352,6 +354,15 @@ fun GreyBrowser() {
                 val newTitle = title ?: tab.url
                 tab.title = newTitle
             }
+            override fun onContextMenu(
+                session: GeckoSession, screenX: Int, screenY: Int,
+                element: GeckoSession.ContentDelegate.ContextElement
+            ) {
+                if (element.linkUri != null) {
+                    contextMenuUri = element.linkUri
+                    showContextMenu = true
+                }
+            }
         }
 
         s.progressDelegate = object : GeckoSession.ProgressDelegate {
@@ -495,15 +506,18 @@ fun GreyBrowser() {
     }
 
     BackHandler {
-        if (currentTabIndex >= 0) {
-            val tab = tabs[currentTabIndex]
-            if (tab.canGoBack) {
-                tab.session?.goBack()
-            } else {
-                val parentIdx = tab.parentTabIndex
-                closeTab(currentTabIndex)
-                currentTabIndex = if (parentIdx >= 0 && parentIdx < tabs.size) parentIdx else -1
-                urlInput = if (currentTabIndex >= 0 && !tabs[currentTabIndex].isBlank) stripHttps(tabs[currentTabIndex].url) else ""
+        when {
+            showContextMenu -> { showContextMenu = false; contextMenuUri = null }
+            currentTabIndex >= 0 -> {
+                val tab = tabs[currentTabIndex]
+                if (tab.canGoBack) {
+                    tab.session?.goBack()
+                } else {
+                    val parentIdx = tab.parentTabIndex
+                    closeTab(currentTabIndex)
+                    currentTabIndex = if (parentIdx >= 0 && parentIdx < tabs.size) parentIdx else -1
+                    urlInput = if (currentTabIndex >= 0 && !tabs[currentTabIndex].isBlank) stripHttps(tabs[currentTabIndex].url) else ""
+                }
             }
         }
     }
@@ -656,6 +670,54 @@ fun GreyBrowser() {
         }
     }
 
+    // ── Link Context Menu (centered popup) ───────────
+    if (showContextMenu && contextMenuUri != null) {
+        Popup(
+            alignment = Alignment.Center,
+            onDismissRequest = { showContextMenu = false; contextMenuUri = null },
+            properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = true)
+        ) {
+            Surface(
+                modifier = Modifier.width(240.dp),
+                color = Color(0xFF292625),
+                shape = RectangleShape,
+                tonalElevation = 0.dp
+            ) {
+                Column {
+                    DropdownMenuItem(
+                        text = { Text("New Tab", color = Color.White) },
+                        onClick = {
+                            val uri = contextMenuUri!!
+                            showContextMenu = false; contextMenuUri = null
+                            if (currentTabIndex >= 0) {
+                                createChildTab(currentTabIndex)
+                                val newTab = tabs[currentTabIndex]
+                                ensureSession(newTab)
+                                newTab.session?.loadUri(uri)
+                                newTab.url = uri
+                                newTab.isBlank = false
+                                lastActiveUrl = uri
+                                urlInput = stripHttps(uri)
+                                manageWarmTabs(currentTabIndex)
+                            } else {
+                                loadUrl(uri)
+                            }
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Copy Link", color = Color.White) },
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(contextMenuUri!!))
+                            notificationMessage = "Link copied"
+                            showNotification = true
+                            showContextMenu = false; contextMenuUri = null
+                        }
+                    )
+                }
+            }
+        }
+    }
+
     // ── Tab Manager ──────────────────────────────────
     if (showTabManager) {
         val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
@@ -706,10 +768,9 @@ fun GreyBrowser() {
                                 items(ungrouped.size) { i ->
                                     val t = ungrouped[i]
                                     val realIndex = tabs.indexOf(t)
-                                    TabRow(t, realIndex, currentTabIndex, tabFavicons, clipboardManager,
+                                    SimpleTabRow(t, realIndex, currentTabIndex, tabFavicons,
                                         onSwitch = { switchToTab(realIndex) },
                                         onClose = { closeTab(realIndex) },
-                                        onNewChild = { createChildTab(realIndex) },
                                         loadFavicon = { loadTabFavicon(it) }
                                     )
                                 }
@@ -733,10 +794,9 @@ fun GreyBrowser() {
                                 items(groupTabs.size) { i ->
                                     val t = groupTabs[i]
                                     val realIndex = tabs.indexOf(t)
-                                    TabRow(t, realIndex, currentTabIndex, tabFavicons, clipboardManager,
+                                    SimpleTabRow(t, realIndex, currentTabIndex, tabFavicons,
                                         onSwitch = { switchToTab(realIndex) },
                                         onClose = { closeTab(realIndex) },
-                                        onNewChild = { createChildTab(realIndex) },
                                         loadFavicon = { loadTabFavicon(it) }
                                     )
                                 }
@@ -869,20 +929,16 @@ fun GreyBrowser() {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun TabRow(
+fun SimpleTabRow(
     tab: TabState,
     index: Int,
     currentTabIndex: Int,
     tabFavicons: Map<String, Bitmap?>,
-    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
     onSwitch: () -> Unit,
     onClose: () -> Unit,
-    onNewChild: () -> Unit,
     loadFavicon: (String) -> Unit
 ) {
-    var showContextMenu by remember { mutableStateOf(false) }
     val domain = getDomainName(tab.url)
     val isChild = tab.parentTabIndex >= 0
 
@@ -894,10 +950,7 @@ fun TabRow(
             .fillMaxWidth()
             .padding(vertical = 2.dp)
             .background(Color(0xFF292625))
-            .combinedClickable(
-                onClick = onSwitch,
-                onLongClick = { showContextMenu = true }
-            )
+            .clickable { onSwitch() }
             .padding(start = if (isChild) 24.dp else 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -941,26 +994,6 @@ fun TabRow(
             }
             IconButton(onClick = onClose) {
                 Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
-            }
-        }
-
-        DropdownMenu(
-            expanded = showContextMenu,
-            onDismissRequest = { showContextMenu = false },
-            containerColor = Color(0xFF292625)
-        ) {
-            DropdownMenuItem(
-                text = { Text("New Tab", color = Color.White) },
-                onClick = { showContextMenu = false; onNewChild() }
-            )
-            if (!tab.isBlank) {
-                DropdownMenuItem(
-                    text = { Text("Copy link", color = Color.White) },
-                    onClick = {
-                        showContextMenu = false
-                        clipboardManager.setText(AnnotatedString(tab.url))
-                    }
-                )
             }
         }
     }
