@@ -298,6 +298,19 @@ fun GreyBrowser() {
         }
     }
 
+    fun fixParentRefs(removedIndex: Int) {
+        for (t in tabs) {
+            if (t.parentTabIndex == removedIndex) t.parentTabIndex = -1
+            else if (t.parentTabIndex > removedIndex) t.parentTabIndex--
+        }
+    }
+
+    fun fixParentRefsAfterInsert(insertIndex: Int) {
+        for (t in tabs) {
+            if (t.parentTabIndex >= insertIndex && tabs.indexOf(t) != insertIndex) t.parentTabIndex++
+        }
+    }
+
     fun addToHistory(url: String, title: String) {
         if (url.isBlank() || url == "about:blank") return
         val baseUrl = url.substringBefore("#")
@@ -405,7 +418,6 @@ fun GreyBrowser() {
         val existingIndex = tabs.indexOfFirst { it.url == resolved && !it.isBlank }
         if (existingIndex >= 0 && existingIndex != currentTabIndex) {
             tabs[existingIndex].session?.close()
-            val oldParent = tabs[existingIndex].parentTabIndex
             tabs.removeAt(existingIndex)
             fixParentRefs(existingIndex)
             if (currentTabIndex > existingIndex) currentTabIndex--
@@ -435,19 +447,6 @@ fun GreyBrowser() {
         currentTabIndex = insertAt
         urlInput = ""
         showTabManager = false
-    }
-
-    fun fixParentRefs(removedIndex: Int) {
-        for (t in tabs) {
-            if (t.parentTabIndex == removedIndex) t.parentTabIndex = -1
-            else if (t.parentTabIndex > removedIndex) t.parentTabIndex--
-        }
-    }
-
-    fun fixParentRefsAfterInsert(insertIndex: Int) {
-        for (t in tabs) {
-            if (t.parentTabIndex >= insertIndex && tabs.indexOf(t) != insertIndex) t.parentTabIndex++
-        }
     }
 
     fun switchToTab(index: Int) {
@@ -659,7 +658,7 @@ fun GreyBrowser() {
 
     // ── Tab Manager ──────────────────────────────────
     if (showTabManager) {
-        val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() || tabs.any { t -> t.isBlank } }
+        val domainGroups = tabs.groupBy { getDomainName(it.url) }.filter { it.key.isNotBlank() }
         val ungrouped = tabs.filter { getDomainName(it.url).isBlank() }
 
         Popup(
@@ -694,7 +693,6 @@ fun GreyBrowser() {
                         }
                     } else {
                         LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                            // Ungrouped (blank/new tabs) first
                             if (ungrouped.isNotEmpty()) {
                                 item {
                                     Text(
@@ -708,7 +706,7 @@ fun GreyBrowser() {
                                 items(ungrouped.size) { i ->
                                     val t = ungrouped[i]
                                     val realIndex = tabs.indexOf(t)
-                                    TabRow(t, realIndex, tabs, currentTabIndex, tabFavicons, clipboardManager,
+                                    TabRow(t, realIndex, currentTabIndex, tabFavicons, clipboardManager,
                                         onSwitch = { switchToTab(realIndex) },
                                         onClose = { closeTab(realIndex) },
                                         onNewChild = { createChildTab(realIndex) },
@@ -718,7 +716,6 @@ fun GreyBrowser() {
                                 item { Spacer(Modifier.height(32.dp)) }
                             }
 
-                            // Grouped by domain
                             val sortedDomains = domainGroups.keys.sortedBy { d ->
                                 domainGroups[d]?.firstOrNull()?.let { tabs.indexOf(it) } ?: Int.MAX_VALUE
                             }
@@ -736,7 +733,7 @@ fun GreyBrowser() {
                                 items(groupTabs.size) { i ->
                                     val t = groupTabs[i]
                                     val realIndex = tabs.indexOf(t)
-                                    TabRow(t, realIndex, tabs, currentTabIndex, tabFavicons, clipboardManager,
+                                    TabRow(t, realIndex, currentTabIndex, tabFavicons, clipboardManager,
                                         onSwitch = { switchToTab(realIndex) },
                                         onClose = { closeTab(realIndex) },
                                         onNewChild = { createChildTab(realIndex) },
@@ -877,7 +874,6 @@ fun GreyBrowser() {
 fun TabRow(
     tab: TabState,
     index: Int,
-    tabs: List<TabState>,
     currentTabIndex: Int,
     tabFavicons: Map<String, Bitmap?>,
     clipboardManager: androidx.compose.ui.platform.ClipboardManager,
