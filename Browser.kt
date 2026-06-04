@@ -183,8 +183,8 @@ fun GreyBrowser() {
     }
 
     LaunchedEffect(history.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
-        withContext(Dispatchers.IO) {
-            exportBackup(tabs, history, lastActiveUrl)
+        scope.launch(Dispatchers.IO) {
+            exportBackup(tabs.toList(), history.toList(), lastActiveUrl)
         }
     }
 
@@ -396,12 +396,6 @@ fun GreyBrowser() {
             IconButton(onClick = { showTabManager = true }) {
                 Icon(Icons.Default.Tab, null, tint = Color.White, modifier = Modifier.size(18.dp))
             }
-            Text(
-                tabs.size.toString(),
-                color = Color.White,
-                fontSize = 14.sp,
-                modifier = Modifier.clickable { showTabManager = true }
-            )
 
             Box(
                 Modifier
@@ -679,9 +673,14 @@ private val BACKUP_DIR = File(Environment.getExternalStorageDirectory(), "Grey")
 private val BACKUP_FILE = File(BACKUP_DIR, "Grey-backup.json")
 
 fun importBackup(): BackupData {
-    if (!BACKUP_FILE.exists()) return BackupData("", emptyList(), emptyList())
+    android.util.Log.d("GreyBrowser", "importBackup: checking ${BACKUP_FILE.absolutePath}")
+    if (!BACKUP_FILE.exists()) {
+        android.util.Log.d("GreyBrowser", "importBackup: file not found")
+        return BackupData("", emptyList(), emptyList())
+    }
     return try {
         val json = BACKUP_FILE.readText()
+        android.util.Log.d("GreyBrowser", "importBackup: read ${json.length} chars")
         val root = JSONObject(json)
         val lastActiveUrl = root.optString("lastActiveUrl", "")
         val tabs = mutableListOf<Pair<String, String>>()
@@ -704,8 +703,10 @@ fun importBackup(): BackupData {
                 ))
             }
         }
+        android.util.Log.d("GreyBrowser", "importBackup: ${tabs.size} tabs, ${history.size} history items")
         BackupData(lastActiveUrl, tabs, history)
     } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "importBackup failed", e)
         BackupData("", emptyList(), emptyList())
     }
 }
@@ -716,7 +717,10 @@ fun exportBackup(
     lastActiveUrl: String
 ) {
     try {
-        if (!BACKUP_DIR.exists()) BACKUP_DIR.mkdirs()
+        if (!BACKUP_DIR.exists()) {
+            val created = BACKUP_DIR.mkdirs()
+            android.util.Log.d("GreyBrowser", "exportBackup: mkdirs result=$created, path=${BACKUP_DIR.absolutePath}")
+        }
         val root = JSONObject()
         root.put("lastActiveUrl", lastActiveUrl)
 
@@ -743,8 +747,11 @@ fun exportBackup(
 
         val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
         tempFile.writeText(root.toString(2))
-        tempFile.renameTo(BACKUP_FILE)
-    } catch (e: Exception) { }
+        val renamed = tempFile.renameTo(BACKUP_FILE)
+        android.util.Log.d("GreyBrowser", "exportBackup: wrote ${tabsArr.length()} tabs, ${histArr.length()} history, rename=$renamed")
+    } catch (e: Exception) {
+        android.util.Log.e("GreyBrowser", "exportBackup failed", e)
+    }
 }
 //PART 3 END
 
