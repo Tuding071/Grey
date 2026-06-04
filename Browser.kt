@@ -161,9 +161,16 @@ fun GreyBrowser() {
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val rules = loadFilterRules()
-            val data = importBackup()
             withContext(Dispatchers.Main) {
                 filterRules.addAll(rules)
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            val data = importBackup()
+            withContext(Dispatchers.Main) {
                 history.addAll(data.history)
                 lastActiveUrl = data.lastActiveUrl
                 for ((url, title) in data.tabs) {
