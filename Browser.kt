@@ -132,6 +132,14 @@ data class Bookmark(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class CosmeticRule(
+    val id: String = UUID.randomUUID().toString(),
+    val domain: String,
+    val selector: String,
+    val enabled: Boolean = true,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 const val MAX_WARM_TABS = 15
 const val MAX_HISTORY_ITEMS = 500
 
@@ -168,12 +176,18 @@ fun GreyBrowser() {
     var showTabManager by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
+    var showCosmeticRules by remember { mutableStateOf(false) }
     var showFilters by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuUri by remember { mutableStateOf<String?>(null) }
+    var showCosmeticFiltering by remember { mutableStateOf(false) }
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedElementSelector by remember { mutableStateOf("") }
+    var selectedElementTag by remember { mutableStateOf("") }
     val history = remember { mutableStateListOf<HistoryItem>() }
     val bookmarks = remember { mutableStateListOf<Bookmark>() }
+    val cosmeticRules = remember { mutableStateListOf<CosmeticRule>() }
     var lastActiveUrl by remember { mutableStateOf("") }
     val filterRules = remember { mutableStateListOf<String>() }
     val faviconBitmaps = remember { mutableStateMapOf<String, Bitmap?>() }
@@ -221,6 +235,7 @@ fun GreyBrowser() {
                     filterRules.addAll(rules)
                     history.addAll(data.history)
                     bookmarks.addAll(data.bookmarks)
+                    cosmeticRules.addAll(data.cosmeticRules)
                     lastActiveUrl = data.lastActiveUrl
                     for ((url, title) in data.tabs) {
                         tabs.add(TabState().apply {
@@ -236,11 +251,137 @@ fun GreyBrowser() {
         }
     }
 
-    LaunchedEffect(backupLoaded, history.toList(), bookmarks.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
+    LaunchedEffect(backupLoaded, history.toList(), bookmarks.toList(), cosmeticRules.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
         if (!backupLoaded) return@LaunchedEffect
         scope.launch(Dispatchers.IO) {
-            exportBackup(tabs.toList(), history.toList(), bookmarks.toList(), lastActiveUrl)
+            exportBackup(tabs.toList(), history.toList(), bookmarks.toList(), cosmeticRules.toList(), lastActiveUrl)
         }
+    }
+
+    fun injectCosmeticCSS(session: GeckoSession, url: String) {
+        val domain = getDomainName(url)
+        val selectors = cosmeticRules.filter { it.enabled && (it.domain == domain || it.domain == "*" || domain.endsWith(".${it.domain}")) }
+        if (selectors.isEmpty()) return
+        val cssRules = selectors.joinToString(" ") { "${it.selector} { display: none !important; }" }
+        val js = """
+            (function() {
+                var style = document.getElementById('grey-cosmetic-style');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'grey-cosmetic-style';
+                    document.head.appendChild(style);
+                }
+                style.textContent = '$cssRules';
+                new MutationObserver(function() {
+                    document.querySelectorAll('${selectors.joinToString(", ") { it.selector }}').forEach(function(el) {
+                        el.style.setProperty('display', 'none', 'important');
+                    });
+                }).observe(document.documentElement, { childList: true, subtree: true });
+            })();
+        """.trimIndent()
+        session.evaluateJS(js)
+    }
+
+    fun enableSelectionMode(session: GeckoSession) {
+        isSelectionMode = true
+        val js = """
+            (function() {
+                if (window.__greyPickerActive) return;
+                window.__greyPickerActive = true;
+                window.__greySelected = null;
+                var overlay = document.createElement('div');
+                overlay.id = '__grey_overlay';
+                overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;cursor:crosshair;';
+                overlay.addEventListener('touchstart', function(e) {
+                    e.preventDefault();
+                    var el = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY);
+                    if (el && el !== overlay) {
+                        window.__greySelected = el;
+                        el.style.outline = '2px solid red';
+                        var sel = el.tagName.toLowerCase();
+                        if (el.id) sel += '#' + el.id;
+                        if (el.className) sel += '.' + Array.from(el.classList).slice(0,3).join('.');
+                        window.prompt('GREY_ELEMENT:' + sel);
+                    }
+                });
+                document.body.appendChild(overlay);
+            })();
+        """.trimIndent()
+        session.evaluateJS(js)
+    }
+
+    fun disableSelectionMode(session: GeckoSession) {
+        isSelectionMode = false
+        selectedElementSelector = ""
+        selectedElementTag = ""
+        val js = """
+            (function() {
+                window.__greyPickerActive = false;
+                var overlay = document.getElementById('__grey_overlay');
+                if (overlay) overlay.remove();
+                if (window.__greySelected) window.__greySelected.style.outline = '';
+                window.__greySelected = null;
+            })();
+        """.trimIndent()
+        session.evaluateJS(js)
+    }
+
+    fun selectParentElement(session: GeckoSession) {
+        val js = """
+            (function() {
+                if (!window.__greySelected) return;
+                var el = window.__greySelected.parentElement;
+                if (el && el !== document.body && el !== document.documentElement) {
+                    window.__greySelected.style.outline = '';
+                    window.__greySelected = el;
+                    el.style.outline = '2px solid red';
+                    var sel = el.tagName.toLowerCase();
+                    if (el.id) sel += '#' + el.id;
+                    if (el.className) sel += '.' + Array.from(el.classList).slice(0,3).join('.');
+                    window.prompt('GREY_ELEMENT:' + sel);
+                }
+            })();
+        """.trimIndent()
+        session.evaluateJS(js)
+    }
+
+    fun selectChildElement(session: GeckoSession) {
+        val js = """
+            (function() {
+                if (!window.__greySelected) return;
+                var el = window.__greySelected.firstElementChild;
+                if (el) {
+                    window.__greySelected.style.outline = '';
+                    window.__greySelected = el;
+                    el.style.outline = '2px solid red';
+                    var sel = el.tagName.toLowerCase();
+                    if (el.id) sel += '#' + el.id;
+                    if (el.className) sel += '.' + Array.from(el.classList).slice(0,3).join('.');
+                    window.prompt('GREY_ELEMENT:' + sel);
+                }
+            })();
+        """.trimIndent()
+        session.evaluateJS(js)
+    }
+
+    fun hideSelectedElement(session: GeckoSession) {
+        if (selectedElementSelector.isBlank() || currentTab == null) return
+        val domain = getDomainName(currentTab.url)
+        if (domain.isBlank()) return
+        cosmeticRules.removeAll { it.domain == domain && it.selector == selectedElementSelector }
+        cosmeticRules.add(0, CosmeticRule(domain = domain, selector = selectedElementSelector))
+        val js = """
+            (function() {
+                document.querySelectorAll('${selectedElementSelector}').forEach(function(el) {
+                    el.style.setProperty('display', 'none', 'important');
+                });
+            })();
+        """.trimIndent()
+        session.evaluateJS(js)
+        notificationMessage = "Element hidden: $selectedElementSelector"
+        showNotification = true
+        disableSelectionMode(session)
+        showCosmeticFiltering = false
     }
 
     fun loadFavicon(domain: String) {
@@ -325,6 +466,7 @@ fun GreyBrowser() {
 
     fun setupDelegates(tab: TabState) {
         val s = tab.session ?: return
+        var cosmeticInjected = false
 
         s.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
@@ -363,6 +505,17 @@ fun GreyBrowser() {
                     showContextMenu = true
                 }
             }
+            override fun onPrompt(
+                session: GeckoSession,
+                prompt: GeckoSession.ContentDelegate.Prompt
+            ): GeckoResult<GeckoSession.ContentDelegate.PromptResponse>? {
+                if (prompt.message?.startsWith("GREY_ELEMENT:") == true) {
+                    val selector = prompt.message!!.removePrefix("GREY_ELEMENT:")
+                    selectedElementSelector = selector
+                    selectedElementTag = selector
+                }
+                return null
+            }
         }
 
         s.progressDelegate = object : GeckoSession.ProgressDelegate {
@@ -379,6 +532,10 @@ fun GreyBrowser() {
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
                 tab.progress = progress
+                if (progress >= 10 && !cosmeticInjected && !tab.isBlank) {
+                    cosmeticInjected = true
+                    injectCosmeticCSS(session, tab.url)
+                }
             }
         }
     }
@@ -504,6 +661,10 @@ fun GreyBrowser() {
     BackHandler {
         when {
             showContextMenu -> { showContextMenu = false; contextMenuUri = null }
+            showCosmeticFiltering -> {
+                showCosmeticFiltering = false
+                currentTab?.session?.let { disableSelectionMode(it) }
+            }
             currentTabIndex >= 0 -> {
                 val tab = tabs[currentTabIndex]
                 if (tab.canGoBack) {
@@ -552,7 +713,7 @@ fun GreyBrowser() {
                     if (urlInput.isEmpty() && !isUrlFocused) {
                         Text(
                             "Search or enter URL",
-                            color = if (isLoading) Color.Black.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.5f),
+                            color = if (isLoading) Color.White.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.5f),
                             fontSize = 16.sp
                         )
                     }
@@ -561,10 +722,10 @@ fun GreyBrowser() {
                         onValueChange = { urlInput = it },
                         singleLine = true,
                         textStyle = TextStyle(
-                            color = if (isLoading) Color.Black else Color.White,
+                            color = if (isLoading) Color.White.copy(alpha = 0.5f) else Color.White,
                             fontSize = 16.sp
                         ),
-                        cursorBrush = SolidColor(if (isLoading) Color.Black else Color.White),
+                        cursorBrush = SolidColor(if (isLoading) Color.White.copy(alpha = 0.5f) else Color.White),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = {
                             focusManager.clearFocus()
@@ -622,6 +783,20 @@ fun GreyBrowser() {
                         text = { Text("Bookmarks", color = Color.White) },
                         onClick = { showMenu = false; showBookmarks = true }
                     )
+                    if (currentTabIndex >= 0 && currentTab != null && !currentTab.isBlank) {
+                        DropdownMenuItem(
+                            text = { Text("Cosmetic Filtering", color = Color.White) },
+                            onClick = {
+                                showMenu = false
+                                showCosmeticFiltering = true
+                                currentTab.session?.let { enableSelectionMode(it) }
+                            }
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Cosmetic Rules", color = Color.White) },
+                        onClick = { showMenu = false; showCosmeticRules = true }
+                    )
                     DropdownMenuItem(
                         text = { Text("Filters", color = Color.White) },
                         onClick = { showMenu = false; showFilters = true }
@@ -666,7 +841,7 @@ fun GreyBrowser() {
         }
     }
 
-    // ── Link Context Menu (centered popup) ───────────
+    // ── Link Context Menu ────────────────────────────
     if (showContextMenu && contextMenuUri != null) {
         Popup(
             alignment = Alignment.Center,
@@ -712,6 +887,20 @@ fun GreyBrowser() {
                 }
             }
         }
+    }
+
+    // ── Cosmetic Filtering Panel ─────────────────────
+    if (showCosmeticFiltering && currentTab != null) {
+        CosmeticFilteringPanel(
+            selectedSelector = selectedElementSelector,
+            onDismiss = {
+                showCosmeticFiltering = false
+                currentTab.session?.let { disableSelectionMode(it) }
+            },
+            onParent = { currentTab.session?.let { selectParentElement(it) } },
+            onChild = { currentTab.session?.let { selectChildElement(it) } },
+            onHide = { currentTab.session?.let { hideSelectedElement(it) } }
+        )
     }
 
     // ── Tab Manager ──────────────────────────────────
@@ -910,6 +1099,16 @@ fun GreyBrowser() {
         )
     }
 
+    // ── Cosmetic Rules ───────────────────────────────
+    if (showCosmeticRules) {
+        CosmeticRulesUI(
+            rules = cosmeticRules,
+            onToggle = { id -> cosmeticRules.find { it.id == id }?.let { it.enabled = !it.enabled } },
+            onDelete = { id -> cosmeticRules.removeAll { it.id == id }; notificationMessage = "Rule deleted"; showNotification = true },
+            onDismiss = { showCosmeticRules = false }
+        )
+    }
+
     // ── Filters ──────────────────────────────────────
     if (showFilters) {
         FiltersUI(
@@ -1000,7 +1199,8 @@ data class BackupData(
     val lastActiveUrl: String,
     val tabs: List<Pair<String, String>>,
     val history: List<HistoryItem>,
-    val bookmarks: List<Bookmark>
+    val bookmarks: List<Bookmark>,
+    val cosmeticRules: List<CosmeticRule>
 )
 
 private val BACKUP_DIR = File(Environment.getExternalStorageDirectory(), "Grey")
@@ -1010,7 +1210,7 @@ fun importBackup(): BackupData {
     android.util.Log.d("GreyBrowser", "importBackup: checking ${BACKUP_FILE.absolutePath}")
     if (!BACKUP_FILE.exists()) {
         android.util.Log.d("GreyBrowser", "importBackup: file not found")
-        return BackupData("", emptyList(), emptyList(), emptyList())
+        return BackupData("", emptyList(), emptyList(), emptyList(), emptyList())
     }
     return try {
         val json = BACKUP_FILE.readText()
@@ -1050,11 +1250,25 @@ fun importBackup(): BackupData {
                 ))
             }
         }
-        android.util.Log.d("GreyBrowser", "importBackup: ${tabs.size} tabs, ${history.size} history, ${bookmarks.size} bookmarks")
-        BackupData(lastActiveUrl, tabs, history, bookmarks)
+        val cosmeticRules = mutableListOf<CosmeticRule>()
+        val cosArr = root.optJSONArray("cosmeticRules")
+        if (cosArr != null) {
+            for (i in 0 until cosArr.length()) {
+                val c = cosArr.getJSONObject(i)
+                cosmeticRules.add(CosmeticRule(
+                    id = c.optString("id", UUID.randomUUID().toString()),
+                    domain = c.getString("domain"),
+                    selector = c.getString("selector"),
+                    enabled = c.optBoolean("enabled", true),
+                    timestamp = c.optLong("timestamp", System.currentTimeMillis())
+                ))
+            }
+        }
+        android.util.Log.d("GreyBrowser", "importBackup: ${tabs.size} tabs, ${history.size} history, ${bookmarks.size} bookmarks, ${cosmeticRules.size} cosmetic rules")
+        BackupData(lastActiveUrl, tabs, history, bookmarks, cosmeticRules)
     } catch (e: Exception) {
         android.util.Log.e("GreyBrowser", "importBackup failed", e)
-        BackupData("", emptyList(), emptyList(), emptyList())
+        BackupData("", emptyList(), emptyList(), emptyList(), emptyList())
     }
 }
 
@@ -1062,6 +1276,7 @@ fun exportBackup(
     tabs: List<TabState>,
     history: List<HistoryItem>,
     bookmarks: List<Bookmark>,
+    cosmeticRules: List<CosmeticRule>,
     lastActiveUrl: String
 ) {
     try {
@@ -1104,10 +1319,22 @@ fun exportBackup(
         }
         root.put("bookmarks", bookArr)
 
+        val cosArr = JSONArray()
+        for (c in cosmeticRules) {
+            val obj = JSONObject()
+            obj.put("id", c.id)
+            obj.put("domain", c.domain)
+            obj.put("selector", c.selector)
+            obj.put("enabled", c.enabled)
+            obj.put("timestamp", c.timestamp)
+            cosArr.put(obj)
+        }
+        root.put("cosmeticRules", cosArr)
+
         val tempFile = File(BACKUP_DIR, "Grey-backup.tmp")
         tempFile.writeText(root.toString(2))
         val renamed = tempFile.renameTo(BACKUP_FILE)
-        android.util.Log.d("GreyBrowser", "exportBackup: wrote ${tabsArr.length()} tabs, ${histArr.length()} history, ${bookArr.length()} bookmarks, rename=$renamed")
+        android.util.Log.d("GreyBrowser", "exportBackup: wrote ${tabsArr.length()} tabs, ${histArr.length()} history, ${bookArr.length()} bookmarks, ${cosArr.length()} cosmetic rules, rename=$renamed")
     } catch (e: Exception) {
         android.util.Log.e("GreyBrowser", "exportBackup failed", e)
     }
@@ -1570,11 +1797,239 @@ fun BookmarksUI(
 //PART 7 END
 
 //PART 8 START
-// Reserved for future use
+@Composable
+fun CosmeticFilteringPanel(
+    selectedSelector: String,
+    onDismiss: () -> Unit,
+    onParent: () -> Unit,
+    onChild: () -> Unit,
+    onHide: () -> Unit
+) {
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .padding(bottom = 100.dp, start = 16.dp, end = 16.dp),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .offset(x = offsetX.dp, y = offsetY.dp),
+            color = Color(0xFF292625),
+            shape = RectangleShape,
+            tonalElevation = 0.dp
+        ) {
+            Column {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(Color.White.copy(alpha = 0.05f))
+                        .pointerInput(Unit) {
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                offsetX += dragAmount.x / 3
+                                offsetY += dragAmount.y / 3
+                            }
+                        }
+                        .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Cosmetic Filtering",
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Close", tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .background(Color(0xFF1A1817))
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        selectedSelector.ifBlank { "Tap an element on the page" },
+                        color = if (selectedSelector.isBlank()) Color.White.copy(alpha = 0.5f) else Color.White,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    OutlinedButton(
+                        onClick = onParent,
+                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) { Text("Parent", fontSize = 12.sp, color = Color.White) }
+                    OutlinedButton(
+                        onClick = onChild,
+                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) { Text("Child", fontSize = 12.sp, color = Color.White) }
+                    OutlinedButton(
+                        onClick = onHide,
+                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) { Text("Hide", fontSize = 12.sp, color = Color.White) }
+                }
+            }
+        }
+    }
+}
 //PART 8 END
 
 //PART 9 START
-// Reserved for future use
+@Composable
+fun CosmeticRulesUI(
+    rules: List<CosmeticRule>,
+    onToggle: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var ruleToDelete by remember { mutableStateOf<String?>(null) }
+
+    if (showDeleteConfirm && ruleToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false; ruleToDelete = null },
+            title = { Text("Delete Rule?", color = Color.White, fontSize = 18.sp) },
+            text = { Text("This cannot be undone.", color = Color.Gray, fontSize = 14.sp) },
+            confirmButton = {
+                TextButton({
+                    onDelete(ruleToDelete!!)
+                    showDeleteConfirm = false
+                    ruleToDelete = null
+                }) { Text("Delete", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton({ showDeleteConfirm = false; ruleToDelete = null }) { Text("Cancel", color = Color.White) }
+            },
+            containerColor = Color(0xFF1E1E1E),
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            shape = RectangleShape,
+            tonalElevation = 0.dp
+        )
+    }
+
+    val groupedRules = rules.groupBy { it.domain }
+
+    Popup(
+        alignment = Alignment.TopStart,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true, dismissOnBackPress = true, dismissOnClickOutside = false)
+    ) {
+        Surface(
+            Modifier.fillMaxSize().statusBarsPadding().background(Color(0xFF1A1817)),
+            color = Color(0xFF1A1817)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Close", tint = Color.White)
+                    }
+                    Text("Cosmetic Rules", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text("(${rules.size})", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp)
+                }
+
+                if (rules.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("No rules", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Use Cosmetic Filtering to hide elements",
+                                color = Color.White.copy(alpha = 0.3f),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                        val sortedDomains = groupedRules.keys.sortedBy { d ->
+                            groupedRules[d]?.firstOrNull()?.timestamp ?: 0L
+                        }.reversed()
+                        for (domain in sortedDomains) {
+                            val domainRules = groupedRules[domain] ?: continue
+                            item {
+                                Text(
+                                    domain.uppercase(),
+                                    color = Color.White.copy(alpha = 0.4f),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(domainRules.size) { i ->
+                                val rule = domainRules[i]
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp)
+                                        .background(Color(0xFF292625))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        androidx.compose.material3.Checkbox(
+                                            checked = rule.enabled,
+                                            onCheckedChange = { onToggle(rule.id) },
+                                            colors = androidx.compose.material3.CheckboxDefaults.colors(
+                                                checkedColor = Color.White,
+                                                uncheckedColor = Color.White.copy(alpha = 0.3f),
+                                                checkmarkColor = Color.Black
+                                            )
+                                        )
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(
+                                            rule.selector,
+                                            color = Color.White,
+                                            fontSize = 13.sp,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        IconButton(onClick = {
+                                            ruleToDelete = rule.id
+                                            showDeleteConfirm = true
+                                        }) {
+                                            Icon(Icons.Default.Close, "Delete", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
+                            }
+                            item { Spacer(Modifier.height(24.dp)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 //PART 9 END
 
 //PART 10 START
