@@ -184,9 +184,7 @@ fun GreyBrowser() {
     var showContextMenu by remember { mutableStateOf(false) }
     var contextMenuUri by remember { mutableStateOf<String?>(null) }
     var showCosmeticFiltering by remember { mutableStateOf(false) }
-    var isSelectionMode by remember { mutableStateOf(false) }
     var selectedElementSelector by remember { mutableStateOf("") }
-    var selectedElementTag by remember { mutableStateOf("") }
     val history = remember { mutableStateListOf<HistoryItem>() }
     val bookmarks = remember { mutableStateListOf<Bookmark>() }
     val cosmeticRules = remember { mutableStateListOf<CosmeticRule>() }
@@ -199,6 +197,7 @@ fun GreyBrowser() {
     var backupLoaded by remember { mutableStateOf(false) }
     var notificationMessage by remember { mutableStateOf("") }
     var showNotification by remember { mutableStateOf(false) }
+    var extensionPort by remember { mutableStateOf<org.mozilla.geckoview.WebExtension.Port?>(null) }
 
     val currentTab = if (currentTabIndex >= 0) tabs.getOrNull(currentTabIndex) else null
     val isLoading = currentTab != null && currentTab.progress in 1..99
@@ -253,6 +252,12 @@ fun GreyBrowser() {
         }
     }
 
+    LaunchedEffect(Unit) {
+        installGreyExtension(runtime) { port ->
+            extensionPort = port
+        }
+    }
+
     LaunchedEffect(backupLoaded, history.toList(), bookmarks.toList(), cosmeticRules.toList(), tabs.map { "${it.url}|${it.title}" }.joinToString(), lastActiveUrl) {
         if (!backupLoaded) return@LaunchedEffect
         scope.launch(Dispatchers.IO) {
@@ -260,129 +265,61 @@ fun GreyBrowser() {
         }
     }
 
-    fun injectCosmeticCSS(session: GeckoSession, url: String) {
+    fun sendToExtension(msg: JSONObject) {
+        extensionPort?.postMessage(msg)
+    }
+
+    fun injectCosmeticCSS(url: String) {
         val domain = getDomainName(url)
         val selectors = cosmeticRules.filter { it.enabled && (it.domain == domain || it.domain == "*" || domain.endsWith(".${it.domain}")) }
         if (selectors.isEmpty()) return
-        val cssRules = selectors.joinToString(" ") { "${it.selector} { display: none !important; }" }
-        val js = """
-            (function() {
-                var style = document.getElementById('grey-cosmetic-style');
-                if (!style) {
-                    style = document.createElement('style');
-                    style.id = 'grey-cosmetic-style';
-                    document.head.appendChild(style);
-                }
-                style.textContent = '$cssRules';
-                new MutationObserver(function() {
-                    document.querySelectorAll('${selectors.joinToString(", ") { it.selector }}').forEach(function(el) {
-                        el.style.setProperty('display', 'none', 'important');
-                    });
-                }).observe(document.documentElement, { childList: true, subtree: true });
-            })();
-        """.trimIndent()
-        session.loadUri("javascript:$js")
+        val rulesArray = JSONArray()
+        selectors.forEach { rulesArray.put(it.selector) }
+        sendToExtension(JSONObject().apply {
+            put("action", "applyRules")
+            put("rules", rulesArray)
+        })
     }
 
-    fun enableSelectionMode(session: GeckoSession) {
-        isSelectionMode = true
-        val js = """
-            (function() {
-                if (window.__greyPickerActive) return;
-                window.__greyPickerActive = true;
-                window.__greySelected = null;
-                var overlay = document.createElement('div');
-                overlay.id = '__grey_overlay';
-                overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;cursor:crosshair;';
-                overlay.addEventListener('touchstart', function(e) {
-                    e.preventDefault();
-                    var el = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY);
-                    if (el && el !== overlay) {
-                        window.__greySelected = el;
-                        el.style.outline = '2px solid red';
-                        var sel = el.tagName.toLowerCase();
-                        if (el.id) sel += '#' + el.id;
-                        if (el.className) sel += '.' + Array.from(el.classList).slice(0,3).join('.');
-                        window.prompt('GREY_ELEMENT:' + sel);
-                    }
-                });
-                document.body.appendChild(overlay);
-            })();
-        """.trimIndent()
-        session.loadUri("javascript:$js")
+    fun enableSelectionMode() {
+        sendToExtension(JSONObject().apply {
+            put("action", "enablePicker")
+        })
     }
 
-    fun disableSelectionMode(session: GeckoSession) {
-        isSelectionMode = false
-        selectedElementSelector = ""
-        selectedElementTag = ""
-        val js = """
-            (function() {
-                window.__greyPickerActive = false;
-                var overlay = document.getElementById('__grey_overlay');
-                if (overlay) overlay.remove();
-                if (window.__greySelected) window.__greySelected.style.outline = '';
-                window.__greySelected = null;
-            })();
-        """.trimIndent()
-        session.loadUri("javascript:$js")
+    fun disableSelectionMode() {
+        sendToExtension(JSONObject().apply {
+            put("action", "disablePicker")
+        })
     }
 
-    fun selectParentElement(session: GeckoSession) {
-        val js = """
-            (function() {
-                if (!window.__greySelected) return;
-                var el = window.__greySelected.parentElement;
-                if (el && el !== document.body && el !== document.documentElement) {
-                    window.__greySelected.style.outline = '';
-                    window.__greySelected = el;
-                    el.style.outline = '2px solid red';
-                    var sel = el.tagName.toLowerCase();
-                    if (el.id) sel += '#' + el.id;
-                    if (el.className) sel += '.' + Array.from(el.classList).slice(0,3).join('.');
-                    window.prompt('GREY_ELEMENT:' + sel);
-                }
-            })();
-        """.trimIndent()
-        session.loadUri("javascript:$js")
+    fun selectParentElement() {
+        sendToExtension(JSONObject().apply {
+            put("action", "selectParent")
+        })
     }
 
-    fun selectChildElement(session: GeckoSession) {
-        val js = """
-            (function() {
-                if (!window.__greySelected) return;
-                var el = window.__greySelected.firstElementChild;
-                if (el) {
-                    window.__greySelected.style.outline = '';
-                    window.__greySelected = el;
-                    el.style.outline = '2px solid red';
-                    var sel = el.tagName.toLowerCase();
-                    if (el.id) sel += '#' + el.id;
-                    if (el.className) sel += '.' + Array.from(el.classList).slice(0,3).join('.');
-                    window.prompt('GREY_ELEMENT:' + sel);
-                }
-            })();
-        """.trimIndent()
-        session.loadUri("javascript:$js")
+    fun selectChildElement() {
+        sendToExtension(JSONObject().apply {
+            put("action", "selectChild")
+        })
     }
 
-    fun hideSelectedElement(session: GeckoSession) {
+    fun hideSelectedElement() {
         if (selectedElementSelector.isBlank() || currentTab == null) return
         val domain = getDomainName(currentTab.url)
         if (domain.isBlank()) return
         cosmeticRules.removeAll { it.domain == domain && it.selector == selectedElementSelector }
         cosmeticRules.add(0, CosmeticRule(domain = domain, selector = selectedElementSelector))
-        val js = """
-            (function() {
-                document.querySelectorAll('${selectedElementSelector}').forEach(function(el) {
-                    el.style.setProperty('display', 'none', 'important');
-                });
-            })();
-        """.trimIndent()
-        session.loadUri("javascript:$js")
+        val rulesArray = JSONArray()
+        rulesArray.put(selectedElementSelector)
+        sendToExtension(JSONObject().apply {
+            put("action", "applyRules")
+            put("rules", rulesArray)
+        })
         notificationMessage = "Element hidden: $selectedElementSelector"
         showNotification = true
-        disableSelectionMode(session)
+        disableSelectionMode()
         showCosmeticFiltering = false
     }
 
@@ -468,7 +405,6 @@ fun GreyBrowser() {
 
     fun setupDelegates(tab: TabState) {
         val s = tab.session ?: return
-        var cosmeticInjected = false
 
         s.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
@@ -509,21 +445,8 @@ fun GreyBrowser() {
             }
         }
 
-        s.promptDelegate = object : GeckoSession.PromptDelegate {
-            override fun onTextPrompt(
-                session: GeckoSession,
-                prompt: GeckoSession.PromptDelegate.TextPrompt
-            ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
-                if (prompt.message?.startsWith("GREY_ELEMENT:") == true) {
-                    val selector = prompt.message!!.removePrefix("GREY_ELEMENT:")
-                    selectedElementSelector = selector
-                    selectedElementTag = selector
-                }
-                return GeckoResult.fromValue(prompt.dismiss())
-            }
-        }
-
         s.progressDelegate = object : GeckoSession.ProgressDelegate {
+            var cosmeticInjected = false
             override fun onPageStart(session: GeckoSession, url: String) {
                 tab.url = url
                 tab.lastUpdated = System.currentTimeMillis()
@@ -539,7 +462,7 @@ fun GreyBrowser() {
                 tab.progress = progress
                 if (progress >= 10 && !cosmeticInjected && !tab.isBlank) {
                     cosmeticInjected = true
-                    injectCosmeticCSS(session, tab.url)
+                    injectCosmeticCSS(tab.url)
                 }
             }
         }
@@ -668,7 +591,7 @@ fun GreyBrowser() {
             showContextMenu -> { showContextMenu = false; contextMenuUri = null }
             showCosmeticFiltering -> {
                 showCosmeticFiltering = false
-                currentTab?.session?.let { disableSelectionMode(it) }
+                disableSelectionMode()
             }
             currentTabIndex >= 0 -> {
                 val tab = tabs[currentTabIndex]
@@ -794,7 +717,7 @@ fun GreyBrowser() {
                             onClick = {
                                 showMenu = false
                                 showCosmeticFiltering = true
-                                currentTab.session?.let { enableSelectionMode(it) }
+                                enableSelectionMode()
                             }
                         )
                     }
@@ -900,11 +823,11 @@ fun GreyBrowser() {
             selectedSelector = selectedElementSelector,
             onDismiss = {
                 showCosmeticFiltering = false
-                currentTab.session?.let { disableSelectionMode(it) }
+                disableSelectionMode()
             },
-            onParent = { currentTab.session?.let { selectParentElement(it) } },
-            onChild = { currentTab.session?.let { selectChildElement(it) } },
-            onHide = { currentTab.session?.let { hideSelectedElement(it) } }
+            onParent = { selectParentElement() },
+            onChild = { selectChildElement() },
+            onHide = { hideSelectedElement() }
         )
     }
 
@@ -2000,10 +1923,10 @@ fun CosmeticRulesUI(
                                         .padding(horizontal = 8.dp, vertical = 4.dp)
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        androidx.compose.material3.Checkbox(
+                                        Checkbox(
                                             checked = rule.enabled,
                                             onCheckedChange = { onToggle(rule.id) },
-                                            colors = androidx.compose.material3.CheckboxDefaults.colors(
+                                            colors = CheckboxDefaults.colors(
                                                 checkedColor = Color.White,
                                                 uncheckedColor = Color.White.copy(alpha = 0.3f),
                                                 checkmarkColor = Color.Black
@@ -2038,7 +1961,38 @@ fun CosmeticRulesUI(
 //PART 9 END
 
 //PART 10 START
-// Reserved for future use
+fun installGreyExtension(runtime: GeckoRuntime, onPortReady: (org.mozilla.geckoview.WebExtension.Port) -> Unit) {
+    runtime.webExtensionController.installBuiltIn("resource://android/assets/grey_ext/")
+        .then({ ext ->
+            android.util.Log.d("GreyBrowser", "Extension installed: ${ext?.id}")
+            ext?.setMessageDelegate(object : org.mozilla.geckoview.WebExtension.MessageDelegate {
+                override fun onMessage(
+                    nativeApp: String,
+                    message: Any?,
+                    sender: org.mozilla.geckoview.WebExtension.MessageSender
+                ): GeckoResult<Any>? {
+                    android.util.Log.d("GreyBrowser", "Message from extension: $message")
+                    return GeckoResult.fromValue(null)
+                }
+                override fun onConnect(port: org.mozilla.geckoview.WebExtension.Port) {
+                    android.util.Log.d("GreyBrowser", "Extension port connected")
+                    port.setDelegate(object : org.mozilla.geckoview.WebExtension.PortDelegate {
+                        override fun onPortMessage(message: Any?, p: org.mozilla.geckoview.WebExtension.Port) {
+                            android.util.Log.d("GreyBrowser", "Port message: $message")
+                        }
+                        override fun onDisconnect(p: org.mozilla.geckoview.WebExtension.Port) {
+                            android.util.Log.d("GreyBrowser", "Port disconnected")
+                        }
+                    })
+                    onPortReady(port)
+                }
+            }, "grey_bridge")
+            GeckoResult.fromValue(null)
+        }, { error ->
+            android.util.Log.e("GreyBrowser", "Extension install failed", error)
+            GeckoResult.fromValue(null)
+        })
+}
 //PART 10 END
 
 //PART 11 START
