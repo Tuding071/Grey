@@ -42,8 +42,130 @@ jobs:
           mkdir -p $PKG
           mkdir -p app/src/main/res/values
           mkdir -p gradle/wrapper
+          mkdir -p app/src/main/assets/grey_ext
 
           cp Browser.kt $PKG/
+
+          cat > app/src/main/assets/grey_ext/manifest.json << 'EOF'
+          {
+            "manifest_version": 2,
+            "name": "Grey Bridge",
+            "version": "1.0",
+            "content_scripts": [{
+              "matches": ["<all_urls>"],
+              "js": ["content.js"],
+              "run_at": "document_start",
+              "all_frames": true
+            }],
+            "background": {
+              "scripts": ["background.js"]
+            },
+            "permissions": ["nativeMessaging", "<all_urls>", "storage"]
+          }
+          EOF
+
+          cat > app/src/main/assets/grey_ext/background.js << 'EOF'
+          browser.runtime.onMessage.addListener((msg, sender) => {
+            if (msg.to === 'app') {
+              try {
+                browser.runtime.sendNativeMessage('grey_bridge', msg);
+              } catch(e) {}
+            }
+          });
+
+          browser.runtime.onConnect.addListener((port) => {
+            port.onMessage.addListener((msg) => {
+              browser.tabs.query({active: true, currentWindow: true}).then(tabs => {
+                if (tabs[0]) {
+                  browser.tabs.sendMessage(tabs[0].id, msg);
+                }
+              });
+            });
+          });
+          EOF
+
+          cat > app/src/main/assets/grey_ext/content.js << 'EOF'
+          function applyRules(rules) {
+            var style = document.getElementById('grey-cosmetic');
+            if (!style) {
+              style = document.createElement('style');
+              style.id = 'grey-cosmetic';
+              document.head.appendChild(style);
+            }
+            style.textContent = rules.map(function(r) { return r + ' { display: none !important; }'; }).join(' ');
+            new MutationObserver(function() {
+              rules.forEach(function(sel) {
+                document.querySelectorAll(sel).forEach(function(el) {
+                  el.style.setProperty('display', 'none', 'important');
+                });
+              });
+            }).observe(document.documentElement, {childList: true, subtree: true});
+          }
+
+          var currentElement = null;
+
+          function clearHighlight() {
+            if (currentElement) { currentElement.style.outline = ''; currentElement = null; }
+          }
+
+          function highlight(el) {
+            clearHighlight();
+            currentElement = el;
+            el.style.outline = '2px solid red';
+          }
+
+          function buildSelector(el) {
+            var sel = el.tagName.toLowerCase();
+            if (el.id) sel += '#' + el.id;
+            if (el.className && typeof el.className === 'string') {
+              sel += '.' + el.className.trim().split(/\\s+/).slice(0,3).join('.');
+            }
+            return sel;
+          }
+
+          function enablePicker() {
+            if (document.getElementById('__grey_picker')) return;
+            var overlay = document.createElement('div');
+            overlay.id = '__grey_picker';
+            overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;cursor:crosshair;';
+            overlay.addEventListener('touchstart', function(e) {
+              e.preventDefault();
+              var el = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY);
+              if (!el || el === overlay) return;
+              highlight(el);
+              browser.runtime.sendMessage({
+                to: 'app',
+                action: 'elementSelected',
+                selector: buildSelector(el)
+              });
+            });
+            document.body.appendChild(overlay);
+          }
+
+          function disablePicker() {
+            var overlay = document.getElementById('__grey_picker');
+            if (overlay) overlay.remove();
+            clearHighlight();
+          }
+
+          browser.runtime.onMessage.addListener(function(msg) {
+            switch(msg.action) {
+              case 'applyRules': applyRules(msg.rules || []); break;
+              case 'enablePicker': enablePicker(); break;
+              case 'disablePicker': disablePicker(); break;
+              case 'selectParent':
+                if (currentElement && currentElement.parentElement && currentElement.parentElement !== document.body) {
+                  highlight(currentElement.parentElement);
+                }
+                break;
+              case 'selectChild':
+                if (currentElement && currentElement.firstElementChild) {
+                  highlight(currentElement.firstElementChild);
+                }
+                break;
+            }
+          });
+          EOF
 
           cat > settings.gradle.kts << 'EOF'
           pluginManagement {
