@@ -1968,7 +1968,7 @@ fun installGreyExtension(runtime: GeckoRuntime, onPortReady: (org.mozilla.geckov
             ext?.setMessageDelegate(object : org.mozilla.geckoview.WebExtension.MessageDelegate {
                 override fun onMessage(
                     nativeApp: String,
-                    message: Any?,
+                    message: Any,
                     sender: org.mozilla.geckoview.WebExtension.MessageSender
                 ): GeckoResult<Any>? {
                     android.util.Log.d("GreyBrowser", "Message from extension: $message")
@@ -1977,7 +1977,7 @@ fun installGreyExtension(runtime: GeckoRuntime, onPortReady: (org.mozilla.geckov
                 override fun onConnect(port: org.mozilla.geckoview.WebExtension.Port) {
                     android.util.Log.d("GreyBrowser", "Extension port connected")
                     port.setDelegate(object : org.mozilla.geckoview.WebExtension.PortDelegate {
-                        override fun onPortMessage(message: Any?, p: org.mozilla.geckoview.WebExtension.Port) {
+                        override fun onPortMessage(message: Any, p: org.mozilla.geckoview.WebExtension.Port) {
                             android.util.Log.d("GreyBrowser", "Port message: $message")
                         }
                         override fun onDisconnect(p: org.mozilla.geckoview.WebExtension.Port) {
